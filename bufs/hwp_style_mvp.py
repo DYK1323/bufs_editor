@@ -1,0 +1,1673 @@
+﻿# -*- coding: utf-8 -*-
+"""
+한글 문서 스타일 자동화 도구 MVP.
+
+1차 목적:
+- 한글 COM 연결 확인
+- bufs 안의 스타일/표지/로고 자산 읽기
+- 색상/선 프리셋 확인
+- 숫자 쉼표 넣기/빼기 유틸 검증
+
+주의:
+- 이 MVP는 원본 한글 문서를 수정하지 않는 읽기 중심 도구다.
+- 실제 스타일 적용/표 테두리 적용은 다음 단계에서 별도 검증 후 연결한다.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import sys
+import time
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime
+from html import unescape
+from pathlib import Path
+from typing import Iterable
+
+ROOT = Path(__file__).resolve().parent
+if Path.cwd().resolve() != ROOT:
+    # 설치 폴더 루트에는 쉽다한글이 번들링한 python312.dll이 있어
+    # Python 3.11 가상환경의 pywin32 로딩과 충돌할 수 있다.
+    import os
+
+    os.chdir(ROOT)
+
+try:
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+except Exception as exc:  # pragma: no cover
+    raise SystemExit(f"Tkinter를 불러오지 못했습니다: {exc}")
+
+try:
+    import pythoncom
+    import win32clipboard
+    import win32com.client
+    import win32gui
+except Exception:
+    win32com = None  # type: ignore[assignment]
+    pythoncom = None  # type: ignore[assignment]
+    win32clipboard = None  # type: ignore[assignment]
+    win32gui = None  # type: ignore[assignment]
+
+
+STYLE_FILE = ROOT / "보고서 본문 서식.hwpx"
+COVER_FILE = ROOT / "표지.hwpx"
+LOGO_DIR = ROOT / "logos"
+TEST_OUTPUT_DIR = ROOT / "test-output"
+STYLE_ORDER_FILE = ROOT / "style-order.json"
+TABLE_SETTINGS_FILE = ROOT / "table-settings.json"
+LAST_HWP_CONNECTION_LOG: list[str] = []
+
+
+@dataclass(frozen=True)
+class PaletteColor:
+    name: str
+    rgb: tuple[int, int, int]
+    hex_value: str
+    purpose: str
+
+
+@dataclass(frozen=True)
+class StyleRecord:
+    style_id: int
+    style_type: str
+    name: str
+
+
+@dataclass
+class HwpCandidate:
+    display_name: str
+    hwp: object
+    score: int
+    visible: bool
+    path: str
+    documents: str
+    windows: str
+
+
+DEFAULT_PALETTE = [
+    {"name": "노랑", "rgb": [255, 203, 5], "purpose": "제목 셀, 강조 셀"},
+    {"name": "진회색", "rgb": [85, 85, 85], "purpose": "보조 글자색, 진한 선"},
+    {"name": "회색", "rgb": [150, 150, 150], "purpose": "보조선, 약한 글자색"},
+    {"name": "연회색", "rgb": [204, 204, 204], "purpose": "표 셀 배경, 구분 배경"},
+    {"name": "검정", "rgb": [0, 0, 0], "purpose": "기본 글자색"},
+    {"name": "흰색", "rgb": [255, 255, 255], "purpose": "반전 글자색, 흰 배경"},
+]
+
+
+LINE_PRESETS = {
+    "얇은 선": {"width": "0.12mm", "type": "Solid"},
+    "굵은 선": {"width": "0.3mm", "type": "Solid"},
+    "이중 선": {"width": "0.7mm", "type_candidates": ("DoubleSlim", "SlimThick", "ThickSlim")},
+    "점선": {"width": "0.12mm", "type": "Dot"},
+}
+
+DEFAULT_TABLE_SETTINGS = {
+    "palette": DEFAULT_PALETTE,
+    "line_presets": {
+        "thin": {"label": "얇은 선", "width": "0.12mm", "type": "solid", "color": "검정"},
+        "thick": {"label": "굵은 선", "width": "0.3mm", "type": "solid", "color": "검정"},
+        "double": {"label": "이중 선", "width": "0.7mm", "type": "double", "color": "검정"},
+        "dotted": {"label": "점선", "width": "0.12mm", "type": "dot", "color": "검정"},
+        "none": {"label": "선 없음", "width": "0.12mm", "type": "none", "color": "검정"},
+    },
+    "title_cell": {
+        "background_color": "노랑",
+        "text_color": "검정",
+        "paragraph_style": "표내용-중간",
+        "character_style": "표내용-굵게",
+        "borders": {
+            "top": "thick",
+            "bottom": "thick",
+            "left": "thin",
+            "right": "thin",
+            "inside_horz": "thin",
+            "inside_vert": "thin",
+        },
+    },
+}
+
+
+def read_zip_text(path: Path, entry_name: str) -> str:
+    with zipfile.ZipFile(path) as zf:
+        with zf.open(entry_name) as fp:
+            return fp.read().decode("utf-8", errors="ignore")
+
+
+def read_style_records(path: Path = STYLE_FILE) -> list[StyleRecord]:
+    if not path.exists():
+        return []
+    try:
+        header = read_zip_text(path, "Contents/header.xml")
+    except Exception:
+        return []
+    records: list[StyleRecord] = []
+    pattern = re.compile(r'<hh:style\b([^>]*)/>')
+    for match in pattern.finditer(header):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', match.group(1)))
+        if "id" not in attrs or "name" not in attrs:
+            continue
+        records.append(
+            StyleRecord(
+                style_id=int(attrs["id"]),
+                style_type=attrs.get("type", ""),
+                name=unescape(attrs["name"]),
+            )
+        )
+    return sorted(records, key=lambda item: (item.style_type != "PARA", item.style_id, item.name))
+
+
+def load_style_order() -> list[str]:
+    if not STYLE_ORDER_FILE.exists():
+        return []
+    try:
+        data = json.loads(STYLE_ORDER_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    names = data.get("style_order", [])
+    if not isinstance(names, list):
+        return []
+    return [str(name) for name in names]
+
+
+def save_style_order(records: list[StyleRecord]) -> None:
+    data = {"style_order": [record.name for record in records]}
+    STYLE_ORDER_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def apply_saved_style_order(records: list[StyleRecord]) -> list[StyleRecord]:
+    saved_names = load_style_order()
+    if not saved_names:
+        return records
+
+    by_name = {record.name: record for record in records}
+    ordered: list[StyleRecord] = []
+    used: set[str] = set()
+    for name in saved_names:
+        record = by_name.get(name)
+        if record is None or name in used:
+            continue
+        ordered.append(record)
+        used.add(name)
+    ordered.extend(record for record in records if record.name not in used)
+    return ordered
+
+
+def merge_dict(default: dict, loaded: dict) -> dict:
+    merged = dict(default)
+    for key, value in loaded.items():
+        if isinstance(value, dict) and isinstance(default.get(key), dict):
+            merged[key] = merge_dict(default[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def normalize_table_settings(settings: dict) -> dict:
+    title = settings.get("title_cell")
+    if isinstance(title, dict):
+        for key in ("apply_hwp_header", "apply_cell_background", "apply_cell_borders"):
+            title.pop(key, None)
+    settings["line_presets"]["none"]["label"] = "선 없음"
+    return settings
+
+
+def load_table_settings() -> dict:
+    if not TABLE_SETTINGS_FILE.exists():
+        settings = merge_dict(DEFAULT_TABLE_SETTINGS, {})
+        return normalize_table_settings(settings)
+    try:
+        data = json.loads(TABLE_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        settings = merge_dict(DEFAULT_TABLE_SETTINGS, {})
+        return normalize_table_settings(settings)
+    if not isinstance(data, dict):
+        settings = merge_dict(DEFAULT_TABLE_SETTINGS, {})
+        return normalize_table_settings(settings)
+    settings = merge_dict(DEFAULT_TABLE_SETTINGS, data)
+    return normalize_table_settings(settings)
+
+
+def save_table_settings(settings: dict) -> None:
+    TABLE_SETTINGS_FILE.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    red, green, blue = rgb
+    return f"#{red:02X}{green:02X}{blue:02X}"
+
+
+def palette_from_settings(settings: dict) -> list[PaletteColor]:
+    colors: list[PaletteColor] = []
+    for item in settings.get("palette", []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        rgb_raw = item.get("rgb", [])
+        if not name or not isinstance(rgb_raw, list) or len(rgb_raw) != 3:
+            continue
+        try:
+            rgb = tuple(max(0, min(255, int(value))) for value in rgb_raw)
+        except Exception:
+            continue
+        colors.append(
+            PaletteColor(
+                name=name,
+                rgb=(rgb[0], rgb[1], rgb[2]),
+                hex_value=rgb_to_hex((rgb[0], rgb[1], rgb[2])),
+                purpose=str(item.get("purpose", "")),
+            )
+        )
+    if colors:
+        return colors
+    return palette_from_settings({"palette": DEFAULT_PALETTE})
+
+
+def read_style_names(path: Path = STYLE_FILE) -> list[str]:
+    return [record.name for record in read_style_records(path)]
+
+
+def read_cover_placeholders(path: Path = COVER_FILE) -> dict[str, bool]:
+    if not path.exists():
+        return {}
+    preview = read_zip_text(path, "Preview/PrvText.txt")
+    return {
+        "{{문서제목}}": "{{문서제목}}" in preview,
+        "{{날짜}}": "{{날짜}}" in preview,
+        "{{부서명}}": "{{부서명}}" in preview,
+        "<대 외 비>": "대 외 비" in preview,
+    }
+
+
+def list_logos(root: Path = LOGO_DIR) -> list[Path]:
+    if not root.exists():
+        return []
+    return sorted(
+        (p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}),
+        key=lambda p: str(p.relative_to(root)),
+    )
+
+
+def add_thousand_commas(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        sign = ""
+        if raw.startswith("-"):
+            sign, raw = "-", raw[1:]
+        if len(raw) <= 3:
+            return sign + raw
+        return sign + f"{int(raw):,}"
+
+    # 날짜/전화번호처럼 하이픈으로 이어지는 숫자와 2026년/2025학년도 같은 연도 표기는 피한다.
+    return re.sub(r"(?<![\d,.-])-?\d{4,}(?![\d,.-]|년|년도|학년도|월|일)", repl, text)
+
+
+def remove_number_commas(text: str) -> str:
+    return re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+
+
+def clean_manual_line_breaks(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    lines = text.split("\n")
+    result: list[str] = []
+
+    def should_keep_break(previous: str, current: str) -> bool:
+        if not previous.strip() or not current.strip():
+            return True
+        if re.match(r"^\s*([①-⑳•ㆍ\-–—*]|\(?\d+[\).]|[가-힣]\)|[A-Za-z]\))", current):
+            return True
+        if re.search(r"[:：]$", previous.strip()):
+            return True
+        return False
+
+    for raw_line in lines:
+        line = re.sub(r"[ \t]+", " ", raw_line.strip())
+        if not result:
+            result.append(line)
+            continue
+        if should_keep_break(result[-1], line):
+            result.append(line)
+        else:
+            separator = "" if re.search(r"[가-힣A-Za-z0-9]$", result[-1]) and re.match(r"^[,.;:!?)]", line) else " "
+            result[-1] = (result[-1].rstrip() + separator + line.lstrip()).strip()
+
+    cleaned = "\n".join(result)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
+def connect_hwp():
+    global LAST_HWP_CONNECTION_LOG
+    LAST_HWP_CONNECTION_LOG = []
+    if win32com is None or pythoncom is None:
+        raise RuntimeError("pywin32(win32com)가 설치되어 있지 않습니다.")
+
+    candidates = list_hwp_candidates()
+    if candidates:
+        candidates.sort(key=lambda item: item.score, reverse=True)
+        for item in candidates[:8]:
+            LAST_HWP_CONNECTION_LOG.append(
+                "[hwp-candidate] "
+                f"score={item.score}, visible={item.visible}, docs={item.documents}, "
+                f"windows={item.windows}, path={item.path or '(없음)'}, rot={item.display_name}"
+            )
+        chosen = candidates[0]
+        LAST_HWP_CONNECTION_LOG.append(
+            f"[hwp-selected] {chosen.display_name} / visible={chosen.visible} / path={chosen.path or '(없음)'}"
+        )
+        return chosen.hwp
+
+    try:
+        hwp = win32com.client.GetActiveObject("HWPFrame.HwpObject")
+        LAST_HWP_CONNECTION_LOG.append("[hwp-fallback] GetActiveObject 사용")
+        return hwp
+    except Exception:
+        hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
+        LAST_HWP_CONNECTION_LOG.append("[hwp-fallback] 새 HwpObject Dispatch")
+        return hwp
+
+
+def safe_str(value) -> str:
+    try:
+        return str(value)
+    except Exception:
+        return ""
+
+
+def get_foreground_title() -> str:
+    if win32gui is None:
+        return ""
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        return win32gui.GetWindowText(hwnd) or ""
+    except Exception:
+        return ""
+
+
+def list_hwp_candidates() -> list[HwpCandidate]:
+    if pythoncom is None or win32com is None:
+        return []
+
+    foreground_title = get_foreground_title()
+    candidates: list[HwpCandidate] = []
+    ctx = pythoncom.CreateBindCtx(0)
+    rot = pythoncom.GetRunningObjectTable()
+    for moniker in rot.EnumRunning():
+        try:
+            display_name = moniker.GetDisplayName(ctx, None)
+        except Exception:
+            continue
+        if "HwpObject" not in display_name:
+            continue
+
+        try:
+            raw = rot.GetObject(moniker)
+            dispatch = raw.QueryInterface(pythoncom.IID_IDispatch)
+            hwp = win32com.client.Dispatch(dispatch)
+        except Exception:
+            continue
+
+        path = ""
+        visible = False
+        documents = ""
+        windows = ""
+        try:
+            path = safe_str(hwp.Path)
+        except Exception:
+            path = ""
+        try:
+            documents = safe_str(hwp.XHwpDocuments.Count)
+        except Exception as exc:
+            documents = f"err:{type(exc).__name__}"
+        try:
+            windows_count = hwp.XHwpWindows.Count
+            windows = safe_str(windows_count)
+            for index in range(int(windows_count)):
+                try:
+                    if bool(hwp.XHwpWindows.Item(index).Visible):
+                        visible = True
+                        break
+                except Exception:
+                    continue
+        except Exception as exc:
+            windows = f"err:{type(exc).__name__}"
+
+        score = 0
+        if visible:
+            score += 100
+        if path:
+            score += 30
+            file_name = Path(path).name
+            stem = Path(path).stem
+            if file_name and file_name in foreground_title:
+                score += 120
+            elif stem and stem in foreground_title:
+                score += 100
+        if foreground_title and foreground_title.endswith("- 한글") and visible:
+            score += 10
+        if documents == "1":
+            score += 5
+
+        candidates.append(
+            HwpCandidate(
+                display_name=display_name,
+                hwp=hwp,
+                score=score,
+                visible=visible,
+                path=path,
+                documents=documents,
+                windows=windows,
+            )
+        )
+    return candidates
+
+
+def describe_hwp(hwp) -> list[str]:
+    lines: list[str] = []
+    try:
+        lines.append(f"Version: {hwp.Version}")
+    except Exception as exc:
+        lines.append(f"Version 확인 실패: {exc}")
+    try:
+        lines.append(f"Documents: {hwp.XHwpDocuments.Count}")
+    except Exception as exc:
+        lines.append(f"Documents 확인 실패: {exc}")
+    try:
+        lines.append(f"Windows: {hwp.XHwpWindows.Count}")
+    except Exception as exc:
+        lines.append(f"Windows 확인 실패: {exc}")
+    try:
+        lines.append(f"Path: {hwp.Path}")
+    except Exception as exc:
+        lines.append(f"Path 확인 실패: {exc}")
+    try:
+        visible_values = []
+        for index in range(int(hwp.XHwpWindows.Count)):
+            visible_values.append(str(bool(hwp.XHwpWindows.Item(index).Visible)))
+        lines.append(f"WindowVisible: {', '.join(visible_values)}")
+    except Exception as exc:
+        lines.append(f"WindowVisible 확인 실패: {exc}")
+    try:
+        key = hwp.KeyIndicator()
+        lines.append(f"KeyIndicator: {key}")
+    except Exception as exc:
+        lines.append(f"KeyIndicator 확인 실패: {exc}")
+    try:
+        pos = hwp.GetPos()
+        lines.append(f"CursorPos: {pos}")
+    except Exception as exc:
+        lines.append(f"CursorPos 확인 실패: {exc}")
+    return lines
+
+
+class MvpApp(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("한글 스타일 자동화 MVP")
+        self.geometry("440x1000")
+        self.minsize(420, 720)
+        self.hwp = None
+        self.style_records: list[StyleRecord] = []
+        self.current_doc_style_path: Path | None = None
+        self.current_doc_style_map: dict[str, StyleRecord] = {}
+        self.table_settings = load_table_settings()
+        self.palette = palette_from_settings(self.table_settings)
+        self.apply_on_select = tk.BooleanVar(value=True)
+        self._refreshing = False
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=6, pady=(6, 4))
+
+        log_frame = ttk.LabelFrame(self, text="디버그 로그", padding=5)
+        log_frame.pack(fill="both", expand=False, padx=6, pady=(0, 6))
+        self.debug_text = tk.Text(log_frame, height=7, wrap="word")
+        self.debug_text.pack(side="left", fill="both", expand=True)
+        log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.debug_text.yview)
+        log_scroll.pack(side="right", fill="y")
+        self.debug_text.configure(yscrollcommand=log_scroll.set)
+
+        self._build_status_tab()
+        self._build_styles_tab()
+        self._build_table_tab()
+        self._build_cleanup_tab()
+        self._build_cover_logo_tab()
+        self.bind_all("<Control-z>", self.on_global_undo)
+        self.bind_all("<Control-Z>", self.on_global_undo)
+        self.refresh_all()
+
+    def _build_status_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(frame, text="상태")
+
+        self.status_text = tk.Text(frame, height=30, wrap="word")
+        self.status_text.pack(fill="both", expand=True)
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="한글 연결 확인", command=self.check_hwp).pack(side="left")
+        ttk.Button(buttons, text="자산 다시 읽기", command=self.refresh_all).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="실행취소", command=self.undo_hwp).pack(side="left", padx=(8, 0))
+
+    def _build_styles_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(frame, text="스타일")
+
+        ttk.Label(frame, text="bufs/보고서 본문 서식.hwpx에서 읽은 스타일 이름").pack(anchor="w")
+        self.style_list = tk.Listbox(frame, height=34)
+        self.style_list.pack(fill="both", expand=True, pady=(8, 0))
+        self.style_list.bind("<<ListboxSelect>>", self.on_style_selected)
+        self.style_list.bind("<Double-Button-1>", lambda _event: self.apply_selected_style(reason="double-click"))
+
+        ttk.Label(
+            frame,
+            text="스타일을 클릭하면 이름 기준으로 현재 문서의 같은 스타일을 찾아 즉시 적용합니다.",
+            wraplength=390,
+        ).pack(anchor="w", pady=(8, 0))
+
+        row1 = ttk.Frame(frame)
+        row1.pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(row1, text="클릭 즉시 적용", variable=self.apply_on_select).pack(side="left")
+        ttk.Button(row1, text="다시 적용", command=lambda: self.apply_selected_style(reason="button")).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(row1, text="연결 확인", command=self.check_hwp).pack(side="left", padx=(8, 0))
+
+        row2 = ttk.Frame(frame)
+        row2.pack(fill="x", pady=(5, 0))
+        ttk.Button(row2, text="대상 확인", command=self.show_current_target).pack(side="left")
+        ttk.Button(row2, text="테스트 문서 열기", command=self.open_style_test_copy).pack(side="left", padx=(8, 0))
+
+        row3 = ttk.Frame(frame)
+        row3.pack(fill="x", pady=(5, 0))
+        ttk.Button(row3, text="위로", command=lambda: self.move_selected_style(-1)).pack(side="left")
+        ttk.Button(row3, text="아래로", command=lambda: self.move_selected_style(1)).pack(side="left", padx=(8, 0))
+        ttk.Button(row3, text="기본순서", command=self.reset_style_order).pack(side="left", padx=(8, 0))
+
+    def _build_table_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=8)
+        self.table_frame = frame
+        self.notebook.add(frame, text="표")
+        self.build_table_tab_content()
+
+    def build_table_tab_content(self) -> None:
+        frame = self.table_frame
+        for child in frame.winfo_children():
+            child.destroy()
+
+        ttk.Button(frame, text="제목셀 자동화", command=self.apply_title_cell_preset).pack(fill="x", pady=(0, 12))
+        ttk.Button(frame, text="표 설정", command=self.open_table_settings_window).pack(fill="x", pady=(0, 12))
+
+        ttk.Label(frame, text="셀 배경색").pack(anchor="w")
+        bg_row = ttk.Frame(frame)
+        bg_row.pack(fill="x", pady=(6, 12))
+        self.create_color_chips(bg_row, self.apply_cell_fill_color)
+
+        ttk.Label(frame, text="글자색").pack(anchor="w")
+        text_row = ttk.Frame(frame)
+        text_row.pack(fill="x", pady=(6, 12))
+        self.create_color_chips(text_row, self.apply_text_color)
+
+        ttk.Label(frame, text="테두리").pack(anchor="w")
+        border_row1 = ttk.Frame(frame)
+        border_row1.pack(fill="x", pady=(6, 0))
+        ttk.Button(border_row1, text="얇은 전체", command=lambda: self.apply_table_border_preset("thin_all")).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(border_row1, text="굵은 상하", command=lambda: self.apply_table_border_preset("thick_top_bottom")).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        border_row2 = ttk.Frame(frame)
+        border_row2.pack(fill="x", pady=(6, 12))
+        ttk.Button(border_row2, text="이중 아래", command=lambda: self.apply_table_border_preset("double_bottom")).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(border_row2, text="좌우 없음", command=lambda: self.apply_table_border_preset("no_left_right")).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        border_row3 = ttk.Frame(frame)
+        border_row3.pack(fill="x", pady=(0, 0))
+        ttk.Button(border_row3, text="점선 가로", command=lambda: self.apply_table_border_preset("dotted_inside_horz")).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(border_row3, text="점선 세로", command=lambda: self.apply_table_border_preset("dotted_inside_vert")).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        border_row4 = ttk.Frame(frame)
+        border_row4.pack(fill="x", pady=(6, 12))
+        ttk.Button(border_row4, text="얇은실선 가로", command=lambda: self.apply_table_border_preset("thin_inside_horz")).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(border_row4, text="얇은실선 세로", command=lambda: self.apply_table_border_preset("thin_inside_vert")).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        ttk.Label(frame, text="색상 팔레트").pack(anchor="w")
+        palette = ttk.Treeview(frame, columns=("rgb", "hex", "purpose"), show="headings", height=8)
+        palette.heading("rgb", text="RGB")
+        palette.heading("hex", text="HEX")
+        palette.heading("purpose", text="기본 용도")
+        palette.pack(fill="x", pady=(8, 0))
+        for color in self.palette:
+            palette.insert("", "end", text=color.name, values=(color.rgb, color.hex_value, color.purpose))
+
+    def create_color_chips(self, parent: ttk.Frame, command) -> None:
+        for index, color in enumerate(self.palette):
+            button = tk.Button(
+                parent,
+                text=color.name,
+                bg=color.hex_value,
+                fg=self.contrast_text_color(color.rgb),
+                width=8,
+                relief="raised",
+                command=lambda item=color: command(item),
+            )
+            button.grid(row=index // 3, column=index % 3, padx=(0, 6), pady=(0, 6), sticky="ew")
+        for col in range(3):
+            parent.columnconfigure(col, weight=1)
+
+    def contrast_text_color(self, rgb: tuple[int, int, int]) -> str:
+        red, green, blue = rgb
+        brightness = (red * 299 + green * 587 + blue * 114) / 1000
+        return "#000000" if brightness >= 140 else "#FFFFFF"
+
+    def open_table_settings_window(self) -> None:
+        window = tk.Toplevel(self)
+        window.title("표 설정")
+        window.geometry("420x720")
+        window.transient(self)
+
+        settings = merge_dict(DEFAULT_TABLE_SETTINGS, self.table_settings)
+        color_names = [color.name for color in self.palette]
+        para_styles = [record.name for record in self.style_records if record.style_type == "PARA"]
+        char_styles = ["(적용 안 함)", *[record.name for record in self.style_records if record.style_type == "CHAR"]]
+        line_type_values = ["solid", "dot", "double", "none"]
+        width_values = ["0.12mm", "0.3mm", "0.7mm"]
+        preset_keys = list(settings["line_presets"].keys())
+        if settings["line_presets"].get("none", {}).get("label") == "적용 안 함":
+            settings["line_presets"]["none"]["label"] = "선 없음"
+        preset_labels = {key: settings["line_presets"][key]["label"] for key in preset_keys}
+        preset_choices = [f"{key}: {preset_labels[key]}" for key in preset_keys]
+
+        vars_by_path: dict[tuple[str, ...], tk.StringVar] = {}
+        color_combos: list[ttk.Combobox] = []
+
+        def var_for(path: tuple[str, ...], value: str) -> tk.StringVar:
+            var = tk.StringVar(value=value)
+            vars_by_path[path] = var
+            return var
+
+        def combo(parent, path: tuple[str, ...], value: str, values: list[str], width: int = 16):
+            box = ttk.Combobox(parent, textvariable=var_for(path, value), values=values, state="readonly", width=width)
+            box.pack(side="left", padx=(4, 0))
+            if path[-1] in {"color", "background_color", "text_color"}:
+                color_combos.append(box)
+            return box
+
+        canvas = tk.Canvas(window, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
+        body = ttk.Frame(canvas, padding=10)
+        body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        ttk.Label(body, text="색상 팔레트").pack(anchor="w")
+        palette_tree = ttk.Treeview(body, columns=("rgb", "purpose"), show="tree headings", height=6)
+        palette_tree.heading("#0", text="이름")
+        palette_tree.heading("rgb", text="RGB")
+        palette_tree.heading("purpose", text="용도")
+        palette_tree.column("#0", width=82, stretch=False)
+        palette_tree.column("rgb", width=92, stretch=False)
+        palette_tree.pack(fill="x", pady=(6, 6))
+        for color in self.palette:
+            palette_tree.insert("", "end", text=color.name, values=(".".join(str(v) for v in color.rgb), color.purpose))
+
+        color_form = ttk.Frame(body)
+        color_form.pack(fill="x", pady=(0, 6))
+        name_var = tk.StringVar()
+        r_var = tk.StringVar(value="0")
+        g_var = tk.StringVar(value="0")
+        b_var = tk.StringVar(value="0")
+        purpose_var = tk.StringVar()
+        ttk.Entry(color_form, textvariable=name_var, width=8).pack(side="left")
+        ttk.Entry(color_form, textvariable=r_var, width=4).pack(side="left", padx=(4, 0))
+        ttk.Entry(color_form, textvariable=g_var, width=4).pack(side="left", padx=(4, 0))
+        ttk.Entry(color_form, textvariable=b_var, width=4).pack(side="left", padx=(4, 0))
+        ttk.Entry(color_form, textvariable=purpose_var, width=14).pack(side="left", padx=(4, 0))
+
+        def update_color_combo_values() -> None:
+            current_names = [palette_tree.item(item, "text") for item in palette_tree.get_children()]
+            for box in color_combos:
+                box.configure(values=current_names)
+                if box.get() not in current_names and current_names:
+                    box.set(current_names[0])
+
+        def add_color() -> None:
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("색상 이름 필요", "색상 이름을 입력하세요.", parent=window)
+                return
+            if name in [palette_tree.item(item, "text") for item in palette_tree.get_children()]:
+                messagebox.showwarning("색상 이름 중복", "이미 있는 색상 이름입니다.", parent=window)
+                return
+            try:
+                rgb = [max(0, min(255, int(v.get()))) for v in (r_var, g_var, b_var)]
+            except Exception:
+                messagebox.showwarning("RGB 확인", "RGB는 0부터 255 사이 숫자로 입력하세요.", parent=window)
+                return
+            palette_tree.insert("", "end", text=name, values=(".".join(str(v) for v in rgb), purpose_var.get()))
+            name_var.set("")
+            purpose_var.set("")
+            update_color_combo_values()
+
+        def remove_color() -> None:
+            selection = palette_tree.selection()
+            if not selection:
+                return
+            if len(palette_tree.get_children()) <= 1:
+                messagebox.showwarning("삭제 불가", "색상은 최소 1개가 필요합니다.", parent=window)
+                return
+            for item in selection:
+                palette_tree.delete(item)
+            update_color_combo_values()
+
+        color_buttons = ttk.Frame(body)
+        color_buttons.pack(fill="x", pady=(0, 10))
+        ttk.Button(color_buttons, text="색 추가", command=add_color).pack(side="left")
+        ttk.Button(color_buttons, text="선택 삭제", command=remove_color).pack(side="left", padx=(8, 0))
+
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="선 프리셋").pack(anchor="w")
+        for key in preset_keys:
+            preset = settings["line_presets"][key]
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=(6, 0))
+            ttk.Label(row, text=preset["label"], width=10).pack(side="left")
+            combo(row, ("line_presets", key, "width"), preset["width"], width_values, width=8)
+            combo(row, ("line_presets", key, "type"), preset["type"], line_type_values, width=8)
+            combo(row, ("line_presets", key, "color"), preset["color"], color_names, width=8)
+
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="제목셀").pack(anchor="w")
+
+        title = settings["title_cell"]
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="배경색", width=12).pack(side="left")
+        combo(row, ("title_cell", "background_color"), title["background_color"], color_names)
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="글자색", width=12).pack(side="left")
+        combo(row, ("title_cell", "text_color"), title["text_color"], color_names)
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="문단 스타일", width=12).pack(side="left")
+        combo(row, ("title_cell", "paragraph_style"), title["paragraph_style"], para_styles)
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="글자 스타일", width=12).pack(side="left")
+        combo(row, ("title_cell", "character_style"), title["character_style"], char_styles)
+
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="제목셀 테두리").pack(anchor="w")
+        border_labels = {
+            "top": "상",
+            "bottom": "하",
+            "left": "좌",
+            "right": "우",
+            "inside_horz": "안쪽 가로",
+            "inside_vert": "안쪽 세로",
+        }
+        for key, label in border_labels.items():
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=(6, 0))
+            ttk.Label(row, text=label, width=12).pack(side="left")
+            current_key = title["borders"].get(key, "thin")
+            current = f"{current_key}: {preset_labels.get(current_key, current_key)}"
+            combo(row, ("title_cell", "borders", key), current, preset_choices)
+
+        def set_path(data: dict, path: tuple[str, ...], value: str) -> None:
+            target = data
+            for key in path[:-1]:
+                target = target[key]
+            if path[:2] == ("title_cell", "borders"):
+                value = value.split(":", 1)[0]
+            target[path[-1]] = value
+
+        def save_and_close() -> None:
+            new_settings = merge_dict(DEFAULT_TABLE_SETTINGS, settings)
+            palette_items = []
+            for item in palette_tree.get_children():
+                rgb_text, purpose = palette_tree.item(item, "values")
+                rgb = [int(value) for value in str(rgb_text).split(".")]
+                palette_items.append(
+                    {
+                        "name": palette_tree.item(item, "text"),
+                        "rgb": rgb,
+                        "purpose": str(purpose),
+                    }
+                )
+            new_settings["palette"] = palette_items
+            valid_color_names = {item["name"] for item in palette_items}
+            for path, var in vars_by_path.items():
+                value = var.get()
+                if path[-1] in {"color", "background_color", "text_color"} and value not in valid_color_names:
+                    value = palette_items[0]["name"]
+                set_path(new_settings, path, value)
+            normalize_table_settings(new_settings)
+            self.table_settings = new_settings
+            self.palette = palette_from_settings(new_settings)
+            save_table_settings(new_settings)
+            self.build_table_tab_content()
+            self.debug(f"[table-settings] 저장: {TABLE_SETTINGS_FILE}")
+            window.destroy()
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(14, 0))
+        ttk.Button(buttons, text="저장", command=save_and_close).pack(side="left")
+        ttk.Button(buttons, text="취소", command=window.destroy).pack(side="left", padx=(8, 0))
+
+    def _build_cleanup_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(frame, text="정리")
+
+        ttk.Label(frame, text="선택 영역 정리").pack(anchor="w")
+        hwp_buttons1 = ttk.Frame(frame)
+        hwp_buttons1.pack(fill="x", pady=(8, 0))
+        ttk.Button(hwp_buttons1, text="줄바꿈/띄어쓰기 정리", command=self.clean_selected_line_breaks).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(hwp_buttons1, text="천원단위 쉼표 넣기", command=self.add_commas_to_selection).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        hwp_buttons2 = ttk.Frame(frame)
+        hwp_buttons2.pack(fill="x", pady=(6, 12))
+        ttk.Button(hwp_buttons2, text="쉼표 빼기", command=self.remove_commas_from_selection).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(hwp_buttons2, text="엑셀표 정리", command=self.clean_excel_table).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        hwp_buttons3 = ttk.Frame(frame)
+        hwp_buttons3.pack(fill="x", pady=(0, 12))
+        ttk.Button(hwp_buttons3, text="실행취소", command=self.undo_hwp).pack(side="left", fill="x", expand=True)
+
+        ttk.Label(
+            frame,
+            text="위 버튼은 한글에서 글자/셀을 선택한 상태로 사용합니다.",
+            wraplength=390,
+        ).pack(anchor="w", pady=(0, 14))
+
+        ttk.Label(frame, text="숫자 쉼표 변환 테스트").pack(anchor="w")
+        self.cleanup_input = tk.Text(frame, height=8, wrap="word")
+        self.cleanup_input.pack(fill="x", pady=(8, 8))
+        self.cleanup_input.insert("1.0", "1234567\n1,234,567\n2026-07-15\n051-123-4567")
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="테스트 쉼표 넣기", command=self.add_commas_ui).pack(side="left")
+        ttk.Button(buttons, text="테스트 쉼표 빼기", command=self.remove_commas_ui).pack(side="left", padx=(8, 0))
+
+    def _build_cover_logo_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(frame, text="표지/로고")
+
+        ttk.Label(frame, text="표지 자리표시자").pack(anchor="w")
+        self.cover_list = tk.Listbox(frame, height=6)
+        self.cover_list.pack(fill="x", pady=(8, 12))
+
+        ttk.Label(frame, text="로고 파일").pack(anchor="w")
+        self.logo_list = tk.Listbox(frame, height=18)
+        self.logo_list.pack(fill="both", expand=True, pady=(8, 0))
+
+    def log(self, lines: Iterable[str] | str) -> None:
+        if isinstance(lines, str):
+            lines = [lines]
+        for line in lines:
+            self.status_text.insert("end", line + "\n")
+            self.debug_text.insert("end", line + "\n")
+        self.status_text.see("end")
+        self.debug_text.see("end")
+
+    def debug(self, line: str) -> None:
+        self.debug_text.insert("end", line + "\n")
+        self.debug_text.see("end")
+
+    def refresh_all(self) -> None:
+        self._refreshing = True
+        self.status_text.delete("1.0", "end")
+        self.debug_text.delete("1.0", "end")
+        self.log(f"작업 폴더: {ROOT}")
+        self.log(f"스타일 파일: {STYLE_FILE.exists()} / {STYLE_FILE.name}")
+        self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.name}")
+
+        self.style_records = apply_saved_style_order(read_style_records())
+        self.populate_style_list()
+        self.log(f"스타일 이름 수: {len(self.style_records)}")
+
+        placeholders = read_cover_placeholders()
+        self.cover_list.delete(0, "end")
+        for key, exists in placeholders.items():
+            self.cover_list.insert("end", f"{key}: {exists}")
+
+        logos = list_logos()
+        self.logo_list.delete(0, "end")
+        for logo in logos:
+            self.logo_list.insert("end", str(logo.relative_to(LOGO_DIR)))
+        self.log(f"로고 파일 수: {len(logos)}")
+        self._refreshing = False
+
+    def populate_style_list(self, selected_index: int | None = None) -> None:
+        self.style_list.delete(0, "end")
+        for record in self.style_records:
+            self.style_list.insert("end", f"[{record.style_id:03d}] {record.style_type}  {record.name}")
+        if selected_index is not None and self.style_records:
+            index = max(0, min(selected_index, len(self.style_records) - 1))
+            self.style_list.selection_clear(0, "end")
+            self.style_list.selection_set(index)
+            self.style_list.activate(index)
+            self.style_list.see(index)
+
+    def move_selected_style(self, delta: int) -> None:
+        selection = self.style_list.curselection()
+        if not selection:
+            return
+        old_index = selection[0]
+        new_index = old_index + delta
+        if new_index < 0 or new_index >= len(self.style_records):
+            return
+        self.style_records[old_index], self.style_records[new_index] = (
+            self.style_records[new_index],
+            self.style_records[old_index],
+        )
+        save_style_order(self.style_records)
+        self._refreshing = True
+        self.populate_style_list(new_index)
+        self._refreshing = False
+        self.debug(f"[style-order] 순서 변경 저장: {self.style_records[new_index].name}")
+
+    def reset_style_order(self) -> None:
+        if STYLE_ORDER_FILE.exists():
+            STYLE_ORDER_FILE.unlink()
+        self.style_records = read_style_records()
+        self._refreshing = True
+        self.populate_style_list(0)
+        self._refreshing = False
+        self.debug("[style-order] 기본순서로 복원")
+
+    def ensure_hwp(self) -> bool:
+        if self.hwp is not None:
+            return True
+        try:
+            self.debug("[hwp] COM 연결 시작")
+            self.hwp = connect_hwp()
+            self.debug("[hwp] COM 연결 성공")
+            for line in LAST_HWP_CONNECTION_LOG:
+                self.debug(line)
+            return True
+        except Exception as exc:
+            self.log(f"한글 COM 연결 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("한글 연결 실패", str(exc))
+            return False
+
+    def hwp_rgb(self, color: PaletteColor) -> int:
+        red, green, blue = color.rgb
+        try:
+            return int(self.hwp.RGBColor(red, green, blue))
+        except Exception:
+            return red | (green << 8) | (blue << 16)
+
+    def palette_color(self, name: str) -> PaletteColor:
+        for color in self.palette:
+            if color.name == name:
+                return color
+        raise KeyError(name)
+
+    def execute_first_hwp_action(self, action_names: tuple[str, ...], hset) -> tuple[str, bool]:
+        last_action = action_names[-1]
+        for action in action_names:
+            last_action = action
+            try:
+                ok = bool(self.hwp.HAction.Execute(action, hset))
+            except Exception as exc:
+                self.debug(f"[hwp-action] {action} 실패: {type(exc).__name__}: {exc}")
+                continue
+            self.debug(f"[hwp-action] {action} result={ok}")
+            if ok:
+                return action, True
+        return last_action, False
+
+    def apply_cell_fill_color(self, color: PaletteColor) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            action, ok, default_ok = self.set_cell_fill_color(color)
+            self.log(f"셀 배경색 적용: {color.name} {color.rgb}, action={action}, GetDefault={default_ok}, result={ok}")
+            if not ok:
+                messagebox.showwarning(
+                    "셀 배경색 적용 확인",
+                    "한글이 셀 배경색 적용을 실패로 반환했습니다.\n표 안의 셀을 선택한 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"셀 배경색 적용 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("셀 배경색 적용 실패", str(exc))
+
+    def set_cell_fill_color(self, color: PaletteColor) -> tuple[str, bool, bool]:
+        value = self.hwp_rgb(color)
+        pset = self.hwp.HParameterSet.HCellBorderFill
+        default_ok = bool(self.hwp.HAction.GetDefault("CellBorderFill", pset.HSet))
+
+        fill_targets = [pset.FillAttr]
+        try:
+            fill_targets.append(pset.SelCellsBorderFill.FillAttr)
+        except Exception:
+            pass
+
+        for fill in fill_targets:
+            try:
+                fill.WindowsBrush = 1
+            except Exception:
+                pass
+            try:
+                fill.WinBrushFaceStyle = 1
+            except Exception:
+                pass
+            fill.WinBrushFaceColor = value
+            fill.WinBrushHatchColor = value
+
+        action, ok = self.execute_first_hwp_action(("CellBorderFill", "CellBorder"), pset.HSet)
+        return action, ok, default_ok
+
+    def apply_text_color(self, color: PaletteColor) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            ok, default_ok = self.set_text_color(color)
+            self.log(f"글자색 적용: {color.name} {color.rgb}, GetDefault={default_ok}, result={ok}")
+            if not ok:
+                messagebox.showwarning(
+                    "글자색 적용 확인",
+                    "한글이 글자색 적용을 실패로 반환했습니다. 글자나 셀을 선택한 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"글자색 적용 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("글자색 적용 실패", str(exc))
+
+    def set_text_color(self, color: PaletteColor) -> tuple[bool, bool]:
+        value = self.hwp_rgb(color)
+        pset = self.hwp.HParameterSet.HCharShape
+        default_ok = bool(self.hwp.HAction.GetDefault("CharShape", pset.HSet))
+        pset.TextColor = value
+        ok = bool(self.hwp.HAction.Execute("CharShape", pset.HSet))
+        return ok, default_ok
+
+    def apply_style_by_name(self, style_name: str) -> bool:
+        self.refresh_current_doc_style_map()
+        record = self.current_doc_style_map.get(style_name)
+        if record is None:
+            self.debug(f"[title-cell] 스타일 이름 없음: {style_name}")
+            return False
+        pset = self.hwp.HParameterSet.HStyle
+        self.hwp.HAction.GetDefault("Style", pset.HSet)
+        pset.Apply = record.style_id
+        ok = bool(self.hwp.HAction.Execute("Style", pset.HSet))
+        self.debug(f"[title-cell] 스타일 적용 {style_name}, id={record.style_id}, result={ok}")
+        return ok
+
+    def line_type_value(self, kind: str) -> int:
+        if kind == "none":
+            return 0
+        candidates = {
+            "solid": ("Solid",),
+            "dot": ("Dot",),
+            "double": ("DoubleSlim", "SlimThick", "ThickSlim"),
+        }[kind]
+        for candidate in candidates:
+            try:
+                return int(self.hwp.HwpLineType(candidate))
+            except Exception:
+                continue
+        return 1
+
+    def line_width_value(self, width: str) -> int:
+        return int(self.hwp.HwpLineWidth(width))
+
+    def set_com_attr(self, target, attr: str, value) -> bool:
+        try:
+            setattr(target, attr, value)
+            return True
+        except Exception as attr_exc:
+            hset_targets = []
+            try:
+                hset_targets.append(target.HSet)
+            except Exception:
+                pass
+            if hasattr(target, "SetItem"):
+                hset_targets.append(target)
+            for hset in hset_targets:
+                try:
+                    hset.SetItem(attr, value)
+                    self.debug(f"[table-border] {attr} HSet.SetItem fallback 성공")
+                    return True
+                except Exception as hset_exc:
+                    self.debug(f"[table-border] {attr} HSet.SetItem 실패: {type(hset_exc).__name__}: {hset_exc}")
+            self.debug(f"[table-border] {attr} 설정 건너뜀: {type(attr_exc).__name__}: {attr_exc}")
+            return False
+
+    def set_hset_item(self, hset, item: str, value) -> bool:
+        try:
+            hset.SetItem(item, value)
+            return True
+        except Exception as exc:
+            self.debug(f"[table-border] HSet.{item} 설정 건너뜀: {type(exc).__name__}: {exc}")
+            return False
+
+    def line_values_for_preset(self, preset_key: str) -> tuple[int, int, int] | None:
+        preset = self.table_settings["line_presets"].get(preset_key)
+        if not preset:
+            return None
+        line_type = self.line_type_value(preset["type"])
+        width = self.line_width_value(preset["width"])
+        color = self.hwp_rgb(self.palette_color(preset["color"]))
+        return line_type, width, color
+
+    def set_border_edge(self, target, edge: str, line_type: int, width: int, color: int) -> None:
+        suffix = {"top": "Top", "bottom": "Bottom", "left": "Left", "right": "Right"}[edge]
+        self.set_com_attr(target, f"BorderType{suffix}", line_type)
+        self.set_com_attr(target, f"BorderWidth{suffix}", width)
+        self.set_com_attr(target, f"BorderColor{suffix}", color)
+        if edge == "left":
+            self.set_com_attr(target, "BorderCorlorLeft", color)
+
+    def set_border_edge_from_preset(self, target, edge: str, preset_key: str) -> None:
+        values = self.line_values_for_preset(preset_key)
+        if values is None:
+            return
+        self.set_border_edge(target, edge, *values)
+
+    def set_inside_border_from_preset(self, target, orientation: str, preset_key: str) -> None:
+        values = self.line_values_for_preset(preset_key)
+        if values is None:
+            return
+        line_type, width, color = values
+        if orientation == "horz":
+            self.set_com_attr(target, "TypeHorz", line_type)
+            self.set_com_attr(target, "WidthHorz", width)
+            self.set_com_attr(target, "ColorHorz", color)
+        else:
+            self.set_com_attr(target, "TypeVert", line_type)
+            self.set_com_attr(target, "WidthVert", width)
+            self.set_com_attr(target, "ColorVert", color)
+
+    def border_action_for_preset(self, preset_name: str) -> tuple[str, ...]:
+        return ("CellBorderFill", "CellBorder")
+
+    def apply_table_border_preset(self, preset_name: str) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            action, ok = self.set_table_border_preset(preset_name)
+            self.log(f"표 테두리 적용: {preset_name}, action={action}, result={ok}")
+            if not ok:
+                messagebox.showwarning("표 테두리 적용 확인", "표 셀을 선택한 상태인지 확인하세요.")
+        except Exception as exc:
+            self.log(f"표 테두리 적용 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("표 테두리 적용 실패", str(exc))
+
+    def set_table_border_preset(self, preset_name: str) -> tuple[str, bool]:
+        pset = self.hwp.HParameterSet.HCellBorderFill
+        self.hwp.HAction.GetDefault("CellBorderFill", pset.HSet)
+        self.prepare_border_scope(pset)
+        targets = [pset]
+        try:
+            targets.append(pset.SelCellsBorderFill)
+        except Exception:
+            pass
+
+        for target in targets:
+            if preset_name == "thin_all":
+                for edge in ("top", "bottom", "left", "right"):
+                    self.set_border_edge_from_preset(target, edge, "thin")
+                self.set_inside_border_from_preset(target, "horz", "thin")
+                self.set_inside_border_from_preset(target, "vert", "thin")
+            elif preset_name == "thick_top_bottom":
+                self.set_border_edge_from_preset(target, "top", "thick")
+                self.set_border_edge_from_preset(target, "bottom", "thick")
+                self.set_inside_border_from_preset(target, "horz", "thin")
+                self.set_inside_border_from_preset(target, "vert", "thin")
+            elif preset_name == "double_bottom":
+                self.set_border_edge_from_preset(target, "bottom", "double")
+            elif preset_name == "dotted_inside_horz":
+                self.set_inside_border_from_preset(target, "horz", "dotted")
+            elif preset_name == "dotted_inside_vert":
+                self.set_inside_border_from_preset(target, "vert", "dotted")
+            elif preset_name == "dotted_inside":
+                self.set_inside_border_from_preset(target, "horz", "dotted")
+                self.set_inside_border_from_preset(target, "vert", "dotted")
+            elif preset_name == "thin_inside_horz":
+                self.set_inside_border_from_preset(target, "horz", "thin")
+            elif preset_name == "thin_inside_vert":
+                self.set_inside_border_from_preset(target, "vert", "thin")
+            elif preset_name == "no_left_right":
+                self.set_border_edge_from_preset(target, "left", "none")
+                self.set_border_edge_from_preset(target, "right", "none")
+
+        return self.execute_first_hwp_action(self.border_action_for_preset(preset_name), pset.HSet)
+
+    def prepare_border_scope(self, pset) -> None:
+        # HWP 2026의 HCellBorderFill에는 ApplyBorderToEdge/NoNeighborCell 같은
+        # 범위 제어 속성이 노출되지 않는다. 여기서 억지로 설정하면 로그만
+        # 오염되고 동작 추적이 어려워져서 범위 제어는 매크로 기록으로 보완한다.
+        return
+
+    def border_scope_targets(self, pset) -> list:
+        targets = [pset]
+        try:
+            targets.append(pset.SelCellsBorderFill)
+        except Exception:
+            pass
+        try:
+            targets.append(pset.HSet)
+        except Exception:
+            pass
+        return targets
+
+    def set_title_cell_borders(self) -> tuple[str, bool]:
+        pset = self.hwp.HParameterSet.HCellBorderFill
+        self.hwp.HAction.GetDefault("CellBorderFill", pset.HSet)
+        self.prepare_border_scope(pset)
+        targets = [pset]
+        try:
+            targets.append(pset.SelCellsBorderFill)
+        except Exception:
+            pass
+
+        borders = self.table_settings["title_cell"]["borders"]
+        for target in targets:
+            self.set_border_edge_from_preset(target, "top", borders["top"])
+            self.set_border_edge_from_preset(target, "bottom", borders["bottom"])
+            self.set_border_edge_from_preset(target, "left", borders["left"])
+            self.set_border_edge_from_preset(target, "right", borders["right"])
+            self.set_inside_border_from_preset(target, "horz", borders["inside_horz"])
+            self.set_inside_border_from_preset(target, "vert", borders["inside_vert"])
+
+        return self.execute_first_hwp_action(("CellBorder",), pset.HSet)
+
+    def apply_title_cell_preset(self) -> None:
+        if not self.ensure_hwp():
+            return
+        title = self.table_settings["title_cell"]
+        results: list[str] = []
+
+        try:
+            bg_action, bg_ok, bg_default = self.set_cell_fill_color(self.palette_color(title["background_color"]))
+            results.append(f"배경={bg_ok}({bg_action}, default={bg_default})")
+        except Exception as exc:
+            results.append(f"배경 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 배경 실패: {exc}")
+
+        try:
+            border_action, border_ok = self.set_title_cell_borders()
+            results.append(f"테두리={border_ok}({border_action})")
+        except Exception as exc:
+            results.append(f"테두리 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 테두리 실패: {exc}")
+
+        try:
+            text_ok, text_default = self.set_text_color(self.palette_color(title["text_color"]))
+            results.append(f"글자색={text_ok}(default={text_default})")
+        except Exception as exc:
+            results.append(f"글자색 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 글자색 실패: {exc}")
+
+        try:
+            para_ok = self.apply_style_by_name(title["paragraph_style"])
+            results.append(f"문단스타일={para_ok}({title['paragraph_style']})")
+        except Exception as exc:
+            results.append(f"문단스타일 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 문단스타일 실패: {exc}")
+
+        char_style = title.get("character_style", "(적용 안 함)")
+        if char_style and char_style != "(적용 안 함)":
+            try:
+                char_ok = self.apply_style_by_name(char_style)
+                results.append(f"글자스타일={char_ok}({char_style})")
+            except Exception as exc:
+                results.append(f"글자스타일 실패:{type(exc).__name__}")
+                self.debug(f"[title-cell] 글자스타일 실패: {exc}")
+
+        self.log("제목셀 자동화: " + ", ".join(results))
+
+    def check_hwp(self) -> None:
+        try:
+            self.hwp = connect_hwp()
+            self.log(["한글 COM 연결 성공", *LAST_HWP_CONNECTION_LOG, *describe_hwp(self.hwp)])
+        except Exception as exc:
+            messagebox.showerror("한글 연결 실패", str(exc))
+            self.log(f"한글 COM 연결 실패: {exc}")
+
+    def on_global_undo(self, event=None):
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, (tk.Text, tk.Entry, ttk.Entry, ttk.Combobox)):
+            return None
+        self.undo_hwp()
+        return "break"
+
+    def undo_hwp(self) -> None:
+        if not self.ensure_hwp():
+            return
+        ok = self.run_hwp_command("Undo")
+        self.log(f"한글 실행취소: result={ok}")
+        if not ok:
+            messagebox.showwarning("실행취소 실패", "한글 실행취소 명령이 실패했습니다.")
+
+    def show_current_target(self) -> None:
+        try:
+            if self.hwp is None:
+                self.hwp = connect_hwp()
+            self.refresh_current_doc_style_map()
+            self.log(["현재 한글 적용 대상", *LAST_HWP_CONNECTION_LOG, *describe_hwp(self.hwp)])
+        except Exception as exc:
+            self.log(f"현재 대상 확인 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("현재 대상 확인 실패", str(exc))
+
+    def open_style_test_copy(self) -> None:
+        try:
+            if not STYLE_FILE.exists():
+                raise FileNotFoundError(STYLE_FILE)
+            TEST_OUTPUT_DIR.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            target = TEST_OUTPUT_DIR / f"style-test-{stamp}.hwpx"
+            shutil.copy2(STYLE_FILE, target)
+
+            if self.hwp is None:
+                self.debug("[hwp] COM 연결 시작")
+                self.hwp = connect_hwp()
+                self.debug(f"[hwp] COM 연결 성공 version={self.hwp.Version}")
+                for line in LAST_HWP_CONNECTION_LOG:
+                    self.debug(line)
+            try:
+                self.hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
+            except Exception:
+                pass
+            try:
+                self.hwp.RegisterModule("FilePathCheckerDLL", "FilePathCheckerModule")
+            except Exception:
+                pass
+            ok = self.hwp.Open(str(target), "HWPX", "")
+            self.log(f"서식 테스트 문서 열기: {target.name}, result={ok}")
+            self.current_doc_style_path = None
+            self.current_doc_style_map = {}
+            self.refresh_current_doc_style_map()
+            if ok:
+                messagebox.showinfo(
+                    "테스트 문서 열림",
+                    "서식 파일 복사본을 열었습니다.\n한글 문서에서 문단을 클릭한 뒤 스타일 목록을 클릭해보세요.",
+                )
+        except Exception as exc:
+            self.log(f"서식 테스트 문서 열기 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("서식 테스트 문서 열기 실패", str(exc))
+
+    def on_style_selected(self, _event=None) -> None:
+        if self._refreshing or not self.apply_on_select.get():
+            return
+        # Tk listbox selection event can fire before the new selection is fully settled.
+        self.after_idle(lambda: self.apply_selected_style(reason="single-click"))
+
+    def get_current_hwp_path(self) -> Path | None:
+        if self.hwp is None:
+            return None
+        try:
+            raw_path = safe_str(self.hwp.Path)
+        except Exception:
+            return None
+        if not raw_path:
+            return None
+        return Path(raw_path)
+
+    def refresh_current_doc_style_map(self) -> None:
+        path = self.get_current_hwp_path()
+        if path is None:
+            self.current_doc_style_path = None
+            self.current_doc_style_map = {}
+            self.debug("[style-map] 현재 문서 경로를 확인하지 못함")
+            return
+
+        if path == self.current_doc_style_path and self.current_doc_style_map:
+            return
+
+        self.current_doc_style_path = path
+        self.current_doc_style_map = {}
+        if path.suffix.lower() != ".hwpx":
+            self.debug(f"[style-map] 현재 문서가 hwpx가 아니어서 이름 매칭 불가: {path}")
+            return
+        if not path.exists():
+            self.debug(f"[style-map] 현재 문서 파일을 디스크에서 찾지 못함: {path}")
+            return
+
+        records = read_style_records(path)
+        self.current_doc_style_map = {record.name: record for record in records}
+        matched = sum(1 for record in self.style_records if record.name in self.current_doc_style_map)
+        self.debug(f"[style-map] 현재 문서 스타일 {len(records)}개 읽음: {path}")
+        self.debug(f"[style-map] 기준 서식과 이름 일치 {matched}/{len(self.style_records)}개")
+
+    def apply_selected_style(self, reason: str = "manual") -> None:
+        selection = self.style_list.curselection()
+        if not selection:
+            messagebox.showwarning("스타일 선택 필요", "적용할 스타일을 먼저 선택하세요.")
+            return
+
+        record = self.style_records[selection[0]]
+        self.debug(f"[style] 요청 reason={reason}, id={record.style_id}, type={record.style_type}, name={record.name}")
+        if record.style_type != "PARA":
+            self.debug(f"[style] 글자 스타일 적용 시도: type={record.style_type}, name={record.name}")
+
+        try:
+            if self.hwp is None:
+                self.debug("[hwp] COM 연결 시작")
+                self.hwp = connect_hwp()
+                self.debug("[hwp] COM 연결 성공")
+                for line in LAST_HWP_CONNECTION_LOG:
+                    self.debug(line)
+                for line in describe_hwp(self.hwp):
+                    self.debug(f"[hwp] {line}")
+            self.refresh_current_doc_style_map()
+            target_record = self.current_doc_style_map.get(record.name)
+            if target_record is None:
+                current_path = self.get_current_hwp_path()
+                msg = (
+                    f"현재 문서에서 `{record.name}` 스타일 이름을 찾지 못했습니다.\n\n"
+                    f"현재 문서: {current_path or '(경로 확인 실패)'}\n"
+                    "현재 문서에 같은 이름의 스타일이 들어 있어야 이름 기준 적용이 가능합니다."
+                )
+                self.log(f"스타일 이름 매칭 실패: name={record.name}, current_doc={current_path}")
+                messagebox.showwarning("스타일 이름 없음", msg)
+                return
+
+            style_set = self.hwp.HParameterSet.HStyle
+            default_ok = self.hwp.HAction.GetDefault("Style", style_set.HSet)
+            before_apply = style_set.Apply
+            self.debug(f"[style] GetDefault result={default_ok}, before Apply={before_apply}")
+            style_set.Apply = target_record.style_id
+            ok = self.hwp.HAction.Execute("Style", style_set.HSet)
+            self.log(
+                "스타일 적용 요청: "
+                f"name={record.name}, 기준id={record.style_id}, 현재문서id={target_record.style_id}, "
+                f"type={target_record.style_type}, result={ok}"
+            )
+            for line in describe_hwp(self.hwp):
+                self.debug(f"[hwp-after] {line}")
+            if not ok:
+                messagebox.showwarning(
+                    "스타일 적용 결과 확인 필요",
+                    "한글이 스타일 적용 명령을 실패로 반환했습니다. 현재 문서에 같은 스타일 세트가 있는지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"스타일 적용 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(
+                "스타일 적용 실패",
+                f"{exc}\n\n현재 문서에 같은 스타일 세트가 없거나, 선택 영역 상태가 맞지 않을 수 있습니다.",
+            )
+
+    def run_hwp_command(self, command: str) -> bool:
+        for runner in (
+            lambda: self.hwp.HAction.Run(command),
+            lambda: self.hwp.Run(command),
+        ):
+            try:
+                return bool(runner())
+            except Exception:
+                continue
+        return False
+
+    def get_clipboard_text(self) -> str:
+        if win32clipboard is None:
+            raise RuntimeError("win32clipboard를 사용할 수 없습니다.")
+        win32clipboard.OpenClipboard()
+        try:
+            if not win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                return ""
+            return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
+
+    def set_clipboard_text(self, text: str) -> None:
+        if win32clipboard is None:
+            raise RuntimeError("win32clipboard를 사용할 수 없습니다.")
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+        finally:
+            win32clipboard.CloseClipboard()
+
+    def transform_selected_text(self, label: str, transform) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            copy_ok = self.run_hwp_command("Copy")
+            time.sleep(0.08)
+            text = self.get_clipboard_text()
+            if not copy_ok or not text:
+                messagebox.showwarning(label, "한글에서 변환할 글자 영역을 먼저 선택하세요.")
+                self.log(f"{label}: 선택 텍스트 없음")
+                return
+            transformed = transform(text)
+            if transformed == text:
+                self.log(f"{label}: 변경 없음")
+                return
+            self.set_clipboard_text(transformed)
+            paste_ok = self.run_hwp_command("Paste")
+            self.log(f"{label}: Copy={copy_ok}, Paste={paste_ok}, {len(text)}자 -> {len(transformed)}자")
+            if not paste_ok:
+                messagebox.showwarning(label, "변환 텍스트를 클립보드에 넣었지만 한글 붙여넣기가 실패했습니다.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def clean_selected_line_breaks(self) -> None:
+        self.transform_selected_text("줄바꿈/띄어쓰기 정리", clean_manual_line_breaks)
+
+    def add_commas_to_selection(self) -> None:
+        self.transform_selected_text("천원단위 쉼표 넣기", add_thousand_commas)
+
+    def remove_commas_from_selection(self) -> None:
+        self.transform_selected_text("쉼표 빼기", remove_number_commas)
+
+    def palette_color_or_rgb(self, name: str, rgb: tuple[int, int, int]) -> PaletteColor:
+        for color in self.palette:
+            if color.name == name or color.rgb == rgb:
+                return color
+        return PaletteColor(name=name, rgb=rgb, hex_value=rgb_to_hex(rgb), purpose="임시 색상")
+
+    def clean_excel_table(self) -> None:
+        if not self.ensure_hwp():
+            return
+        results: list[str] = []
+        try:
+            fill_action, fill_ok, fill_default = self.set_cell_fill_color(self.palette_color_or_rgb("흰색", (255, 255, 255)))
+            results.append(f"배경={fill_ok}({fill_action}, default={fill_default})")
+        except Exception as exc:
+            results.append(f"배경 실패:{type(exc).__name__}")
+            self.debug(f"[excel-table] 배경 실패: {exc}")
+
+        try:
+            text_ok, text_default = self.set_text_color(self.palette_color_or_rgb("검정", (0, 0, 0)))
+            results.append(f"글자색={text_ok}(default={text_default})")
+        except Exception as exc:
+            results.append(f"글자색 실패:{type(exc).__name__}")
+            self.debug(f"[excel-table] 글자색 실패: {exc}")
+
+        try:
+            border_action, border_ok = self.set_table_border_preset("thin_all")
+            results.append(f"얇은전체={border_ok}({border_action})")
+        except Exception as exc:
+            results.append(f"테두리 실패:{type(exc).__name__}")
+            self.debug(f"[excel-table] 테두리 실패: {exc}")
+
+        try:
+            para_ok = self.apply_style_by_name("표내용-중간")
+            results.append(f"문단스타일={para_ok}(표내용-중간)")
+        except Exception as exc:
+            results.append(f"문단스타일 실패:{type(exc).__name__}")
+            self.debug(f"[excel-table] 문단스타일 실패: {exc}")
+
+        self.log("엑셀표 정리: " + ", ".join(results))
+
+    def add_commas_ui(self) -> None:
+        text = self.cleanup_input.get("1.0", "end-1c")
+        self.cleanup_input.delete("1.0", "end")
+        self.cleanup_input.insert("1.0", add_thousand_commas(text))
+
+    def remove_commas_ui(self) -> None:
+        text = self.cleanup_input.get("1.0", "end-1c")
+        self.cleanup_input.delete("1.0", "end")
+        self.cleanup_input.insert("1.0", remove_number_commas(text))
+
+
+def smoke_test() -> int:
+    print(f"ROOT={ROOT}")
+    print(f"styles={len(read_style_records())}")
+    print(f"cover={read_cover_placeholders()}")
+    print(f"logos={len(list_logos())}")
+    print(f"commas={add_thousand_commas('1234567 2026-07-15 051-123-4567')}")
+    print(f"remove={remove_number_commas('1,234,567')}")
+    try:
+        hwp = connect_hwp()
+        for line in LAST_HWP_CONNECTION_LOG:
+            print(line)
+        print(f"hwp_version={hwp.Version}")
+        print(f"hwp_docs={hwp.XHwpDocuments.Count}")
+    except Exception as exc:
+        print(f"hwp_error={type(exc).__name__}: {exc}")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    if "--smoke" in sys.argv:
+        raise SystemExit(smoke_test())
+    app = MvpApp()
+    app.mainloop()

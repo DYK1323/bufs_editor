@@ -1,0 +1,104 @@
+{
+  "palette": [
+    {
+      "name": "노랑",
+      "rgb": [
+        255,
+        203,
+        5
+      ],
+      "purpose": "제목 셀, 강조 셀"
+    },
+    {
+      "name": "진회색",
+      "rgb": [
+        85,
+        85,
+        85
+      ],
+      "purpose": "보조 글자색, 진한 선"
+    },
+    {
+      "name": "회색",
+      "rgb": [
+        150,
+        150,
+        150
+      ],
+      "purpose": "보조선, 약한 글자색"
+    },
+    {
+      "name": "연회색",
+      "rgb": [
+        204,
+        204,
+        204
+      ],
+      "purpose": "표 셀 배경, 구분 배경"
+    },
+    {
+      "name": "검정",
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "purpose": "기본 글자색"
+    },
+    {
+      "name": "흰색",
+      "rgb": [
+        255,
+        255,
+        255
+      ],
+      "purpose": "반전 글자색, 흰 배경"
+    }
+  ],
+  "line_presets": {
+    "thin": {
+      "label": "얇은 선",
+      "width": "0.12mm",
+      "type": "solid",
+      "color": "진회색"
+    },
+    "thick": {
+      "label": "굵은 선",
+      "width": "0.3mm",
+      "type": "solid",
+      "color": "진회색"
+    },
+    "double": {
+      "label": "이중 선",
+      "width": "0.7mm",
+      "type": "double",
+      "color": "진회색"
+    },
+    "dotted": {
+      "label": "점선",
+      "width": "0.12mm",
+      "type": "dot",
+      "color": "진회색"
+    },
+    "none": {
+      "label": "선 없음",
+      "width": "0.12mm",
+      "type": "none",
+      "color": "흰색"
+    }
+  },
+  "title_cell": {
+    "background_color": "연회색",
+    "text_color": "검정",
+    "paragraph_style": "표내용-중간",
+    "character_style": "표내용-굵게",
+    "borders": {
+      "top": "thick",
+      "bottom": "double",
+      "left": "none",
+      "right": "none",
+      "inside_horz": "thin",
+      "inside_vert": "thin"
+    }
+  }
+}
