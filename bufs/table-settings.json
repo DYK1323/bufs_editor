@@ -53,6 +53,15 @@
         255
       ],
       "purpose": "반전 글자색, 흰 배경"
+    },
+    {
+      "name": "셀배경",
+      "rgb": [
+        220,
+        221,
+        221
+      ],
+      "purpose": ""
     }
   ],
   "line_presets": {
@@ -88,17 +97,38 @@
     }
   },
   "title_cell": {
-    "background_color": "연회색",
+    "background_color": "셀배경",
     "text_color": "검정",
     "paragraph_style": "표내용-중간",
     "character_style": "표내용-굵게",
     "borders": {
-      "top": "thick",
-      "bottom": "double",
+      "top": "thin",
+      "bottom": "thin",
       "left": "none",
       "right": "none",
       "inside_horz": "thin",
       "inside_vert": "thin"
     }
+  },
+  "table_margins": {
+    "cell_left": "2",
+    "cell_right": "2",
+    "cell_top": "2",
+    "cell_bottom": "2",
+    "outside_left": "0",
+    "outside_right": "0",
+    "outside_top": "0",
+    "outside_bottom": "3"
+  },
+  "hotkeys": {
+    "title_cell": "",
+    "cell_shape_copy_paste": "",
+    "markdown_table": "",
+    "add_commas": "",
+    "remove_commas": "",
+    "clean_line_breaks": "",
+    "clean_outline": "Ctrl+Alt+F9",
+    "weekday": "",
+    "undo": ""
   }
 }
