@@ -993,6 +993,14 @@ class MvpApp(tk.Tk):
         ttk.Button(frame, text="Markdown 표 → 한글 표", command=self.convert_selected_markdown_table).pack(
             fill="x", pady=(0, 12)
         )
+        autonum_row = ttk.Frame(frame)
+        autonum_row.pack(fill="x", pady=(0, 12))
+        ttk.Button(autonum_row, text="표 번호 넣기", command=lambda: self.insert_auto_number(4, "표 번호")).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(autonum_row, text="그림 번호 넣기", command=lambda: self.insert_auto_number(3, "그림 번호")).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
 
         ttk.Label(frame, text="셀 배경색").pack(anchor="w")
         bg_row = ttk.Frame(frame)
@@ -1782,6 +1790,24 @@ class MvpApp(tk.Tk):
         except Exception as exc:
             self.log(f"셀 속성 복사/적용 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror("셀 속성 복사/적용 실패", str(exc))
+
+    def insert_auto_number(self, num_type: int, label: str) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            pset = self.hwp.HParameterSet.HAutoNum
+            default_ok = self.hwp.HAction.GetDefault("AutoNum", pset.HSet)
+            self.debug(f"[auto-num] GetDefault AutoNum={default_ok}, NumType={num_type}")
+            self.set_com_attr(pset, "NumType", num_type)
+            action, ok = self.execute_first_hwp_action(("AutoNum",), pset.HSet)
+            self.log(f"{label} 넣기: action={action}, NumType={num_type}, result={ok}")
+            if ok:
+                self.activate_hwp_window()
+            else:
+                messagebox.showwarning(f"{label} 넣기 확인", "한글의 입력 가능한 위치에 커서를 둔 뒤 다시 실행하세요.")
+        except Exception as exc:
+            self.log(f"{label} 넣기 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 넣기 실패", str(exc))
 
     def apply_table_outside_margins(self) -> None:
         if not self.ensure_hwp():
