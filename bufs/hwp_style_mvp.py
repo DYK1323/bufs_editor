@@ -45,11 +45,13 @@ try:
     import pythoncom
     import win32clipboard
     import win32com.client
+    import win32con
     import win32gui
 except Exception:
     win32com = None  # type: ignore[assignment]
     pythoncom = None  # type: ignore[assignment]
     win32clipboard = None  # type: ignore[assignment]
+    win32con = None  # type: ignore[assignment]
     win32gui = None  # type: ignore[assignment]
 
 
@@ -317,6 +319,48 @@ def remove_number_commas(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
 
 
+def strip_wrapping_blank_lines(text: str) -> str:
+    return re.sub(r"\A(?:[ \t]*[\r\n]+)+|(?:[\r\n]+[ \t]*)+\Z", "", text)
+
+
+DATE_RE = re.compile(
+    r"(?<!\d)"
+    r"(?P<year>\d{4})"
+    r"(?:\s*년\s*|\s*\.\s*)"
+    r"(?P<month>\d{1,2})"
+    r"(?:\s*월\s*|\s*\.\s*)"
+    r"(?P<day>\d{1,2})"
+    r"(?:\s*일|\s*\.)?"
+    r"(?!\d)"
+)
+
+
+def normalize_dates(text: str, style: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        year = int(match.group("year"))
+        month = int(match.group("month"))
+        day = int(match.group("day"))
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            return match.group(0)
+        if style == "korean":
+            return f"{year}년 {month}월 {day}일"
+        if style == "dot":
+            return f"{year}. {month}. {day}."
+        if style == "dot_padded":
+            return f"{year}. {month:02d}. {day:02d}."
+        return match.group(0)
+
+    return DATE_RE.sub(repl, text)
+
+
+def looks_like_multiline_number_block(text: str) -> bool:
+    lines = [line.strip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    values = [line for line in lines if line]
+    if len(values) < 2:
+        return False
+    return all(re.fullmatch(r"-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d{4,}(?:\.\d+)?", value) for value in values)
+
+
 def clean_manual_line_breaks(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+\n", "\n", text)
@@ -348,6 +392,21 @@ def clean_manual_line_breaks(text: str) -> str:
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned
+
+
+HORIZONTAL_SPACE = r"[^\S\r\n\u2028\u2029]"
+OUTLINE_MARK = r"[^A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ\s]"
+OUTLINE_PREFIX_RE = re.compile(rf"(?m)^{HORIZONTAL_SPACE}*{OUTLINE_MARK}+{HORIZONTAL_SPACE}*")
+
+
+def remove_manual_outline_prefix(text: str) -> str:
+    # 수동으로 넣은 들여쓰기 공백 + 글머리 특수문자를 걷어낸다.
+    # 예: "   ◦ 본문", "  -본문", "    >> 본문" -> "본문"
+    return OUTLINE_PREFIX_RE.sub("", text, count=1)
+
+
+def remove_manual_outline_prefixes(text: str) -> str:
+    return OUTLINE_PREFIX_RE.sub("", text)
 
 
 def connect_hwp():
@@ -396,6 +455,29 @@ def get_foreground_title() -> str:
         return win32gui.GetWindowText(hwnd) or ""
     except Exception:
         return ""
+
+
+def list_visible_window_titles() -> list[tuple[int, str]]:
+    if win32gui is None:
+        return []
+
+    windows: list[tuple[int, str]] = []
+
+    def collect(hwnd, _extra):
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+            title = win32gui.GetWindowText(hwnd) or ""
+            if title:
+                windows.append((hwnd, title))
+        except Exception:
+            return
+
+    try:
+        win32gui.EnumWindows(collect, None)
+    except Exception:
+        return []
+    return windows
 
 
 def list_hwp_candidates() -> list[HwpCandidate]:
@@ -543,7 +625,6 @@ class MvpApp(tk.Tk):
         self._build_status_tab()
         self._build_styles_tab()
         self._build_table_tab()
-        self._build_cleanup_tab()
         self._build_cover_logo_tab()
         self.bind_all("<Control-z>", self.on_global_undo)
         self.bind_all("<Control-Z>", self.on_global_undo)
@@ -564,21 +645,24 @@ class MvpApp(tk.Tk):
 
     def _build_styles_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
-        self.notebook.add(frame, text="스타일")
+        self.notebook.add(frame, text="스타일/정리")
 
-        ttk.Label(frame, text="bufs/보고서 본문 서식.hwpx에서 읽은 스타일 이름").pack(anchor="w")
-        self.style_list = tk.Listbox(frame, height=34)
+        style_group = ttk.LabelFrame(frame, text="스타일 적용", padding=8)
+        style_group.pack(fill="both", expand=True)
+
+        ttk.Label(style_group, text="bufs/보고서 본문 서식.hwpx에서 읽은 스타일 이름").pack(anchor="w")
+        self.style_list = tk.Listbox(style_group, height=25)
         self.style_list.pack(fill="both", expand=True, pady=(8, 0))
         self.style_list.bind("<<ListboxSelect>>", self.on_style_selected)
         self.style_list.bind("<Double-Button-1>", lambda _event: self.apply_selected_style(reason="double-click"))
 
         ttk.Label(
-            frame,
+            style_group,
             text="스타일을 클릭하면 이름 기준으로 현재 문서의 같은 스타일을 찾아 즉시 적용합니다.",
             wraplength=390,
         ).pack(anchor="w", pady=(8, 0))
 
-        row1 = ttk.Frame(frame)
+        row1 = ttk.Frame(style_group)
         row1.pack(fill="x", pady=(8, 0))
         ttk.Checkbutton(row1, text="클릭 즉시 적용", variable=self.apply_on_select).pack(side="left")
         ttk.Button(row1, text="다시 적용", command=lambda: self.apply_selected_style(reason="button")).pack(
@@ -586,16 +670,18 @@ class MvpApp(tk.Tk):
         )
         ttk.Button(row1, text="연결 확인", command=self.check_hwp).pack(side="left", padx=(8, 0))
 
-        row2 = ttk.Frame(frame)
+        row2 = ttk.Frame(style_group)
         row2.pack(fill="x", pady=(5, 0))
         ttk.Button(row2, text="대상 확인", command=self.show_current_target).pack(side="left")
         ttk.Button(row2, text="테스트 문서 열기", command=self.open_style_test_copy).pack(side="left", padx=(8, 0))
 
-        row3 = ttk.Frame(frame)
+        row3 = ttk.Frame(style_group)
         row3.pack(fill="x", pady=(5, 0))
         ttk.Button(row3, text="위로", command=lambda: self.move_selected_style(-1)).pack(side="left")
         ttk.Button(row3, text="아래로", command=lambda: self.move_selected_style(1)).pack(side="left", padx=(8, 0))
         ttk.Button(row3, text="기본순서", command=self.reset_style_order).pack(side="left", padx=(8, 0))
+
+        self.build_cleanup_controls(frame)
 
     def _build_table_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
@@ -888,47 +974,60 @@ class MvpApp(tk.Tk):
         ttk.Button(buttons, text="저장", command=save_and_close).pack(side="left")
         ttk.Button(buttons, text="취소", command=window.destroy).pack(side="left", padx=(8, 0))
 
-    def _build_cleanup_tab(self) -> None:
-        frame = ttk.Frame(self.notebook, padding=8)
-        self.notebook.add(frame, text="정리")
+    def build_cleanup_controls(self, parent: ttk.Frame) -> None:
+        cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=8)
+        cleanup_group.pack(fill="x", pady=(8, 0))
 
-        ttk.Label(frame, text="선택 영역 정리").pack(anchor="w")
-        hwp_buttons1 = ttk.Frame(frame)
+        hwp_buttons1 = ttk.Frame(cleanup_group)
         hwp_buttons1.pack(fill="x", pady=(8, 0))
         ttk.Button(hwp_buttons1, text="줄바꿈/띄어쓰기 정리", command=self.clean_selected_line_breaks).pack(
             side="left", fill="x", expand=True
         )
-        ttk.Button(hwp_buttons1, text="천원단위 쉼표 넣기", command=self.add_commas_to_selection).pack(
+        ttk.Button(hwp_buttons1, text="개요 기호 제거", command=self.clean_selected_outline_prefixes).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
 
-        hwp_buttons2 = ttk.Frame(frame)
-        hwp_buttons2.pack(fill="x", pady=(6, 12))
-        ttk.Button(hwp_buttons2, text="쉼표 빼기", command=self.remove_commas_from_selection).pack(
+        number_group = ttk.LabelFrame(parent, text="숫자 정리", padding=8)
+        number_group.pack(fill="x", pady=(8, 0))
+        number_buttons = ttk.Frame(number_group)
+        number_buttons.pack(fill="x")
+        ttk.Button(number_buttons, text="천원단위 쉼표 넣기", command=self.add_commas_to_selection).pack(
             side="left", fill="x", expand=True
         )
-        ttk.Button(hwp_buttons2, text="엑셀표 정리", command=self.clean_excel_table).pack(
+        ttk.Button(number_buttons, text="쉼표 빼기", command=self.remove_commas_from_selection).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
-        hwp_buttons3 = ttk.Frame(frame)
-        hwp_buttons3.pack(fill="x", pady=(0, 12))
-        ttk.Button(hwp_buttons3, text="실행취소", command=self.undo_hwp).pack(side="left", fill="x", expand=True)
+
+        date_group = ttk.LabelFrame(parent, text="날짜 정규화", padding=8)
+        date_group.pack(fill="x", pady=(8, 0))
+        date_buttons = ttk.Frame(date_group)
+        date_buttons.pack(fill="x")
+        ttk.Button(date_buttons, text="0000년 0월 0일", command=self.normalize_dates_to_korean).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(date_buttons, text="0000. 0. 0.", command=self.normalize_dates_to_dot).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        ttk.Button(date_buttons, text="0000. 00. 00.", command=self.normalize_dates_to_dot_padded).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        table_group = ttk.LabelFrame(parent, text="표 정리/되돌리기", padding=8)
+        table_group.pack(fill="x", pady=(8, 0))
+        table_buttons = ttk.Frame(table_group)
+        table_buttons.pack(fill="x")
+        ttk.Button(table_buttons, text="엑셀표 정리", command=self.clean_excel_table).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(table_buttons, text="실행취소", command=self.undo_hwp).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
 
         ttk.Label(
-            frame,
-            text="위 버튼은 한글에서 글자/셀을 선택한 상태로 사용합니다.",
+            parent,
+            text="정리 버튼은 한글에서 글자나 표 셀을 선택한 상태로 사용합니다.",
             wraplength=390,
-        ).pack(anchor="w", pady=(0, 14))
-
-        ttk.Label(frame, text="숫자 쉼표 변환 테스트").pack(anchor="w")
-        self.cleanup_input = tk.Text(frame, height=8, wrap="word")
-        self.cleanup_input.pack(fill="x", pady=(8, 8))
-        self.cleanup_input.insert("1.0", "1234567\n1,234,567\n2026-07-15\n051-123-4567")
-
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x")
-        ttk.Button(buttons, text="테스트 쉼표 넣기", command=self.add_commas_ui).pack(side="left")
-        ttk.Button(buttons, text="테스트 쉼표 빼기", command=self.remove_commas_ui).pack(side="left", padx=(8, 0))
+        ).pack(anchor="w", pady=(8, 0))
 
     def _build_cover_logo_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
@@ -1123,6 +1222,9 @@ class MvpApp(tk.Tk):
         ok = bool(self.hwp.HAction.Execute("CharShape", pset.HSet))
         return ok, default_ok
 
+    def configure_style_apply_set(self, pset, style_id: int) -> None:
+        pset.Apply = style_id
+
     def apply_style_by_name(self, style_name: str) -> bool:
         self.refresh_current_doc_style_map()
         record = self.current_doc_style_map.get(style_name)
@@ -1131,9 +1233,12 @@ class MvpApp(tk.Tk):
             return False
         pset = self.hwp.HParameterSet.HStyle
         self.hwp.HAction.GetDefault("Style", pset.HSet)
-        pset.Apply = record.style_id
+        self.configure_style_apply_set(pset, record.style_id)
         ok = bool(self.hwp.HAction.Execute("Style", pset.HSet))
-        self.debug(f"[title-cell] 스타일 적용 {style_name}, id={record.style_id}, result={ok}")
+        self.debug(
+            f"[title-cell] 스타일 적용 {style_name}, id={record.style_id}, type={record.style_type}, "
+            f"result={ok}"
+        )
         return ok
 
     def line_type_value(self, kind: str) -> int:
@@ -1510,8 +1615,8 @@ class MvpApp(tk.Tk):
             default_ok = self.hwp.HAction.GetDefault("Style", style_set.HSet)
             before_apply = style_set.Apply
             self.debug(f"[style] GetDefault result={default_ok}, before Apply={before_apply}")
-            style_set.Apply = target_record.style_id
-            ok = self.hwp.HAction.Execute("Style", style_set.HSet)
+            self.configure_style_apply_set(style_set, target_record.style_id)
+            ok = bool(self.hwp.HAction.Execute("Style", style_set.HSet))
             self.log(
                 "스타일 적용 요청: "
                 f"name={record.name}, 기준id={record.style_id}, 현재문서id={target_record.style_id}, "
@@ -1531,6 +1636,14 @@ class MvpApp(tk.Tk):
                 f"{exc}\n\n현재 문서에 같은 스타일 세트가 없거나, 선택 영역 상태가 맞지 않을 수 있습니다.",
             )
 
+    def run_first_hwp_command(self, commands: tuple[str, ...]) -> tuple[str, bool]:
+        last = commands[-1]
+        for command in commands:
+            last = command
+            if self.run_hwp_command(command):
+                return command, True
+        return last, False
+
     def run_hwp_command(self, command: str) -> bool:
         for runner in (
             lambda: self.hwp.HAction.Run(command),
@@ -1542,28 +1655,95 @@ class MvpApp(tk.Tk):
                 continue
         return False
 
+    def activate_hwp_window(self) -> bool:
+        if win32gui is None:
+            return False
+
+        path = self.get_current_hwp_path()
+        names: list[str] = []
+        if path is not None:
+            names.extend([path.name, path.stem])
+
+        candidates: list[tuple[int, str, int]] = []
+        for hwnd, title in list_visible_window_titles():
+            if "한글" not in title:
+                continue
+            score = 10
+            for name in names:
+                if name and name in title:
+                    score += 100
+                    break
+            if title.endswith("- 한글"):
+                score += 20
+            candidates.append((hwnd, title, score))
+
+        if not candidates:
+            return False
+
+        hwnd, title, _score = sorted(candidates, key=lambda item: item[2], reverse=True)[0]
+        try:
+            if win32con is not None:
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            else:
+                win32gui.ShowWindow(hwnd, 9)
+        except Exception:
+            pass
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+            self.debug(f"[hwp-focus] 한글 창 활성화: {title}")
+            return True
+        except Exception as exc:
+            self.debug(f"[hwp-focus] 한글 창 활성화 실패: {type(exc).__name__}: {exc}")
+            return False
+
     def get_clipboard_text(self) -> str:
         if win32clipboard is None:
             raise RuntimeError("win32clipboard를 사용할 수 없습니다.")
-        win32clipboard.OpenClipboard()
-        try:
-            if not win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
-                return ""
-            return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
-        finally:
-            win32clipboard.CloseClipboard()
+        last_exc = None
+        for _ in range(5):
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    if not win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_UNICODETEXT):
+                        return ""
+                    return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        raise RuntimeError(f"클립보드 읽기 실패: {last_exc}")
 
     def set_clipboard_text(self, text: str) -> None:
         if win32clipboard is None:
             raise RuntimeError("win32clipboard를 사용할 수 없습니다.")
-        win32clipboard.OpenClipboard()
-        try:
-            win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
-        finally:
-            win32clipboard.CloseClipboard()
+        last_exc = None
+        for _ in range(5):
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    win32clipboard.EmptyClipboard()
+                    if hasattr(win32clipboard, "SetClipboardText"):
+                        win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
+                    else:
+                        win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+                    return
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(0.05)
+        raise RuntimeError(f"클립보드 쓰기 실패: {last_exc}")
 
-    def transform_selected_text(self, label: str, transform) -> None:
+    def transform_selected_text(
+        self,
+        label: str,
+        transform,
+        *,
+        block_multiline_number_block: bool = False,
+        strip_wrapping_lines: bool = False,
+        reselect_current_cell: bool = False,
+    ) -> None:
         if not self.ensure_hwp():
             return
         try:
@@ -1574,13 +1754,41 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(label, "한글에서 변환할 글자 영역을 먼저 선택하세요.")
                 self.log(f"{label}: 선택 텍스트 없음")
                 return
-            transformed = transform(text)
-            if transformed == text:
-                self.log(f"{label}: 변경 없음")
+            if block_multiline_number_block and looks_like_multiline_number_block(text):
+                self.log(f"{label}: 여러 셀 숫자 블록으로 보여 자동 붙여넣기 중단")
+                messagebox.showwarning(
+                    label,
+                    "여러 표 셀을 한 번에 선택한 숫자 블록은 한글 붙여넣기에서 셀 내용이 흐트러질 수 있어 중단했습니다.\n\n"
+                    "방금처럼 셀이 깨진 경우 한글에서 Ctrl+Z로 되돌린 뒤, 우선 한 셀 안의 텍스트만 선택해서 실행하세요.",
+                )
+                return
+            source_text = strip_wrapping_blank_lines(text) if strip_wrapping_lines else text
+            if not source_text:
+                self.log(f"{label}: 선택 텍스트가 빈 줄만 포함")
+                if reselect_current_cell:
+                    self.run_hwp_command("TableCellBlock")
+                    self.activate_hwp_window()
+                return
+            transformed = transform(source_text)
+            if transformed == source_text:
+                cell_selected = False
+                if reselect_current_cell:
+                    cell_selected = self.run_hwp_command("TableCellBlock")
+                    self.activate_hwp_window()
+                self.log(f"{label}: 변경 없음, CellReselect={cell_selected}")
                 return
             self.set_clipboard_text(transformed)
             paste_ok = self.run_hwp_command("Paste")
-            self.log(f"{label}: Copy={copy_ok}, Paste={paste_ok}, {len(text)}자 -> {len(transformed)}자")
+            cell_selected = False
+            if paste_ok and reselect_current_cell:
+                time.sleep(0.03)
+                cell_selected = self.run_hwp_command("TableCellBlock")
+            if paste_ok:
+                self.activate_hwp_window()
+            self.log(
+                f"{label}: Copy={copy_ok}, Paste={paste_ok}, "
+                f"CellReselect={cell_selected}, {len(text)}자 -> {len(transformed)}자"
+            )
             if not paste_ok:
                 messagebox.showwarning(label, "변환 텍스트를 클립보드에 넣었지만 한글 붙여넣기가 실패했습니다.")
         except Exception as exc:
@@ -1590,11 +1798,50 @@ class MvpApp(tk.Tk):
     def clean_selected_line_breaks(self) -> None:
         self.transform_selected_text("줄바꿈/띄어쓰기 정리", clean_manual_line_breaks)
 
+    def clean_selected_outline_prefixes(self) -> None:
+        self.transform_selected_text("개요 기호 제거", remove_manual_outline_prefixes)
+
     def add_commas_to_selection(self) -> None:
-        self.transform_selected_text("천원단위 쉼표 넣기", add_thousand_commas)
+        self.transform_selected_text(
+            "천원단위 쉼표 넣기",
+            add_thousand_commas,
+            block_multiline_number_block=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+        )
 
     def remove_commas_from_selection(self) -> None:
-        self.transform_selected_text("쉼표 빼기", remove_number_commas)
+        self.transform_selected_text(
+            "쉼표 빼기",
+            remove_number_commas,
+            block_multiline_number_block=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+        )
+
+    def normalize_dates_to_korean(self) -> None:
+        self.transform_selected_text(
+            "날짜 정규화: 0000년 0월 0일",
+            lambda text: normalize_dates(text, "korean"),
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+        )
+
+    def normalize_dates_to_dot(self) -> None:
+        self.transform_selected_text(
+            "날짜 정규화: 0000. 0. 0.",
+            lambda text: normalize_dates(text, "dot"),
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+        )
+
+    def normalize_dates_to_dot_padded(self) -> None:
+        self.transform_selected_text(
+            "날짜 정규화: 0000. 00. 00.",
+            lambda text: normalize_dates(text, "dot_padded"),
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+        )
 
     def palette_color_or_rgb(self, name: str, rgb: tuple[int, int, int]) -> PaletteColor:
         for color in self.palette:
@@ -1635,17 +1882,6 @@ class MvpApp(tk.Tk):
             self.debug(f"[excel-table] 문단스타일 실패: {exc}")
 
         self.log("엑셀표 정리: " + ", ".join(results))
-
-    def add_commas_ui(self) -> None:
-        text = self.cleanup_input.get("1.0", "end-1c")
-        self.cleanup_input.delete("1.0", "end")
-        self.cleanup_input.insert("1.0", add_thousand_commas(text))
-
-    def remove_commas_ui(self) -> None:
-        text = self.cleanup_input.get("1.0", "end-1c")
-        self.cleanup_input.delete("1.0", "end")
-        self.cleanup_input.insert("1.0", remove_number_commas(text))
-
 
 def smoke_test() -> int:
     print(f"ROOT={ROOT}")
