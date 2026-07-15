@@ -618,38 +618,20 @@ def rows_to_tsv(rows: list[list[str]]) -> str:
 
 
 @dataclass(frozen=True)
-class CaptionTemplate:
-    kind: str
+class CaptionParts:
     prefix: str
     suffix: str
-    has_marker: bool
 
 
-def split_caption_template(text: str) -> CaptionTemplate:
+def split_table_caption_parts(text: str) -> CaptionParts:
     cleaned = strip_wrapping_blank_lines(text).strip()
-    match = re.search(r"\[\s*(표|그림)\s*번호\s*\]", cleaned)
+    match = re.match(r"^\[\s*표\s+([^\]]*-\s*)\]\s*(.*)$", cleaned, flags=re.S)
     if match is None:
-        implied = re.match(r"^\[\s*(표|그림)\s+([^\]]*-\s*)\]\s*(.*)$", cleaned, flags=re.S)
-        if implied is not None:
-            kind = implied.group(1)
-            number_prefix = implied.group(2).rstrip()
-            title = implied.group(3)
-            suffix = f"] {title}" if title else "]"
-            return CaptionTemplate(kind=kind, prefix=f"[{kind} {number_prefix}", suffix=suffix, has_marker=True)
-        return CaptionTemplate(kind="표", prefix="", suffix=cleaned, has_marker=False)
-
-    kind = match.group(1)
-    prefix = cleaned[: match.start()].rstrip()
-    suffix = cleaned[match.end() :]
-
-    # 흔한 원본 형태: "[표 2.4-][표 번호] 제목"
-    # 원하는 캡션 형태: "[표 2.4-" + 자동번호 + "] 제목"
-    # 즉 marker 앞의 닫는 대괄호는 자동번호 뒤로 이동해야 한다.
-    if prefix.endswith("]") and prefix.startswith("[") and not suffix.startswith("]"):
-        prefix = prefix[:-1].rstrip()
-        suffix = f"]{suffix}"
-
-    return CaptionTemplate(kind=kind, prefix=prefix, suffix=suffix, has_marker=True)
+        raise ValueError("`[표 ...-] 제목` 형태를 찾지 못했습니다.")
+    number_prefix = match.group(1).rstrip()
+    title = match.group(2)
+    suffix = f"] {title}" if title else "]"
+    return CaptionParts(prefix=f"[표 {number_prefix}", suffix=suffix)
 
 
 def build_cf_html(fragment: str) -> bytes:
@@ -928,8 +910,8 @@ class MvpApp(tk.Tk):
         self.palette = palette_from_settings(self.table_settings)
         self.apply_on_select = tk.BooleanVar(value=True)
         self.cover_confidential = tk.BooleanVar(value=False)
-        self.pending_caption_text = ""
-        self.pending_caption_template = CaptionTemplate(kind="표", prefix="", suffix="", has_marker=False)
+        self.pending_caption_title = ""
+        self.pending_caption_parts = CaptionParts(prefix="", suffix="")
         self._refreshing = False
 
         self.notebook = ttk.Notebook(self)
@@ -1032,12 +1014,21 @@ class MvpApp(tk.Tk):
         )
         caption_row = ttk.Frame(frame)
         caption_row.pack(fill="x", pady=(0, 12))
-        ttk.Button(caption_row, text="제목 줄 복사해두기", command=self.copy_selected_caption_title).pack(
+        ttk.Button(caption_row, text="표 제목 잘라두기", command=self.cut_selected_table_caption_title).pack(
             side="left", fill="x", expand=True
         )
-        ttk.Button(caption_row, text="캡션으로 붙이기", command=self.paste_pending_caption_to_table).pack(
+        ttk.Button(caption_row, text="다음 표 캡션 조립", command=self.apply_pending_table_caption_to_next_table).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
+        autonum_row = ttk.Frame(frame)
+        autonum_row.pack(fill="x", pady=(0, 12))
+        ttk.Button(autonum_row, text="표 번호 넣기", command=lambda: self.insert_auto_number(4, "표 번호")).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(autonum_row, text="그림 번호 넣기", command=lambda: self.insert_auto_number(3, "그림 번호")).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
         ttk.Label(frame, text="셀 배경색").pack(anchor="w")
         bg_row = ttk.Frame(frame)
         bg_row.pack(fill="x", pady=(6, 12))
@@ -1846,85 +1837,105 @@ class MvpApp(tk.Tk):
             self.log(f"셀 속성 복사/적용 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror("셀 속성 복사/적용 실패", str(exc))
 
-    def copy_selected_caption_title(self) -> None:
-        label = "제목 줄 복사해두기"
+    def insert_auto_number(self, num_type: int, label: str) -> None:
         if not self.ensure_hwp():
             return
         try:
-            copy_ok = self.run_hwp_command("Copy")
+            pset = self.hwp.HParameterSet.HAutoNum
+            default_ok = self.hwp.HAction.GetDefault("AutoNum", pset.HSet)
+            self.debug(f"[auto-num] GetDefault AutoNum={default_ok}, NumType={num_type}")
+            self.set_com_attr(pset, "NumType", num_type)
+            action, ok = self.execute_first_hwp_action(("AutoNum",), pset.HSet)
+            self.log(f"{label} 넣기: action={action}, NumType={num_type}, result={ok}")
+            if ok:
+                self.activate_hwp_window()
+            else:
+                messagebox.showwarning(f"{label} 넣기 확인", "한글의 입력 가능한 위치에 커서를 둔 뒤 다시 실행하세요.")
+        except Exception as exc:
+            self.log(f"{label} 넣기 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 넣기 실패", str(exc))
+
+    def cut_selected_table_caption_title(self) -> None:
+        label = "표 제목 잘라두기"
+        if not self.ensure_hwp():
+            return
+        try:
+            cut_ok = self.run_hwp_command("Cut")
             time.sleep(0.08)
-            text = strip_wrapping_blank_lines(self.get_clipboard_text()).strip()
-            if not copy_ok or not text:
-                messagebox.showwarning(label, "캡션으로 옮길 표 제목 줄을 먼저 선택하세요.")
-                self.log(f"{label}: 선택 텍스트 없음")
+            title_text = strip_wrapping_blank_lines(self.get_clipboard_text()).strip()
+            if not cut_ok or not title_text:
+                messagebox.showwarning(label, "표 바로 윗줄 제목만 블록 선택한 뒤 다시 실행하세요.")
+                self.log(f"{label}: Cut={cut_ok}, 제목 텍스트 없음")
                 return
-            template = split_caption_template(text)
-            self.pending_caption_text = text
-            self.pending_caption_template = template
+
+            try:
+                parts = split_table_caption_parts(title_text)
+            except ValueError as exc:
+                preview = title_text.replace("\r", "\\r").replace("\n", "\\n")
+                messagebox.showwarning(label, f"{exc}\n\n클립보드 텍스트:\n{preview[:200]}")
+                self.log(f"{label}: 제목 형식 인식 실패, clipboard={preview!r}")
+                return
+            self.pending_caption_title = title_text
+            self.pending_caption_parts = parts
             self.activate_hwp_window()
-            marker_note = f"{template.kind} 번호 자리 인식" if template.has_marker else "번호 자리 없음"
             self.log(
-                f"{label}: 원문 {len(text)}자 보관, {marker_note}, "
-                f"앞 {len(template.prefix)}자 / 뒤 {len(template.suffix)}자"
+                f"{label}: Cut={cut_ok}, 제목 {len(title_text)}자, "
+                f"앞 {len(parts.prefix)}자 / 뒤 {len(parts.suffix)}자"
             )
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
 
-    def paste_pending_caption_to_table(self) -> None:
-        label = "캡션으로 붙이기"
+    def apply_pending_table_caption_to_next_table(self) -> None:
+        label = "다음 표 캡션 조립"
         if not self.ensure_hwp():
             return
-        if not self.pending_caption_text:
-            messagebox.showwarning(label, "먼저 `제목 줄 복사해두기`로 캡션 제목을 보관하세요.")
+        if not self.pending_caption_title:
+            messagebox.showwarning(label, "먼저 `표 제목 잘라두기`를 실행하세요.")
             return
         try:
-            action, caption_ok = self.run_first_hwp_command(("TableCaption", "ShapeObjCaption"))
-            self.debug(f"[caption-move] caption action={action}, result={caption_ok}")
-            if not caption_ok:
-                messagebox.showwarning(label, "표 안에 커서를 두거나 표 개체를 선택한 뒤 다시 실행하세요.")
-                self.log(f"{label}: 캡션 액션 실패")
+            table_selected = self.has_selected_object()
+            self.debug(f"[caption-build] selected_object={table_selected}")
+            if not table_selected:
+                messagebox.showwarning(label, "표 개체를 선택한 상태에서 실행하세요.")
+                self.log(f"{label}: 표 개체 선택 상태 아님")
                 return
 
-            template = self.pending_caption_template
-            begin_action, begin_ok = self.run_first_hwp_command(("MoveLineBegin", "MoveParaBegin"))
-            label_removed = True
-            if begin_ok and template.prefix:
-                label_removed = self.delete_hwp_chars(len(template.kind) + 1)
-            prefix_ok = True
-            if template.prefix:
-                prefix_ok = begin_ok and label_removed and self.insert_hwp_text(template.prefix)
+            action, caption_ok = "ShapeObjCaption", self.run_hwp_command("ShapeObjCaption")
+            self.debug(f"[caption-build] caption action={action}, result={caption_ok}")
+            if not caption_ok:
+                messagebox.showwarning(label, "표는 선택했지만 캡션을 만들지 못했습니다.")
+                self.log(f"{label}: 캡션 액션 실패, action={action}")
+                return
 
-            end_action, end_ok = self.run_first_hwp_command(("MoveLineEnd", "MoveParaEnd"))
-            tail_space_removed = True
-            if end_ok and template.prefix:
-                tail_space_removed = self.run_hwp_command("DeleteBack")
-            suffix_text = template.suffix if template.has_marker else f" {template.suffix}".rstrip()
-            suffix_ok = True
-            if suffix_text:
-                suffix_ok = end_ok and tail_space_removed and self.insert_hwp_text(suffix_text)
-            caption_style_ok = False
-            if prefix_ok and suffix_ok:
-                caption_style_ok = self.apply_first_style_containing("캡션")
+            parts = self.pending_caption_parts
+            remove_tail_space_ok = self.run_hwp_command("DeleteBack")
+            suffix_ok = remove_tail_space_ok and (not parts.suffix or self.insert_hwp_text(parts.suffix))
 
+            begin_action, begin_ok = "MoveLineBegin", self.run_hwp_command("MoveLineBegin")
+            remove_label_ok = begin_ok and self.delete_hwp_chars(2)
+            prefix_ok = remove_label_ok and (not parts.prefix or self.insert_hwp_text(parts.prefix))
+
+            style_ok = False
             if prefix_ok and suffix_ok:
-                moved_text = self.pending_caption_text
-                self.pending_caption_text = ""
-                self.pending_caption_template = CaptionTemplate(kind="표", prefix="", suffix="", has_marker=False)
+                style_ok = self.apply_first_style_containing("캡션")
+                moved_text = self.pending_caption_title
+                self.pending_caption_title = ""
+                self.pending_caption_parts = CaptionParts(prefix="", suffix="")
                 self.activate_hwp_window()
                 self.log(
-                    f"{label}: action={action}, begin={begin_action}:{begin_ok}, "
-                    f"label_removed={label_removed}, end={end_action}:{end_ok}, "
-                    f"tail_space_removed={tail_space_removed}, caption_style={caption_style_ok}, "
-                    f"원문 {len(moved_text)}자"
+                    f"{label}: caption={action}:{caption_ok}, begin={begin_action}:{begin_ok}, "
+                    f"remove_label={remove_label_ok}, prefix={prefix_ok}, "
+                    f"remove_tail_space={remove_tail_space_ok}, "
+                    f"suffix={suffix_ok}, caption_style={style_ok}, 제목 {len(moved_text)}자"
                 )
-            else:
-                messagebox.showwarning(label, "캡션은 만들었지만 제목 앞/뒤 텍스트 삽입에 실패했습니다.")
-                self.log(
-                    f"{label}: 삽입 실패, begin={begin_action}:{begin_ok}, "
-                    f"label_removed={label_removed}, prefix={prefix_ok}, end={end_action}:{end_ok}, "
-                    f"tail_space_removed={tail_space_removed}, suffix={suffix_ok}"
-                )
+                return
+
+            messagebox.showwarning(label, "캡션은 만들었지만 제목 앞/뒤 조립에 실패했습니다.")
+            self.log(
+                f"{label}: 조립 실패, begin={begin_action}:{begin_ok}, remove_label={remove_label_ok}, "
+                f"prefix={prefix_ok}, remove_tail_space={remove_tail_space_ok}, suffix={suffix_ok}"
+            )
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
