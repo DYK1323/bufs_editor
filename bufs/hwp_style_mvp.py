@@ -1020,6 +1020,9 @@ class MvpApp(tk.Tk):
         ttk.Button(caption_row, text="다음 표 캡션 조립", command=self.apply_pending_table_caption_to_next_table).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
+        ttk.Button(frame, text="선택 제목 → 다음 표 캡션", command=self.cut_title_and_apply_to_next_table_caption).pack(
+            fill="x", pady=(0, 12)
+        )
         autonum_row = ttk.Frame(frame)
         autonum_row.pack(fill="x", pady=(0, 12))
         ttk.Button(autonum_row, text="표 번호 넣기", command=lambda: self.insert_auto_number(4, "표 번호")).pack(
@@ -1856,9 +1859,11 @@ class MvpApp(tk.Tk):
             messagebox.showerror(f"{label} 넣기 실패", str(exc))
 
     def cut_selected_table_caption_title(self) -> None:
-        label = "표 제목 잘라두기"
+        self.cut_selected_table_caption_title_core("표 제목 잘라두기")
+
+    def cut_selected_table_caption_title_core(self, label: str) -> bool:
         if not self.ensure_hwp():
-            return
+            return False
         try:
             cut_ok = self.run_hwp_command("Cut")
             time.sleep(0.08)
@@ -1866,7 +1871,7 @@ class MvpApp(tk.Tk):
             if not cut_ok or not title_text:
                 messagebox.showwarning(label, "표 바로 윗줄 제목만 블록 선택한 뒤 다시 실행하세요.")
                 self.log(f"{label}: Cut={cut_ok}, 제목 텍스트 없음")
-                return
+                return False
 
             try:
                 parts = split_table_caption_parts(title_text)
@@ -1874,7 +1879,7 @@ class MvpApp(tk.Tk):
                 preview = title_text.replace("\r", "\\r").replace("\n", "\\n")
                 messagebox.showwarning(label, f"{exc}\n\n클립보드 텍스트:\n{preview[:200]}")
                 self.log(f"{label}: 제목 형식 인식 실패, clipboard={preview!r}")
-                return
+                return False
             self.pending_caption_title = title_text
             self.pending_caption_parts = parts
             self.activate_hwp_window()
@@ -1882,9 +1887,11 @@ class MvpApp(tk.Tk):
                 f"{label}: Cut={cut_ok}, 제목 {len(title_text)}자, "
                 f"앞 {len(parts.prefix)}자 / 뒤 {len(parts.suffix)}자"
             )
+            return True
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
+            return False
 
     def apply_pending_table_caption_to_next_table(self) -> None:
         label = "다음 표 캡션 조립"
@@ -1900,13 +1907,19 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(label, "표 개체를 선택한 상태에서 실행하세요.")
                 self.log(f"{label}: 표 개체 선택 상태 아님")
                 return
+            self.apply_pending_table_caption_to_selected_table_core(label)
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
 
+    def apply_pending_table_caption_to_selected_table_core(self, label: str) -> bool:
+        try:
             action, caption_ok = "ShapeObjCaption", self.run_hwp_command("ShapeObjCaption")
             self.debug(f"[caption-build] caption action={action}, result={caption_ok}")
             if not caption_ok:
                 messagebox.showwarning(label, "표는 선택했지만 캡션을 만들지 못했습니다.")
                 self.log(f"{label}: 캡션 액션 실패, action={action}")
-                return
+                return False
 
             parts = self.pending_caption_parts
             remove_tail_space_ok = self.run_hwp_command("DeleteBack")
@@ -1929,16 +1942,34 @@ class MvpApp(tk.Tk):
                     f"remove_tail_space={remove_tail_space_ok}, "
                     f"suffix={suffix_ok}, caption_style={style_ok}, 제목 {len(moved_text)}자"
                 )
-                return
+                return True
 
             messagebox.showwarning(label, "캡션은 만들었지만 제목 앞/뒤 조립에 실패했습니다.")
             self.log(
                 f"{label}: 조립 실패, begin={begin_action}:{begin_ok}, remove_label={remove_label_ok}, "
                 f"prefix={prefix_ok}, remove_tail_space={remove_tail_space_ok}, suffix={suffix_ok}"
             )
+            return False
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
+            return False
+
+    def cut_title_and_apply_to_next_table_caption(self) -> None:
+        label = "선택 제목 → 다음 표 캡션"
+        if not self.ensure_hwp():
+            return
+        if not self.cut_selected_table_caption_title_core(label):
+            return
+        self.run_hwp_command("Cancel")
+        time.sleep(0.05)
+        table_selected = self.select_current_table_object()
+        self.debug(f"[caption-one-step] SelectCtrlReverse={table_selected}")
+        if not table_selected:
+            messagebox.showwarning(label, "제목은 잘라냈지만 다음 표를 선택하지 못했습니다.")
+            self.log(f"{label}: 다음 표 선택 실패")
+            return
+        self.apply_pending_table_caption_to_selected_table_core(label)
 
     def apply_table_outside_margins(self) -> None:
         if not self.ensure_hwp():
