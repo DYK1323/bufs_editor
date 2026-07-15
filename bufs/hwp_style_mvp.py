@@ -23,6 +23,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
+from html import escape
 from html import unescape
 from pathlib import Path
 from typing import Iterable
@@ -290,6 +291,116 @@ def read_cover_placeholders(path: Path = COVER_FILE) -> dict[str, bool]:
         "{{부서명}}": "{{부서명}}" in preview,
         "<대 외 비>": "대 외 비" in preview,
     }
+
+
+def parse_cover_input(text: str) -> tuple[str, str, str]:
+    values = split_cover_lines(text)
+    if len(values) < 3:
+        raise ValueError("표지로 만들 제목, 날짜, 부서명 3줄을 선택하세요.")
+    return values[0], values[1], "\n".join(values[2:])
+
+
+def hwp_xml_text(value: str) -> str:
+    lines = [escape(line) for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "</hp:t><hp:lineBreak/><hp:t>".join(lines)
+
+
+def split_cover_lines(value: str) -> list[str]:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").replace("\v", "\n").replace("\u2028", "\n")
+    lines = [line.strip() for line in normalized.split("\n")]
+    return [line for line in lines if line]
+
+
+def replace_marker_with_paragraphs(section_xml: str, marker: str, value: str) -> str:
+    index = section_xml.find(marker)
+    if index < 0:
+        return section_xml
+    para_start = section_xml.rfind("<hp:p ", 0, index)
+    para_end = section_xml.find("</hp:p>", index)
+    if para_start < 0 or para_end < 0:
+        return section_xml.replace(marker, hwp_xml_text(value))
+    para_end += len("</hp:p>")
+    paragraph = section_xml[para_start:para_end]
+    lines = split_cover_lines(value)
+    if not lines:
+        lines = [""]
+    replacement = "".join(paragraph.replace(marker, escape(line)) for line in lines)
+    return section_xml[:para_start] + replacement + section_xml[para_end:]
+
+
+def collapse_cover_paragraph_after(section_xml: str, start: int) -> str:
+    para_end = section_xml.find("</hp:p>", start)
+    if para_end < 0:
+        return section_xml
+    lineseg_start = section_xml.find("<hp:linesegarray>", start, para_end)
+    lineseg_end = section_xml.find("</hp:linesegarray>", lineseg_start, para_end)
+    if lineseg_start < 0 or lineseg_end < 0:
+        return section_xml
+    lineseg_end += len("</hp:linesegarray>")
+    collapsed = (
+        '<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="0" '
+        'textheight="0" baseline="0" spacing="0" horzpos="0" horzsize="0" flags="393216"/></hp:linesegarray>'
+    )
+    return section_xml[:lineseg_start] + collapsed + section_xml[lineseg_end:]
+
+
+def remove_confidential_cover_table(section_xml: str) -> str:
+    needle = "대 외 비"
+    index = section_xml.find(needle)
+    if index < 0:
+        return section_xml
+    table_start = section_xml.rfind("<hp:tbl", 0, index)
+    table_end = section_xml.find("</hp:tbl>", index)
+    if table_start < 0 or table_end < 0:
+        return section_xml.replace(needle, "")
+    table_end += len("</hp:tbl>")
+    section_xml = section_xml[:table_start] + section_xml[table_end:]
+    section_xml = section_xml.replace("<hp:t/></hp:run>", "</hp:run>", 1)
+    return collapse_cover_paragraph_after(section_xml, table_start)
+
+
+def create_filled_cover_file(
+    title: str,
+    date_text: str,
+    department: str,
+    confidential: bool,
+    template: Path = COVER_FILE,
+) -> Path:
+    if not template.exists():
+        raise FileNotFoundError(f"표지 템플릿을 찾지 못했습니다: {template}")
+
+    TEST_OUTPUT_DIR.mkdir(exist_ok=True)
+    target = TEST_OUTPUT_DIR / f"cover-{datetime.now().strftime('%Y%m%d-%H%M%S')}.hwpx"
+    section_replacements = {
+        "{{문서제목}}": hwp_xml_text(title),
+        "{{날짜}}": hwp_xml_text(date_text),
+    }
+    preview_replacements = {
+        "{{문서제목}}": title,
+        "{{날짜}}": date_text,
+        "{{부서명}}": department,
+        "대 외 비": "대 외 비" if confidential else "",
+    }
+
+    with zipfile.ZipFile(template, "r") as src, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "Contents/section0.xml":
+                text = data.decode("utf-8")
+                for old, new in section_replacements.items():
+                    text = text.replace(old, new)
+                text = replace_marker_with_paragraphs(text, "{{부서명}}", department)
+                if not confidential:
+                    text = remove_confidential_cover_table(text)
+                data = text.encode("utf-8")
+            elif info.filename == "Preview/PrvText.txt":
+                text = data.decode("utf-8")
+                for old, new in preview_replacements.items():
+                    text = text.replace(old, new)
+                data = text.encode("utf-8")
+            dst.writestr(info, data)
+
+    return target
 
 
 def list_logos(root: Path = LOGO_DIR) -> list[Path]:
@@ -609,6 +720,7 @@ class MvpApp(tk.Tk):
         self.table_settings = load_table_settings()
         self.palette = palette_from_settings(self.table_settings)
         self.apply_on_select = tk.BooleanVar(value=True)
+        self.cover_confidential = tk.BooleanVar(value=False)
         self._refreshing = False
 
         self.notebook = ttk.Notebook(self)
@@ -1032,6 +1144,18 @@ class MvpApp(tk.Tk):
     def _build_cover_logo_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
         self.notebook.add(frame, text="표지/로고")
+
+        cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=8)
+        cover_group.pack(fill="x", pady=(0, 10))
+        ttk.Checkbutton(cover_group, text="대외비 표시", variable=self.cover_confidential).pack(anchor="w")
+        ttk.Button(cover_group, text="선택 3줄로 표지 만들기", command=self.create_cover_from_selected_lines).pack(
+            fill="x", pady=(6, 0)
+        )
+        ttk.Label(
+            cover_group,
+            text="한글에서 제목, 날짜, 부서명을 선택한 뒤 실행합니다. 부서명은 Shift+Enter 줄바꿈처럼 여러 줄이어도 됩니다.",
+            wraplength=390,
+        ).pack(anchor="w", pady=(6, 0))
 
         ttk.Label(frame, text="표지 자리표시자").pack(anchor="w")
         self.cover_list = tk.Listbox(frame, height=6)
@@ -1635,6 +1759,71 @@ class MvpApp(tk.Tk):
                 "스타일 적용 실패",
                 f"{exc}\n\n현재 문서에 같은 스타일 세트가 없거나, 선택 영역 상태가 맞지 않을 수 있습니다.",
             )
+
+    def insert_file_at_cursor(self, path: Path) -> bool:
+        option = self.hwp.HParameterSet.HInsertFile
+        self.hwp.HAction.GetDefault("InsertFile", option.HSet)
+        try:
+            option.filename = str(path)
+        except Exception:
+            pass
+        try:
+            option.Filename = str(path)
+        except Exception:
+            pass
+        option.KeepSection = 0
+        option.KeepCharshape = 1
+        option.KeepParashape = 1
+        option.KeepStyle = 1
+        return bool(self.hwp.HAction.Execute("InsertFile", option.HSet))
+
+    def create_cover_from_selected_lines(self) -> None:
+        if not self.ensure_hwp():
+            return
+        original_text = ""
+        try:
+            copy_ok = self.run_hwp_command("Copy")
+            time.sleep(0.08)
+            original_text = self.get_clipboard_text()
+            if not copy_ok or not original_text:
+                messagebox.showwarning("표지 입력 선택 필요", "한글에서 제목, 날짜, 부서명 3줄을 먼저 선택하세요.")
+                self.log("표지 만들기: 선택 텍스트 없음")
+                return
+
+            title, date_text, department = parse_cover_input(original_text)
+            cover_path = create_filled_cover_file(
+                title,
+                date_text,
+                department,
+                self.cover_confidential.get(),
+            )
+
+            delete_ok = self.run_hwp_command("Delete")
+            if not delete_ok:
+                messagebox.showwarning("표지 만들기 실패", "선택한 3줄을 삭제하지 못했습니다. 선택 영역을 확인하세요.")
+                self.log("표지 만들기: 선택 영역 삭제 실패")
+                return
+
+            insert_ok = self.insert_file_at_cursor(cover_path)
+            if not insert_ok:
+                self.set_clipboard_text(original_text)
+                restore_ok = self.run_hwp_command("Paste")
+                messagebox.showwarning(
+                    "표지 삽입 실패",
+                    f"표지 파일은 만들었지만 현재 문서에 삽입하지 못했습니다.\n\n{cover_path}\n원문 복구: {restore_ok}",
+                )
+                self.log(f"표지 삽입 실패: file={cover_path}, restored={restore_ok}")
+                return
+
+            self.activate_hwp_window()
+            self.log(
+                "표지 만들기 완료: "
+                f"제목={title}, 날짜={date_text}, 부서={department}, "
+                f"대외비={self.cover_confidential.get()}, file={cover_path.name}"
+            )
+        except Exception as exc:
+            self.log(f"표지 만들기 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("표지 만들기 실패", str(exc))
 
     def run_first_hwp_command(self, commands: tuple[str, ...]) -> tuple[str, bool]:
         last = commands[-1]
