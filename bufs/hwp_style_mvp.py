@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -111,7 +112,7 @@ LINE_PRESETS = {
     "점선": {"width": "0.12mm", "type": "Dot"},
 }
 
-DEFAULT_CAPTION_PATTERN = r"^\[\s*표\s+([^\]]*-\s*)(?:\d+)?\s*\]\s*(.*)$"
+DEFAULT_CAPTION_PATTERN = r"^\[\s*(?P<kind>표|그림)\s+(?P<prefix>[^\]]*-)\s*(?:\d+)?\s*\]\s*(?P<title>.*)$"
 
 DEFAULT_TABLE_SETTINGS = {
     "palette": DEFAULT_PALETTE,
@@ -144,9 +145,9 @@ DEFAULT_TABLE_SETTINGS = {
     },
     "caption_parser": {
         "pattern": DEFAULT_CAPTION_PATTERN,
-        "prefix_template": "[표 {prefix}",
+        "prefix_template": "[{kind} {prefix}",
         "suffix_template": "] {title}",
-        "sample": "[표 2.4-1] 학사관리 체계 개선 실적",
+        "sample": "[그림 2.4-1] 학사관리 체계 개선 실적",
     },
 }
 
@@ -700,7 +701,7 @@ def split_table_caption_parts(text: str, parser_settings: dict | None = None) ->
     except re.error as exc:
         raise ValueError(f"캡션 제목 인식 정규식 오류: {exc}") from exc
     if match is None:
-        raise ValueError("`[표 ...-] 제목` 형태를 찾지 못했습니다.")
+        raise ValueError("`[표 ...-] 제목` 또는 `[그림 ...-] 제목` 형태를 찾지 못했습니다.")
     groupdict = match.groupdict()
     try:
         number_prefix = groupdict.get("prefix", match.group(1)).rstrip()
@@ -708,6 +709,7 @@ def split_table_caption_parts(text: str, parser_settings: dict | None = None) ->
     except IndexError as exc:
         raise ValueError("캡션 제목 인식 정규식에는 prefix/title 또는 1번/2번 그룹이 필요합니다.") from exc
     values = {
+        "kind": groupdict.get("kind", "표"),
         "prefix": number_prefix,
         "title": title,
         "g1": match.group(1) if len(match.groups()) >= 1 else "",
@@ -1093,6 +1095,9 @@ class MvpApp(tk.Tk):
             side="left", fill="x", expand=True
         )
         ttk.Button(table_action_row, text="표 바깥 여백 적용", command=self.apply_table_outside_margins).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        ttk.Button(table_action_row, text="쪽 너비 맞춤", command=self.apply_table_page_width).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
 
@@ -1752,6 +1757,18 @@ class MvpApp(tk.Tk):
         except Exception:
             return red | (green << 8) | (blue << 16)
 
+    def hwp_brush_type(self, name: str, fallback: int) -> int:
+        try:
+            return int(self.hwp.BrushType(name))
+        except Exception:
+            return fallback
+
+    def hwp_hatch_style(self, name: str, fallback: int) -> int:
+        try:
+            return int(self.hwp.HatchStyle(name))
+        except Exception:
+            return fallback
+
     def palette_color(self, name: str) -> PaletteColor:
         for color in self.palette:
             if color.name == name:
@@ -1812,18 +1829,23 @@ class MvpApp(tk.Tk):
             fill_targets.append(pset.SelCellsBorderFill.FillAttr)
         except Exception:
             pass
+        try:
+            fill_targets.append(pset.AllCellsBorderFill.FillAttr)
+        except Exception:
+            pass
 
+        brush_type = self.hwp_brush_type("WinBrush", 1)
+        no_hatch = self.hwp_hatch_style("None", -1)
         for fill in fill_targets:
-            try:
-                fill.WindowsBrush = 1
-            except Exception:
-                pass
-            try:
-                fill.WinBrushFaceStyle = 1
-            except Exception:
-                pass
-            fill.WinBrushFaceColor = value
-            fill.WinBrushHatchColor = value
+            for attr, attr_value in (
+                ("type", brush_type),
+                ("WindowsBrush", 1),
+                ("WinBrushFaceStyle", no_hatch),
+                ("WinBrushFaceColor", value),
+                ("WinBrushHatchColor", value),
+                ("ToolbarColor", value),
+            ):
+                self.set_com_attr(fill, attr, attr_value)
 
         action, ok = self.execute_first_hwp_action(("CellBorderFill", "CellBorder"), pset.HSet)
         return action, ok, default_ok
@@ -1837,14 +1859,21 @@ class MvpApp(tk.Tk):
             fill_targets.append(pset.SelCellsBorderFill.FillAttr)
         except Exception:
             pass
+        try:
+            fill_targets.append(pset.AllCellsBorderFill.FillAttr)
+        except Exception:
+            pass
 
         white = self.hwp_rgb(PaletteColor("흰색", (255, 255, 255), "#FFFFFF", ""))
+        no_hatch = self.hwp_hatch_style("None", -1)
         for fill in fill_targets:
             for attr, value in (
+                ("type", 0),
                 ("WindowsBrush", 0),
-                ("WinBrushFaceStyle", 0),
+                ("WinBrushFaceStyle", no_hatch),
                 ("WinBrushFaceColor", white),
                 ("WinBrushHatchColor", white),
+                ("ToolbarColor", white),
             ):
                 self.set_com_attr(fill, attr, value)
 
@@ -2057,9 +2086,19 @@ class MvpApp(tk.Tk):
             pset = self.hwp.HParameterSet.HShapeCopyPaste
             default_ok = self.hwp.HAction.GetDefault("ShapeCopyPaste", pset.HSet)
             self.debug(f"[shape-copy-paste] GetDefault ShapeCopyPaste={default_ok}")
-            self.set_com_attr(pset, "CellAttr", 1)
+            for attr, value in (
+                ("CellAttr", 1),
+                ("CellBorder", 0),
+                ("CellFill", 0),
+                ("TypeBodyAndCellOnly", 1),
+            ):
+                applied = self.set_com_attr(pset, attr, value)
+                self.debug(f"[shape-copy-paste] {attr}={value}, set={applied}")
             action, ok = self.execute_first_hwp_action(("ShapeCopyPaste",), pset.HSet)
-            self.log(f"셀 속성 복사/적용: action={action}, CellAttr=1, result={ok}")
+            self.log(
+                "셀 속성 복사/적용: "
+                f"action={action}, CellAttr=1, CellBorder=0, CellFill=0, TypeBodyAndCellOnly=1, result={ok}"
+            )
             if not ok:
                 messagebox.showwarning(
                     "셀 속성 복사/적용 확인",
@@ -2200,6 +2239,116 @@ class MvpApp(tk.Tk):
             self.log(f"표 바깥 여백 적용 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror("표 바깥 여백 적용 실패", str(exc))
 
+    def current_page_text_width(self) -> int:
+        sec = self.hwp.HParameterSet.HSecDef
+        default_ok = bool(self.hwp.HAction.GetDefault("PageSetup", sec.HSet))
+        page = sec.PageDef
+        paper_width = int(page.PaperWidth)
+        left = int(page.LeftMargin)
+        right = int(page.RightMargin)
+        gutter = int(page.GutterLen)
+        width = max(0, paper_width - left - right - gutter)
+        self.debug(
+            "[table-page-width] "
+            f"PageSetup={default_ok}, paper={paper_width}, left={left}, right={right}, "
+            f"gutter={gutter}, text_width={width}"
+        )
+        return width
+
+    def set_table_page_width(self) -> tuple[str, bool, int]:
+        view_option = None
+        pset = self.get_table_property_set()
+        try:
+            table_ctrl = self.hwp.CurSelectedCtrl
+        except Exception:
+            table_ctrl = None
+        target_width = self.current_page_text_width()
+        try:
+            target_width -= int(pset.OutsideMarginLeft) + int(pset.OutsideMarginRight)
+        except Exception:
+            pass
+        if target_width <= 0:
+            return "HWPML2X", False, target_width
+
+        table_xml = self.hwp.GetTextFile("HWPML2X", "saveblock")
+        if not table_xml:
+            return "HWPML2X", False, target_width
+
+        root = ET.fromstring(table_xml)
+        table = root.find(".//TABLE")
+        if table is None:
+            return "HWPML2X", False, target_width
+
+        rows = table.findall(".//ROW")
+        first_row_cells = rows[0].findall(".//CELL") if rows else table.findall(".//CELL")
+        current_width = sum(int(cell.get("Width") or 0) for cell in first_row_cells)
+        if current_width <= 0:
+            return "HWPML2X", False, target_width
+
+        ratio = target_width / current_width
+        shape_size = table.find(".//SIZE")
+        if shape_size is not None and shape_size.get("Width"):
+            shape_size.set("Width", str(target_width))
+        changed = 0
+        for cell in table.findall(".//CELL"):
+            width = cell.get("Width")
+            if not width:
+                continue
+            cell.set("Width", str(max(1, int(round(int(width) * ratio)))))
+            changed += 1
+
+        updated_xml = ET.tostring(root, encoding="UTF-16").decode("utf-16")
+        try:
+            view_option = self.hwp.ViewProperties.Item("OptionFlag")
+            if view_option not in (2, 6):
+                prop = self.hwp.ViewProperties
+                prop.SetItem("OptionFlag", 6)
+                self.hwp.ViewProperties = prop
+        except Exception:
+            view_option = None
+
+        deleted = False
+        restored = False
+        if table_ctrl is not None:
+            try:
+                deleted = bool(self.hwp.DeleteCtrl(table_ctrl))
+            except Exception as exc:
+                self.debug(f"[table-page-width] DeleteCtrl 실패: {type(exc).__name__}: {exc}")
+
+        ok = deleted and bool(self.hwp.SetTextFile(updated_xml, "HWPML2X", "insertfile"))
+        if deleted and not ok:
+            try:
+                restored = bool(self.hwp.SetTextFile(table_xml, "HWPML2X", "insertfile"))
+            except Exception as exc:
+                self.debug(f"[table-page-width] 원본 복구 실패: {type(exc).__name__}: {exc}")
+
+        if view_option is not None:
+            try:
+                prop = self.hwp.ViewProperties
+                prop.SetItem("OptionFlag", view_option)
+                self.hwp.ViewProperties = prop
+            except Exception:
+                pass
+        self.debug(
+            "[table-page-width] "
+            f"target={target_width}, current={current_width}, ratio={ratio:.6f}, "
+            f"cells={changed}, shape_size={shape_size is not None}, "
+            f"deleted={deleted}, restored={restored}, result={ok}"
+        )
+        return "HWPML2X", ok, target_width
+
+    def apply_table_page_width(self) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            action, ok, width = self.set_table_page_width()
+            self.log(f"표 쪽 너비 맞춤: width={width}, action={action}, result={ok}")
+            if not ok:
+                messagebox.showwarning("표 쪽 너비 맞춤 확인", "표 안에 커서를 두거나 표 개체를 선택한 상태인지 확인하세요.")
+        except Exception as exc:
+            self.log(f"표 쪽 너비 맞춤 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("표 쪽 너비 맞춤 실패", str(exc))
+
     def select_current_table_object(self) -> bool:
         if self.run_hwp_command("SelectCtrlReverse"):
             time.sleep(0.03)
@@ -2337,27 +2486,6 @@ class MvpApp(tk.Tk):
         results: list[str] = []
 
         try:
-            bg_action, bg_ok, bg_default = self.set_cell_fill_color(self.palette_color(title["background_color"]))
-            results.append(f"배경={bg_ok}({bg_action}, default={bg_default})")
-        except Exception as exc:
-            results.append(f"배경 실패:{type(exc).__name__}")
-            self.debug(f"[title-cell] 배경 실패: {exc}")
-
-        try:
-            border_action, border_ok = self.set_title_cell_borders()
-            results.append(f"테두리={border_ok}({border_action})")
-        except Exception as exc:
-            results.append(f"테두리 실패:{type(exc).__name__}")
-            self.debug(f"[title-cell] 테두리 실패: {exc}")
-
-        try:
-            text_ok, text_default = self.set_text_color(self.palette_color(title["text_color"]))
-            results.append(f"글자색={text_ok}(default={text_default})")
-        except Exception as exc:
-            results.append(f"글자색 실패:{type(exc).__name__}")
-            self.debug(f"[title-cell] 글자색 실패: {exc}")
-
-        try:
             para_ok = self.apply_style_by_name(title["paragraph_style"])
             results.append(f"문단스타일={para_ok}({title['paragraph_style']})")
         except Exception as exc:
@@ -2372,6 +2500,27 @@ class MvpApp(tk.Tk):
             except Exception as exc:
                 results.append(f"글자스타일 실패:{type(exc).__name__}")
                 self.debug(f"[title-cell] 글자스타일 실패: {exc}")
+
+        try:
+            border_action, border_ok = self.set_title_cell_borders()
+            results.append(f"테두리={border_ok}({border_action})")
+        except Exception as exc:
+            results.append(f"테두리 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 테두리 실패: {exc}")
+
+        try:
+            bg_action, bg_ok, bg_default = self.set_cell_fill_color(self.palette_color(title["background_color"]))
+            results.append(f"배경={bg_ok}({bg_action}, default={bg_default})")
+        except Exception as exc:
+            results.append(f"배경 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 배경 실패: {exc}")
+
+        try:
+            text_ok, text_default = self.set_text_color(self.palette_color(title["text_color"]))
+            results.append(f"글자색={text_ok}(default={text_default})")
+        except Exception as exc:
+            results.append(f"글자색 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 글자색 실패: {exc}")
 
         self.log("제목셀 자동화: " + ", ".join(results))
 
@@ -2745,10 +2894,13 @@ class MvpApp(tk.Tk):
 
         hwnd, title, _score = sorted(candidates, key=lambda item: item[2], reverse=True)[0]
         try:
-            if win32con is not None:
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            else:
-                win32gui.ShowWindow(hwnd, 9)
+            # SW_RESTORE breaks Windows snapped/split layouts even when the
+            # window is already visible. Restore only minimized HWP windows.
+            if win32gui.IsIconic(hwnd):
+                if win32con is not None:
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                else:
+                    win32gui.ShowWindow(hwnd, 9)
         except Exception:
             pass
         try:
