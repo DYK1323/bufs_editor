@@ -1,0 +1,12 @@
+# Local Codex/OMX state
+.omx/
+
+# Python local environment/cache
+.venv/
+bufs/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Generated test documents
+bufs/test-output/*.hwpx
