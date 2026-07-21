@@ -524,9 +524,9 @@ def strip_wrapping_blank_lines(text: str) -> str:
 DATE_RE = re.compile(
     r"(?<!\d)"
     r"(?P<year>\d{4})"
-    r"(?:\s*년\s*|\s*\.\s*)"
+    r"(?:\s*년\s*|\s*\.\s*|\s*-\s*)"
     r"(?P<month>\d{1,2})"
-    r"(?:\s*월\s*|\s*\.\s*)"
+    r"(?:\s*월\s*|\s*\.\s*|\s*-\s*)"
     r"(?P<day>\d{1,2})"
     r"(?:\s*일|\s*\.)?"
     r"(?!\d)"
@@ -537,9 +537,9 @@ WEEKDAY_DATE_RE = re.compile(
     r"(?<!\d)"
     r"(?P<date>"
     r"(?P<year>\d{4})"
-    r"(?:\s*년\s*|\s*\.\s*)"
+    r"(?:\s*년\s*|\s*\.\s*|\s*-\s*)"
     r"(?P<month>\d{1,2})"
-    r"(?:\s*월\s*|\s*\.\s*)"
+    r"(?:\s*월\s*|\s*\.\s*|\s*-\s*)"
     r"(?P<day>\d{1,2})"
     r"(?:\s*일|\s*\.)?"
     r")"
@@ -586,6 +586,10 @@ def remove_weekdays_from_dates(text: str) -> str:
     return re.sub(r"\s*\([월화수목금토일]\)", "", text)
 
 
+def is_wrapped_regulation_name(text: str) -> bool:
+    return (text.startswith(("｢", "「")) and text.endswith(("｣", "」")))
+
+
 def looks_like_multiline_number_block(text: str) -> bool:
     lines = [line.strip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     values = [line for line in lines if line]
@@ -625,6 +629,16 @@ def clipboard_cell_values(text: str, *, preserve_tabs: bool = False) -> list[str
         return [cell.strip() for row in rows for cell in row if cell.strip()]
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     return [value.strip() for value in normalized.split("\n") if value.strip()]
+
+
+def parse_cell_address(address: str) -> tuple[int, int] | None:
+    match = re.fullmatch(r"\$?([A-Za-z]+)\$?(\d+)", address.strip())
+    if match is None:
+        return None
+    col = 0
+    for char in match.group(1).upper():
+        col = col * 26 + (ord(char) - ord("A") + 1)
+    return col, int(match.group(2))
 
 
 def parse_markdown_table(text: str) -> list[list[str]] | None:
@@ -1004,6 +1018,7 @@ class MvpApp(tk.Tk):
         self.pending_caption_title = ""
         self.pending_caption_parts = CaptionParts(prefix="", suffix="")
         self._refreshing = False
+        self._applying_style = False
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=(6, 4))
@@ -1522,6 +1537,11 @@ class MvpApp(tk.Tk):
         )
         ttk.Button(hwp_buttons1, text="개요 기호 제거", command=self.clean_selected_outline_prefixes).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        hwp_buttons2 = ttk.Frame(cleanup_group)
+        hwp_buttons2.pack(fill="x", pady=(6, 0))
+        ttk.Button(hwp_buttons2, text="｢규정명｣", command=self.wrap_regulation_names_in_selection).pack(
+            side="left", fill="x", expand=True
         )
 
         number_group = ttk.LabelFrame(parent, text="숫자 정리", padding=8)
@@ -2111,16 +2131,34 @@ class MvpApp(tk.Tk):
     def cut_selected_table_caption_title(self) -> None:
         self.cut_selected_table_caption_title_core("표 제목 잘라두기")
 
+    def selected_block_contains_table(self) -> bool:
+        try:
+            block_xml = safe_str(self.hwp.GetTextFile("HWPML2X", "saveblock"))
+        except Exception as exc:
+            self.debug(f"[caption-cut] 선택 블록 HWPML 확인 실패: {type(exc).__name__}: {exc}")
+            return False
+        upper_xml = block_xml.upper()
+        return "<TABLE" in upper_xml or "<HP:TBL" in upper_xml
+
     def cut_selected_table_caption_title_core(self, label: str) -> bool:
         if not self.ensure_hwp():
             return False
         try:
-            cut_ok = self.run_hwp_command("Cut")
+            if self.has_selected_object() or self.selected_block_contains_table():
+                messagebox.showwarning(
+                    label,
+                    "표까지 선택된 상태에서는 제목을 자르지 않습니다.\n\n"
+                    "표 바로 윗줄 제목 텍스트만 블록 선택한 뒤 다시 실행하세요.",
+                )
+                self.log(f"{label}: 표 포함 선택으로 Cut 중단")
+                return False
+
+            copy_ok = self.run_hwp_command("Copy")
             time.sleep(0.08)
             title_text = strip_wrapping_blank_lines(self.get_clipboard_text()).strip()
-            if not cut_ok or not title_text:
+            if not copy_ok or not title_text:
                 messagebox.showwarning(label, "표 바로 윗줄 제목만 블록 선택한 뒤 다시 실행하세요.")
-                self.log(f"{label}: Cut={cut_ok}, 제목 텍스트 없음")
+                self.log(f"{label}: Copy={copy_ok}, 제목 텍스트 없음")
                 return False
 
             try:
@@ -2130,6 +2168,14 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(label, f"{exc}\n\n클립보드 텍스트:\n{preview[:200]}")
                 self.log(f"{label}: 제목 형식 인식 실패, clipboard={preview!r}")
                 return False
+
+            cut_ok = self.run_hwp_command("Cut")
+            time.sleep(0.08)
+            if not cut_ok:
+                messagebox.showwarning(label, "제목 형식은 확인했지만 선택 텍스트를 자르지 못했습니다.")
+                self.log(f"{label}: Cut 실패")
+                return False
+
             self.pending_caption_title = title_text
             self.pending_caption_parts = parts
             self.activate_hwp_window()
@@ -2213,8 +2259,8 @@ class MvpApp(tk.Tk):
             return
         self.run_hwp_command("Cancel")
         time.sleep(0.05)
-        table_selected = self.select_current_table_object()
-        self.debug(f"[caption-one-step] SelectCtrlReverse={table_selected}")
+        table_selected = self.select_next_table_object_below_cursor()
+        self.debug(f"[caption-one-step] select_next_table={table_selected}")
         if not table_selected:
             messagebox.showwarning(label, "제목은 잘라냈지만 다음 표를 선택하지 못했습니다.")
             self.log(f"{label}: 다음 표 선택 실패")
@@ -2353,6 +2399,26 @@ class MvpApp(tk.Tk):
         if self.run_hwp_command("SelectCtrlReverse"):
             time.sleep(0.03)
             return True
+        return False
+
+    def select_next_table_object_below_cursor(self, max_down_moves: int = 8) -> bool:
+        self.clear_hwp_selection()
+        for move_count in range(1, max_down_moves + 1):
+            moved = self.run_hwp_command("MoveDown")
+            time.sleep(0.03)
+            try:
+                in_cell = bool(getattr(self.hwp, "CellShape"))
+            except Exception:
+                in_cell = False
+            selected = self.select_current_table_object()
+            self.debug(
+                f"[caption-one-step] next-table search move={move_count}, "
+                f"MoveDown={moved}, CellShape={in_cell}, SelectCtrlReverse={selected}"
+            )
+            if selected:
+                return True
+            if not moved:
+                break
         return False
 
     def has_selected_object(self) -> bool:
@@ -2596,7 +2662,7 @@ class MvpApp(tk.Tk):
             messagebox.showerror("서식 테스트 문서 열기 실패", str(exc))
 
     def on_style_selected(self, _event=None) -> None:
-        if self._refreshing or not self.apply_on_select.get():
+        if self._refreshing or self._applying_style or not self.apply_on_select.get():
             return
         # Tk listbox selection event can fire before the new selection is fully settled.
         self.after_idle(lambda: self.apply_selected_style(reason="single-click"))
@@ -2655,6 +2721,9 @@ class MvpApp(tk.Tk):
         return None
 
     def apply_selected_style(self, reason: str = "manual") -> None:
+        if self._applying_style:
+            self.debug(f"[style] 적용 중 재진입 무시: reason={reason}")
+            return
         selection = self.style_list.curselection()
         if not selection:
             messagebox.showwarning("스타일 선택 필요", "적용할 스타일을 먼저 선택하세요.")
@@ -2665,6 +2734,7 @@ class MvpApp(tk.Tk):
         if record.style_type != "PARA":
             self.debug(f"[style] 글자 스타일 적용 시도: type={record.style_type}, name={record.name}")
 
+        self._applying_style = True
         try:
             if self.hwp is None:
                 self.debug("[hwp] COM 연결 시작")
@@ -2703,6 +2773,11 @@ class MvpApp(tk.Tk):
                 "스타일 적용 실패",
                 f"{exc}\n\n현재 문서에 같은 스타일 세트가 없거나, 선택 영역 상태가 맞지 않을 수 있습니다.",
             )
+        finally:
+            self.after(250, self._finish_style_apply)
+
+    def _finish_style_apply(self) -> None:
+        self._applying_style = False
 
     def insert_file_at_cursor(self, path: Path) -> bool:
         option = self.hwp.HParameterSet.HInsertFile
@@ -2846,6 +2921,12 @@ class MvpApp(tk.Tk):
         ok = True
         for _ in range(max(0, count)):
             ok = self.run_hwp_command("Delete") and ok
+        return ok
+
+    def move_hwp_chars(self, command: str, count: int) -> bool:
+        ok = True
+        for _ in range(max(0, count)):
+            ok = self.run_hwp_command(command) and ok
         return ok
 
     def run_first_hwp_command(self, commands: tuple[str, ...]) -> tuple[str, bool]:
@@ -3047,6 +3128,102 @@ class MvpApp(tk.Tk):
             return bool(self.hwp.SetPos(pos[0], pos[1], pos[2]))
         except Exception:
             return False
+
+    def set_hwp_pos_by_set(self, pos_set) -> bool:
+        try:
+            return bool(self.hwp.SetPosBySet(pos_set))
+        except Exception as exc:
+            self.debug(f"[hwp-pos-set] SetPosBySet 실패: {type(exc).__name__}: {exc}")
+            return False
+
+    def get_hwp_pos_by_set(self):
+        try:
+            return self.hwp.GetPosBySet()
+        except Exception as exc:
+            self.debug(f"[hwp-pos-set] GetPosBySet 실패: {type(exc).__name__}: {exc}")
+            return None
+
+    def get_selected_cell_block_start_pos_by_scan(self):
+        try:
+            if not getattr(self.hwp, "CellShape"):
+                return None
+        except Exception:
+            return None
+
+        original_pos = self.get_hwp_pos_by_set()
+        start_pos = None
+        try:
+            self.hwp.InitScan(1, 0xFF)
+            try:
+                self.hwp.GetText()
+                self.hwp.MovePos(201)
+                start_pos = self.get_hwp_pos_by_set()
+            finally:
+                try:
+                    self.hwp.ReleaseScan()
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.debug(f"[cell-scan-start] 선택 셀 첫 위치 확인 실패: {type(exc).__name__}: {exc}")
+            start_pos = None
+        finally:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+        return start_pos
+
+    def get_selected_cell_range_by_formula(self) -> dict | None:
+        try:
+            pset = self.hwp.HParameterSet.HFieldCtrl
+            self.hwp.HAction.GetDefault("TableFormula", pset.HSet)
+            command = safe_str(pset.Command)
+        except Exception as exc:
+            self.debug(f"[cell-formula-range] TableFormula 범위 확인 실패: {type(exc).__name__}: {exc}")
+            return None
+        parts = [part.strip() for part in command[2:-1].split(",") if part.strip()]
+        addresses = [parse_cell_address(part) for part in parts]
+        addresses = [address for address in addresses if address is not None]
+        if not addresses:
+            self.debug(f"[cell-formula-range] 주소 없음: command={command!r}, parts={parts}")
+            return None
+        cols = [address[0] for address in addresses]
+        rows = [address[1] for address in addresses]
+        first_col, last_col = min(cols), max(cols)
+        first_row, last_row = min(rows), max(rows)
+        return {
+            "command": command,
+            "addresses": addresses,
+            "first_col": first_col,
+            "last_col": last_col,
+            "first_row": first_row,
+            "last_row": last_row,
+            "cols": last_col - first_col + 1,
+            "rows": last_row - first_row + 1,
+            "cells": (last_col - first_col + 1) * (last_row - first_row + 1),
+        }
+
+    def get_selected_text_positions(self) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
+        try:
+            result = self.hwp.GetSelectedPos()
+        except Exception as exc:
+            self.debug(f"[selection-pos] GetSelectedPos 실패: {type(exc).__name__}: {exc}")
+            return None
+        if not isinstance(result, tuple) or len(result) < 7 or not result[0]:
+            self.debug(f"[selection-pos] GetSelectedPos invalid: {result}")
+            return None
+        start = (int(result[1]), int(result[2]), int(result[3]))
+        end = (int(result[4]), int(result[5]), int(result[6]))
+        if start == end:
+            return None
+        ordered_start, ordered_end = sorted((start, end))
+        return ordered_start, ordered_end
+
+    def reselect_hwp_text(self, start: tuple[int, int, int], text: str) -> bool:
+        if not text or not self.set_hwp_pos(start):
+            return False
+        for _ in range(len(text)):
+            if not self.run_hwp_command("MoveSelRight"):
+                return False
+        return True
 
     def read_current_cell_text(self) -> str | None:
         if not self.select_current_table_cell_for_replace():
@@ -3269,31 +3446,54 @@ class MvpApp(tk.Tk):
         if not self.set_hwp_pos(endpoint):
             return False
         self.clear_hwp_selection()
-        if not self.move_table_cell("TableUpperCell", len(selected_values) - 1):
-            messagebox.showwarning(
-                label,
-                "한 열 범위를 위에서 아래로 선택한 경우만 처리할 수 있습니다.\n\n"
-                "아래에서 위로 선택했거나, 선택한 셀 위쪽으로 충분히 이동할 수 없어 중단했습니다.",
-            )
-            self.log(f"{label}: 한 열 위->아래 선택 확인 실패, values={len(selected_values)}")
-            return True
-
-        start_pos = self.hwp.GetPos()
-        actual_values: list[str] = []
-        for index in range(len(selected_values)):
-            if index > 0 and not self.move_table_cell("TableLowerCell"):
-                actual_values = []
-                break
-            value = self.read_current_cell_text()
-            if value is None:
-                actual_values = []
-                break
-            actual_values.append(strip_wrapping_blank_lines(value) if strip_wrapping_lines else value)
 
         expected_values = [
             strip_wrapping_blank_lines(value) if strip_wrapping_lines else value
             for value in selected_values
         ]
+
+        range_info = self.get_selected_cell_range_by_formula()
+        if range_info is not None:
+            if range_info["cols"] != 1 or range_info["rows"] != len(selected_values):
+                messagebox.showwarning(
+                    label,
+                    "한 열 범위만 처리할 수 있습니다.\n\n"
+                    "여러 열을 선택했거나, 병합 셀이 포함된 범위는 중단했습니다.",
+                )
+                self.log(f"{label}: TableFormula 범위 중단, range={range_info}, values={len(selected_values)}")
+                return True
+            self.debug(f"[cell-column-iterate] TableFormula range={range_info}")
+
+        def read_column_values_from_current() -> tuple[tuple[int, int, int] | None, list[str]]:
+            try:
+                start = self.hwp.GetPos()
+            except Exception:
+                return None, []
+            values: list[str] = []
+            for index in range(len(selected_values)):
+                if index > 0 and not self.move_table_cell("TableLowerCell"):
+                    return start, []
+                value = self.read_current_cell_text()
+                if value is None:
+                    return start, []
+                values.append(strip_wrapping_blank_lines(value) if strip_wrapping_lines else value)
+            return start, values
+
+        start_pos: tuple[int, int, int] | None = None
+        actual_values: list[str] = []
+        scan_start_pos = self.get_selected_cell_block_start_pos_by_scan()
+        if scan_start_pos is not None and self.set_hwp_pos_by_set(scan_start_pos):
+            start_pos, actual_values = read_column_values_from_current()
+        if actual_values != expected_values and self.set_hwp_pos(endpoint) and self.move_table_cell("TableUpperCell", len(selected_values) - 1):
+            start_pos, actual_values = read_column_values_from_current()
+        if actual_values != expected_values:
+            if self.set_hwp_pos(endpoint):
+                self.clear_hwp_selection()
+                top_start_pos, top_actual_values = read_column_values_from_current()
+                if top_actual_values == expected_values:
+                    start_pos = top_start_pos
+                    actual_values = top_actual_values
+
         if actual_values != expected_values:
             self.set_hwp_pos(endpoint)
             messagebox.showwarning(
@@ -3310,17 +3510,22 @@ class MvpApp(tk.Tk):
             f"[cell-column-iterate] {label}: cells={len(selected_values)}, "
             f"preview_changed={changed_in_selection_preview}, start={start_pos}, endpoint={endpoint}"
         )
-        if not self.set_hwp_pos(start_pos):
+        if start_pos is None or not self.set_hwp_pos(start_pos):
             return False
+        self.clear_hwp_selection()
 
         visited = 0
         changed = 0
+        stop_reason = ""
         for index in range(len(selected_values)):
             if index > 0 and not self.move_table_cell("TableLowerCell"):
+                stop_reason = f"row-move-failed:index={index}"
                 break
             if not self.select_current_table_cell_for_replace():
+                stop_reason = f"cell-select-failed:index={index}"
                 break
             if not self.run_hwp_command("Copy"):
+                stop_reason = f"copy-failed:index={index}"
                 break
             time.sleep(0.05)
             current_text = self.get_clipboard_text()
@@ -3330,17 +3535,23 @@ class MvpApp(tk.Tk):
             if source_text and transformed != source_text:
                 self.set_clipboard_text(transformed)
                 if not self.paste_text_into_selected_cell():
+                    stop_reason = f"paste-failed:index={index}"
                     break
                 changed += 1
             self.clear_hwp_selection()
 
         if visited != len(selected_values):
+            if changed == 0:
+                self.set_hwp_pos(start_pos)
             messagebox.showwarning(
                 label,
                 "선택한 셀 범위를 순회하던 중 중단했습니다.\n\n"
                 "일부 셀이 이미 바뀌었으면 한글에서 Ctrl+Z로 되돌린 뒤, 더 작은 범위로 다시 실행하세요.",
             )
-            self.log(f"{label}: 한 열 순회 중단, visited={visited}, expected={len(selected_values)}")
+            self.log(
+                f"{label}: 한 열 순회 중단, visited={visited}, changed={changed}, "
+                f"expected={len(selected_values)}, reason={stop_reason}"
+            )
             return True
 
         self.activate_hwp_window()
@@ -3357,10 +3568,12 @@ class MvpApp(tk.Tk):
         preserve_clipboard_cells: bool = False,
         strip_wrapping_lines: bool = False,
         reselect_current_cell: bool = False,
+        reselect_after_paste: bool = False,
     ) -> None:
         if not self.ensure_hwp():
             return
         try:
+            selected_positions = self.get_selected_text_positions() if reselect_after_paste else None
             copy_ok = self.run_hwp_command("Copy")
             time.sleep(0.08)
             text = self.get_clipboard_text()
@@ -3410,14 +3623,19 @@ class MvpApp(tk.Tk):
             self.set_clipboard_text(transformed)
             paste_ok = self.run_hwp_command("Paste")
             cell_selected = False
+            text_reselected = False
             if paste_ok and reselect_current_cell:
                 time.sleep(0.03)
                 cell_selected = self.run_hwp_command("TableCellBlock")
+            if paste_ok and not cell_selected and selected_positions is not None:
+                time.sleep(0.03)
+                text_reselected = self.reselect_hwp_text(selected_positions[0], transformed)
             if paste_ok:
                 self.activate_hwp_window()
             self.log(
                 f"{label}: Copy={copy_ok}, Paste={paste_ok}, "
-                f"CellReselect={cell_selected}, {len(text)}자 -> {len(transformed)}자"
+                f"CellReselect={cell_selected}, TextReselect={text_reselected}, "
+                f"{len(text)}자 -> {len(transformed)}자"
             )
             if not paste_ok:
                 messagebox.showwarning(label, "변환 텍스트를 클립보드에 넣었지만 한글 붙여넣기가 실패했습니다.")
@@ -3460,7 +3678,11 @@ class MvpApp(tk.Tk):
             messagebox.showerror(f"{label} 실패", str(exc))
 
     def clean_selected_line_breaks(self) -> None:
-        self.transform_selected_text("줄바꿈/띄어쓰기 정리", clean_manual_line_breaks)
+        self.transform_selected_text(
+            "줄바꿈/띄어쓰기 정리",
+            clean_manual_line_breaks,
+            reselect_after_paste=True,
+        )
 
     def clean_selected_outline_prefixes(self) -> None:
         self.transform_selected_text(
@@ -3470,7 +3692,75 @@ class MvpApp(tk.Tk):
             preserve_clipboard_cells=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+            reselect_after_paste=True,
         )
+
+    def wrap_regulation_names_in_selection(self) -> None:
+        label = "｢규정명｣"
+        if not self.ensure_hwp():
+            return
+        try:
+            positions = self.get_selected_text_positions()
+            copy_ok = self.run_hwp_command("Copy")
+            time.sleep(0.08)
+            text = self.get_clipboard_text()
+            if not copy_ok or not text:
+                messagebox.showwarning(label, "한글에서 감쌀 규정명을 먼저 선택하세요.")
+                self.log(f"{label}: 선택 텍스트 없음")
+                return
+            if "\t" in text:
+                messagebox.showwarning(
+                    label,
+                    "표 셀 여러 칸 선택은 문단/글자 스타일 보존이 불안정해서 중단했습니다.\n\n"
+                    "한 셀 안의 규정명 텍스트만 선택한 뒤 다시 실행하세요.",
+                )
+                self.log(f"{label}: 표 셀 범위 선택으로 중단")
+                return
+            if is_wrapped_regulation_name(text.strip()):
+                self.activate_hwp_window()
+                self.log(f"{label}: 이미 감싸져 있어 변경 없음")
+                return
+            stripped_text = strip_wrapping_blank_lines(text)
+            if not stripped_text or "\n" in stripped_text or "\r" in stripped_text:
+                messagebox.showwarning(
+                    label,
+                    "규정명 한 줄만 선택한 뒤 다시 실행하세요.\n\n"
+                    "여러 줄 선택은 개요번호/문단 경계 때문에 서식 보존이 불안정해서 중단했습니다.",
+                )
+                self.log(f"{label}: 여러 줄 또는 빈 선택으로 중단")
+                return
+
+            if positions is None:
+                messagebox.showwarning(
+                    label,
+                    "선택한 글자 위치를 확인하지 못해 중단했습니다.\n\n"
+                    "규정명 글자만 드래그해 선택한 뒤 다시 실행하세요.",
+                )
+                self.log(f"{label}: 선택 위치 확인 실패")
+                return
+
+            start, end = positions
+            if not self.set_hwp_pos(end) or not self.insert_hwp_text("｣"):
+                messagebox.showwarning(
+                    label,
+                    "닫는 괄호 삽입에 실패했습니다.",
+                )
+                self.log(f"{label}: 닫는 괄호 삽입 실패")
+                return
+            if not self.set_hwp_pos(start) or not self.insert_hwp_text("｢"):
+                messagebox.showwarning(
+                    label,
+                    "여는 괄호 삽입에 실패했습니다.\n\n"
+                    "문서에 닫는 괄호만 들어갔다면 한글에서 Ctrl+Z로 되돌리세요.",
+                )
+                self.log(f"{label}: 여는 괄호 삽입 실패")
+                return
+
+            self.activate_hwp_window()
+            self.log(f"{label}: 선택 텍스트 스타일 유지 방식으로 괄호 삽입 완료")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
 
     def add_commas_to_selection(self) -> None:
         self.transform_selected_text(
