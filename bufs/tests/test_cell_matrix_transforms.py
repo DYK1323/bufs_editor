@@ -103,6 +103,24 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(find_inline_rule_ranges_for_style_set(text, rule, style_set), [(2, 11, None)])
 
+    def test_outline_rule_filters_duplicate_markers_by_table_context(self) -> None:
+        style_set = StyleSet(
+            "set",
+            [
+                StyleEntry("본문-개요2", outline_markers=("ㅇ",)),
+                StyleEntry("표내용-개요2", table_style=True, outline_markers=("ㅇ",)),
+            ],
+            [],
+        )
+
+        body_entry, body_prefix = find_outline_style_rule("ㅇ 본문", style_set, in_table=False)
+        table_entry, table_prefix = find_outline_style_rule("ㅇ 표내용", style_set, in_table=True)
+
+        self.assertEqual(body_entry.name, "본문-개요2")
+        self.assertEqual(table_entry.name, "표내용-개요2")
+        self.assertEqual(body_prefix, len("ㅇ "))
+        self.assertEqual(table_prefix, len("ㅇ "))
+
     def test_table_icon_presets_match_expected_grid_sizes_and_files(self) -> None:
         self.assertEqual(len(TABLE_STYLE_ICON_PRESETS), 4)
         self.assertEqual(len(TABLE_BORDER_ICON_PRESETS), 6)
@@ -1465,6 +1483,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.log = lambda _message: None
         app.debug = lambda _message: None
         app.ensure_current_doc_style_cache = lambda: None
+        app.is_hwp_paragraph_in_table = lambda _list_id, _para: False
         app.active_style_set_name = "보고서용"
         app.style_sets = [
             StyleSet(
@@ -1495,6 +1514,238 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(selected_ranges, [(2, 0, 2, len("첫째")), (4, 0, 4, len("둘째"))])
         self.assertEqual(applied, [current_record, current_record])
         self.assertEqual(restored, ["original"])
+
+    def test_configured_outline_style_bulk_normal_selection_does_not_force_table_context(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 1})()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((0, 2, 0), (0, 3, 3))
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = restored.append
+        app.clear_hwp_selection = lambda: True
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.debug = lambda _message: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "set"
+        app.style_sets = [StyleSet("set", [], [], [InlineRule("본문 괄호", "leading_parenthesized_after_identifier")])]
+        calls: list[dict] = []
+
+        def fake_process(*args, **kwargs):
+            calls.append(kwargs)
+            return True, False, False, 1
+
+        app.process_configured_style_paragraph = fake_process
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(calls, [{}, {}])
+        self.assertEqual(restored, ["original"])
+
+    def test_configured_outline_style_bulk_normal_selection_uses_body_marker_style_when_duplicate(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 1})()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((0, 2, 0), (0, 2, 4))
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = restored.append
+        app.clear_hwp_selection = lambda: True
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.debug = lambda _message: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "set"
+        app.style_sets = [
+            StyleSet(
+                "set",
+                [
+                    StyleEntry("본문-개요2", outline_markers=("ㅇ",)),
+                    StyleEntry("표내용-개요2", table_style=True, outline_markers=("ㅇ",)),
+                ],
+                [],
+            )
+        ]
+        app.is_hwp_paragraph_in_table = lambda _list_id, _para: False
+        app.read_current_paragraph_text = lambda _list_id, _para: "ㅇ 본문"
+        app.delete_hwp_text_range = lambda _list_id, _para, _start, _end: True
+        app.apply_style_to_paragraph_text = lambda _list_id, _para, record: applied.append(record.name) or True
+        app.apply_inline_rules_to_paragraph = lambda *_args, **_kwargs: 0
+        app.find_current_doc_style_record = lambda name: StyleRecord(1, 1, "PARA", name)
+        applied: list[str] = []
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(applied, ["본문-개요2"])
+
+    def test_configured_outline_style_bulk_routes_cell_block_through_cell_addresses(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.ensure_hwp = lambda: True
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.activate_hwp_window = lambda: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "set"
+        active_set = StyleSet("set", [StyleEntry("body", outline_markers=("o",))], [])
+        app.style_sets = [active_set]
+        app.get_selected_cell_range_by_formula = lambda: {"addresses": [(1, 1), (2, 1)]}
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = lambda pos: restored.append(pos) or True
+        app.snapshot_formula_address_positions = lambda addresses: [((1, 1), "cell-a1"), ((2, 1), "cell-b1")]
+        app.scan_current_cell_paragraph_positions = lambda: []
+        ranges = iter([(7, 2, 3), (8, 5, 5)])
+        app.selected_current_cell_paragraph_range = lambda: next(ranges)
+        processed: list[tuple[int, int]] = []
+
+        force_values: list[bool | None] = []
+
+        def fake_process(_label, list_id, para, _active_set, _missing_styles, _missing_roles, **kwargs):
+            processed.append((list_id, para))
+            force_values.append(kwargs.get("force_in_table"))
+            return True, para % 2 == 0, True, 0
+
+        app.process_configured_style_paragraph = fake_process
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(processed, [(7, 2), (7, 3), (8, 5)])
+        self.assertEqual(force_values, [True, True, True])
+        self.assertEqual(restored, ["cell-a1", "cell-b1", "original"])
+
+    def test_configured_outline_style_bulk_prefers_cell_scan_paragraph_positions(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.ensure_hwp = lambda: True
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.activate_hwp_window = lambda: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "set"
+        active_set = StyleSet("set", [StyleEntry("body", outline_markers=("o",))], [])
+        app.style_sets = [active_set]
+        app.get_selected_cell_range_by_formula = lambda: {"addresses": [(1, 1), (2, 1)]}
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = lambda pos: restored.append(pos) or True
+        app.snapshot_formula_address_positions = lambda addresses: [((1, 1), "cell-a1"), ((2, 1), "cell-b1")]
+        scans = iter([[(1799, 0)], [(1802, 0), (1802, 1)]])
+        app.scan_current_cell_paragraph_positions = lambda: next(scans)
+        app.selected_current_cell_paragraph_range = lambda: self.fail("scan 성공 시 GetSelectedPos fallback을 쓰지 않아야 합니다")
+        processed: list[tuple[int, int]] = []
+
+        force_values: list[bool | None] = []
+
+        def fake_process(_label, list_id, para, _active_set, _missing_styles, _missing_roles, **kwargs):
+            processed.append((list_id, para))
+            force_values.append(kwargs.get("force_in_table"))
+            return True, True, True, 0
+
+        app.process_configured_style_paragraph = fake_process
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(processed, [(1799, 0), (1802, 0), (1802, 1)])
+        self.assertEqual(force_values, [True, True, True])
+        self.assertEqual(restored, ["cell-a1", "cell-b1", "original"])
+
+    def test_configured_outline_style_bulk_cell_selection_uses_table_marker_style_when_duplicate(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.ensure_hwp = lambda: True
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.activate_hwp_window = lambda: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "set"
+        app.style_sets = [
+            StyleSet(
+                "set",
+                [
+                    StyleEntry("본문-개요2", outline_markers=("ㅇ",)),
+                    StyleEntry("표내용-개요2", table_style=True, outline_markers=("ㅇ",)),
+                ],
+                [],
+            )
+        ]
+        app.get_selected_cell_range_by_formula = lambda: {"addresses": [(1, 1)]}
+        app.get_hwp_pos_by_set = lambda: "original"
+        app.set_hwp_pos_by_set = lambda _pos: True
+        app.snapshot_formula_address_positions = lambda _addresses: [((1, 1), "cell-a1")]
+        app.scan_current_cell_paragraph_positions = lambda: [(1802, 0)]
+        app.read_current_paragraph_text = lambda _list_id, _para: "ㅇ 표내용"
+        app.delete_hwp_text_range = lambda _list_id, _para, _start, _end: True
+        app.apply_style_to_paragraph_text = lambda _list_id, _para, record: applied.append(record.name) or True
+        app.apply_inline_rules_to_paragraph = lambda *_args, **_kwargs: 0
+        app.find_current_doc_style_record = lambda name: StyleRecord(1, 1, "PARA", name)
+        applied: list[str] = []
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(applied, ["표내용-개요2"])
+
+    def test_configured_outline_style_bulk_cell_block_warns_without_addresses(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.ensure_hwp = lambda: True
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.active_style_set_name = "set"
+        app.style_sets = [StyleSet("set", [StyleEntry("body", outline_markers=("o",))], [])]
+        app.get_selected_cell_range_by_formula = lambda: None
+        app.ensure_current_doc_style_cache = lambda: self.fail("addressless cell block should stop before cache refresh")
+        warnings: list[tuple[str, str]] = []
+        original_showwarning = hwp_style_mvp.messagebox.showwarning
+        hwp_style_mvp.messagebox.showwarning = lambda title, message: warnings.append((title, message))
+        try:
+            app.apply_configured_outline_styles_to_selection()
+        finally:
+            hwp_style_mvp.messagebox.showwarning = original_showwarning
+
+        self.assertTrue(warnings)
+
+    def test_configured_outline_style_bulk_warns_when_cell_paragraph_ranges_fail(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.ensure_hwp = lambda: True
+        app.debug = lambda _message: None
+        logs: list[str] = []
+        app.log = logs.append
+        app.activate_hwp_window = lambda: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "set"
+        active_set = StyleSet("set", [StyleEntry("body", outline_markers=("o",))], [])
+        app.style_sets = [active_set]
+        app.get_selected_cell_range_by_formula = lambda: {"addresses": [(1, 1), (2, 1)]}
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = lambda pos: restored.append(pos) or True
+        app.snapshot_formula_address_positions = lambda addresses: [((1, 1), "cell-a1"), ((2, 1), "cell-b1")]
+        app.scan_current_cell_paragraph_positions = lambda: []
+        app.selected_current_cell_paragraph_range = lambda: None
+        app.probe_current_cell_scan_segments = lambda limit=6: ["current-list: init=True | 0:1:''"]
+        processed: list[tuple[int, int]] = []
+        app.process_configured_style_paragraph = lambda *args: processed.append((args[1], args[2])) or (True, True, True, 0)
+        warnings: list[tuple[str, str]] = []
+        infos: list[tuple[str, str]] = []
+        original_showwarning = hwp_style_mvp.messagebox.showwarning
+        original_showinfo = hwp_style_mvp.messagebox.showinfo
+        hwp_style_mvp.messagebox.showwarning = lambda title, message: warnings.append((title, message))
+        hwp_style_mvp.messagebox.showinfo = lambda title, message: infos.append((title, message))
+        try:
+            app.apply_configured_outline_styles_to_selection()
+        finally:
+            hwp_style_mvp.messagebox.showwarning = original_showwarning
+            hwp_style_mvp.messagebox.showinfo = original_showinfo
+
+        self.assertEqual(processed, [])
+        self.assertEqual(restored, ["cell-a1", "cell-a1", "cell-b1", "cell-b1", "original"])
+        self.assertTrue(warnings)
+        self.assertIn("문단 위치", warnings[0][1])
+        self.assertEqual(infos, [])
+        self.assertTrue(any("range_failed=2" in message for message in logs))
 
     def test_wrap_regulation_button_converts_existing_corner_brackets(self) -> None:
         app = object.__new__(MvpApp)

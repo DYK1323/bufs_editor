@@ -414,6 +414,33 @@ DEFAULT_INLINE_RULES = [
         remove_markers=False,
         enabled=True,
     ),
+    InlineRule(
+        name="첫머리 괄호 키워드",
+        rule_type="leading_parenthesized_after_identifier",
+        target="table",
+        style_role="table_bold",
+        include_wrapper=True,
+        remove_markers=False,
+        enabled=True,
+    ),
+    InlineRule(
+        name="마크다운 굵게",
+        rule_type="markdown_bold",
+        target="table",
+        style_role="table_bold",
+        include_wrapper=True,
+        remove_markers=True,
+        enabled=True,
+    ),
+    InlineRule(
+        name="첫머리 콜론 앞",
+        rule_type="leading_text_before_colon_after_identifier",
+        target="table",
+        style_role="table_bold",
+        include_wrapper=False,
+        remove_markers=False,
+        enabled=True,
+    ),
 ]
 
 
@@ -1591,9 +1618,18 @@ def configured_outline_prefix_length(text: str, marker: str) -> int:
     return end
 
 
-def find_outline_style_rule(text: str, style_set: StyleSet) -> tuple[StyleEntry, int] | None:
+def find_outline_style_rule(
+    text: str,
+    style_set: StyleSet,
+    *,
+    in_table: bool | None = None,
+) -> tuple[StyleEntry, int] | None:
     candidates: list[tuple[StyleEntry, str]] = []
     for entry in style_set.paragraph_styles:
+        if in_table is True and not entry.table_style:
+            continue
+        if in_table is False and entry.table_style:
+            continue
         for marker in entry.outline_markers:
             candidates.append((entry, marker))
     candidates.sort(key=lambda item: len(item[1]), reverse=True)
@@ -5545,11 +5581,12 @@ class MvpApp(tk.Tk):
         style_set: StyleSet,
         *,
         missing_roles: set[str],
+        force_in_table: bool | None = None,
     ) -> int:
         enabled_rules = [rule for rule in style_set.inline_rules if rule.enabled]
         if not enabled_rules:
             return 0
-        in_table = self.is_hwp_paragraph_in_table(list_id, para)
+        in_table = self.is_hwp_paragraph_in_table(list_id, para) if force_in_table is None else force_in_table
         applied = 0
         for rule in enabled_rules:
             if not self.inline_rule_applies_to_context(rule, in_table=in_table):
@@ -5579,6 +5616,168 @@ class MvpApp(tk.Tk):
                     applied += 1
                 self.clear_hwp_selection()
         return applied
+
+    def process_configured_style_paragraph(
+        self,
+        label: str,
+        list_id: int,
+        para: int,
+        active_set: StyleSet,
+        missing_styles: set[str],
+        missing_roles: set[str],
+        force_in_table: bool | None = None,
+    ) -> tuple[bool, bool, bool, int]:
+        paragraph_text = self.read_current_paragraph_text(list_id, para)
+        if paragraph_text is None:
+            self.log(f"{label}: 문단 텍스트 읽기 실패 para={para}")
+            return False, False, False, 0
+
+        in_table = self.is_hwp_paragraph_in_table(list_id, para) if force_in_table is None else force_in_table
+        matched = False
+        changed = False
+        rule = find_outline_style_rule(paragraph_text, active_set, in_table=in_table)
+        if rule is not None:
+            entry, prefix_length = rule
+            matched = True
+            current_record = self.find_current_doc_style_record(entry.name)
+            if current_record is None:
+                missing_styles.add(entry.name)
+                self.debug(f"[outline-style] 현재 문서 스타일 없음: {entry.name}")
+            else:
+                delete_ok = True
+                if prefix_length > 0:
+                    delete_ok = self.delete_hwp_text_range(list_id, para, 0, prefix_length)
+                style_ok = self.apply_style_to_paragraph_text(list_id, para, current_record)
+                if delete_ok and style_ok:
+                    changed = True
+                self.debug(
+                    f"[outline-style] para={para}, marker={paragraph_text[:prefix_length]!r}, "
+                    f"style={entry.name}, delete={delete_ok}, style_ok={style_ok}"
+                )
+
+        inline_applied = self.apply_inline_rules_to_paragraph(
+            list_id,
+            para,
+            active_set,
+            missing_roles=missing_roles,
+            force_in_table=in_table,
+        )
+        self.clear_hwp_selection()
+        return True, matched, changed, inline_applied
+
+    def selected_current_cell_paragraph_range(self) -> tuple[int, int, int] | None:
+        if not self.select_current_table_cell_for_replace():
+            self.debug("[bulk-cell-style] 현재 셀 선택 실패")
+            return None
+        try:
+            raw_mode, base_mode = self.get_selection_mode_base()
+            try:
+                raw_selected_pos = self.hwp.GetSelectedPos()
+            except Exception as exc:
+                raw_selected_pos = f"{type(exc).__name__}: {exc}"
+            try:
+                key_indicator = self.hwp.KeyIndicator()
+            except Exception as exc:
+                key_indicator = f"{type(exc).__name__}: {exc}"
+            paragraph_range = self.selected_paragraph_range()
+            self.debug(
+                f"[bulk-cell-style] 셀 선택 진단: selection_mode={raw_mode}/{base_mode}, "
+                f"key_indicator={key_indicator!r}, selected_pos={raw_selected_pos!r}, "
+                f"paragraph_range={paragraph_range!r}"
+            )
+            return paragraph_range
+        finally:
+            self.clear_hwp_selection()
+
+    def scan_current_cell_paragraph_positions(self, limit: int = 200) -> list[tuple[int, int]]:
+        original_pos = self.get_hwp_pos_by_set()
+        positions: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        try:
+            init_ok = self.hwp.InitScan(0, 0x0050 | 0x0005)
+            if not init_ok:
+                self.debug("[bulk-cell-style] 셀 list scan InitScan 실패")
+                return []
+            try:
+                for _ in range(limit):
+                    status, text = self.parse_hwp_get_text_result(self.hwp.GetText())
+                    try:
+                        moved = self.hwp.MovePos(201)
+                        raw_pos = self.hwp.GetPos()
+                    except Exception as exc:
+                        moved = False
+                        raw_pos = None
+                        self.debug(f"[bulk-cell-style] scan MovePos/GetPos 실패: {type(exc).__name__}: {exc}")
+                    if (
+                        text.strip()
+                        and moved
+                        and isinstance(raw_pos, tuple)
+                        and len(raw_pos) >= 3
+                    ):
+                        item = (int(raw_pos[0]), int(raw_pos[1]))
+                        if item not in seen:
+                            positions.append(item)
+                            seen.add(item)
+                    if status in (0, 1, 101, 102):
+                        break
+            finally:
+                try:
+                    self.hwp.ReleaseScan()
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.debug(f"[bulk-cell-style] 셀 list scan 실패: {type(exc).__name__}: {exc}")
+            return []
+        finally:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+        self.debug(f"[bulk-cell-style] scan paragraph positions={positions}")
+        return positions
+
+    def probe_current_cell_scan_segments(self, limit: int = 8) -> list[str]:
+        original_pos = self.get_hwp_pos_by_set()
+        variants = [
+            ("current-para", 0, 0x0003),
+            ("current-list", 0, 0x0005),
+            ("list-list", 0, 0x0050 | 0x0005),
+            ("char-current-list", 0x0001, 0x0005),
+        ]
+        lines: list[str] = []
+        for name, option, scan_range in variants:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+            try:
+                init_ok = self.hwp.InitScan(option, scan_range)
+            except Exception as exc:
+                lines.append(f"{name}: InitScan failed {type(exc).__name__}: {exc}")
+                continue
+            items: list[str] = [f"{name}: init={init_ok}"]
+            try:
+                for index in range(limit):
+                    status, text = self.parse_hwp_get_text_result(self.hwp.GetText())
+                    preview = text.replace("\r", "\\r").replace("\n", "\\n")
+                    if len(preview) > 40:
+                        preview = preview[:40] + "..."
+                    try:
+                        moved = self.hwp.MovePos(201)
+                        pos = self.hwp.GetPos()
+                    except Exception as exc:
+                        moved = f"{type(exc).__name__}: {exc}"
+                        pos = None
+                    items.append(f"{index}:{status}:{preview!r}:move={moved}:pos={pos!r}")
+                    if status in (0, 1, 101, 102):
+                        break
+            except Exception as exc:
+                items.append(f"GetText failed {type(exc).__name__}: {exc}")
+            finally:
+                try:
+                    self.hwp.ReleaseScan()
+                except Exception:
+                    pass
+            lines.append(" | ".join(items))
+        if original_pos is not None:
+            self.set_hwp_pos_by_set(original_pos)
+        return lines
 
     def reselect_hwp_text(self, start: tuple[int, int, int], text: str) -> bool:
         if not text or not self.set_hwp_pos(start):
@@ -6514,6 +6713,10 @@ class MvpApp(tk.Tk):
                 self.log(f"{label}: 규칙 없음, set={active_set.name}")
                 return
 
+            if self.is_selected_cell_block():
+                self.apply_configured_outline_styles_to_selected_cells(label, active_set, rule_count, inline_rule_count)
+                return
+
             paragraph_range = self.selected_paragraph_range()
             if paragraph_range is None:
                 messagebox.showwarning(label, "한글에서 변환할 문단 영역을 먼저 선택하세요.")
@@ -6533,37 +6736,22 @@ class MvpApp(tk.Tk):
 
             for para in range(first_para, last_para + 1):
                 self.clear_hwp_selection()
-                paragraph_text = self.read_current_paragraph_text(list_id, para)
-                if paragraph_text is None:
-                    self.log(f"{label}: 문단 텍스트 읽기 실패 para={para}")
-                    continue
                 visited += 1
-                rule = find_outline_style_rule(paragraph_text, active_set)
-                if rule is not None:
-                    entry, prefix_length = rule
-                    matched += 1
-                    current_record = self.find_current_doc_style_record(entry.name)
-                    if current_record is None:
-                        missing_styles.add(entry.name)
-                        self.debug(f"[outline-style] 현재 문서 스타일 없음: {entry.name}")
-                    else:
-                        delete_ok = True
-                        if prefix_length > 0:
-                            delete_ok = self.delete_hwp_text_range(list_id, para, 0, prefix_length)
-                        style_ok = self.apply_style_to_paragraph_text(list_id, para, current_record)
-                        if delete_ok and style_ok:
-                            changed += 1
-                        self.debug(
-                            f"[outline-style] para={para}, marker={paragraph_text[:prefix_length]!r}, "
-                            f"style={entry.name}, delete={delete_ok}, style_ok={style_ok}"
-                        )
-                inline_applied += self.apply_inline_rules_to_paragraph(
+                processed, para_matched, para_changed, para_inline_applied = self.process_configured_style_paragraph(
+                    label,
                     list_id,
                     para,
                     active_set,
-                    missing_roles=missing_roles,
+                    missing_styles,
+                    missing_roles,
                 )
-                self.clear_hwp_selection()
+                if not processed:
+                    continue
+                if para_matched:
+                    matched += 1
+                if para_changed:
+                    changed += 1
+                inline_applied += para_inline_applied
 
             if original_pos is not None:
                 self.set_hwp_pos_by_set(original_pos)
@@ -6588,6 +6776,113 @@ class MvpApp(tk.Tk):
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
+
+    def apply_configured_outline_styles_to_selected_cells(
+        self,
+        label: str,
+        active_set: StyleSet,
+        rule_count: int,
+        inline_rule_count: int,
+    ) -> None:
+        cell_range = self.get_selected_cell_range_by_formula()
+        addresses = [] if cell_range is None else list(cell_range.get("addresses") or [])
+        if not addresses:
+            messagebox.showwarning(label, "선택한 셀 주소를 확인하지 못해 일괄처리를 중단했습니다.")
+            self.log(f"{label}: 셀 주소 확인 실패")
+            return
+
+        self.ensure_current_doc_style_cache()
+        original_pos = self.get_hwp_pos_by_set()
+        address_positions = self.snapshot_formula_address_positions(addresses)
+        if address_positions is None:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+            messagebox.showwarning(label, "선택한 셀 위치를 확인하지 못해 일괄처리를 중단했습니다.")
+            self.log(f"{label}: 셀 위치 스냅샷 실패")
+            return
+        self.debug(f"[bulk-cell-style] TableFormula range={cell_range}, positions={len(address_positions)}")
+
+        visited = 0
+        matched = 0
+        changed = 0
+        cells_visited = 0
+        cells_restore_failed = 0
+        cells_range_failed = 0
+        scan_probe_logged = 0
+        missing_styles: set[str] = set()
+        missing_roles: set[str] = set()
+
+        for address, cell_pos in address_positions:
+            if not self.set_hwp_pos_by_set(cell_pos):
+                cells_restore_failed += 1
+                self.debug(f"[bulk-cell-style] 셀 위치 복원 실패: address={address}")
+                continue
+            paragraph_positions = self.scan_current_cell_paragraph_positions()
+            if not paragraph_positions:
+                paragraph_range = self.selected_current_cell_paragraph_range()
+                if paragraph_range is not None:
+                    list_id, first_para, last_para = paragraph_range
+                    paragraph_positions = [(list_id, para) for para in range(first_para, last_para + 1)]
+            if not paragraph_positions:
+                cells_range_failed += 1
+                self.debug(f"[bulk-cell-style] 셀 문단 범위 확인 실패: address={address}")
+                if scan_probe_logged < 3:
+                    if self.set_hwp_pos_by_set(cell_pos):
+                        self.log(f"{label}: 셀 스캔 진단 address={address}")
+                        for line in self.probe_current_cell_scan_segments(limit=6):
+                            self.log(f"[bulk-cell-style] {line}")
+                    scan_probe_logged += 1
+                continue
+            cells_visited += 1
+            for list_id, para in paragraph_positions:
+                visited += 1
+                processed, para_matched, para_changed, para_inline_applied = self.process_configured_style_paragraph(
+                    label,
+                    list_id,
+                    para,
+                    active_set,
+                    missing_styles,
+                    missing_roles,
+                    force_in_table=True,
+                )
+                if not processed:
+                    continue
+                if para_matched:
+                    matched += 1
+                if para_changed or para_inline_applied > 0:
+                    changed += 1
+
+        if original_pos is not None:
+            self.set_hwp_pos_by_set(original_pos)
+        self.activate_hwp_window()
+        self.log(
+            f"{label}: 셀 순회 완료, set={active_set.name}, "
+            f"outline_rules={rule_count}, inline_rules={inline_rule_count}, "
+            f"cells={cells_visited}/{len(address_positions)}, visited={visited}, "
+            f"matched={matched}, changed={changed}, "
+            f"restore_failed={cells_restore_failed}, range_failed={cells_range_failed}"
+        )
+        if missing_styles or missing_roles:
+            parts = []
+            if missing_styles:
+                parts.append("현재 문서에 같은 이름의 문단 스타일이 없어 건너뜀:\n" + "\n".join(sorted(missing_styles)))
+            if missing_roles:
+                parts.append("현재 세트/문서에서 글자 역할을 찾지 못해 건너뜀:\n" + "\n".join(sorted(missing_roles)))
+            messagebox.showwarning(label, "일부 규칙을 건너뛰었습니다.\n\n" + "\n\n".join(parts))
+        elif cells_range_failed and visited == 0:
+            messagebox.showwarning(
+                label,
+                "선택한 셀 안의 문단 위치를 확인하지 못해 일괄처리를 적용하지 못했습니다.\n\n"
+                "로그의 [bulk-cell-style] 셀 선택 진단 값을 확인해 주세요.",
+            )
+        elif cells_range_failed:
+            messagebox.showwarning(
+                label,
+                f"일부 셀의 문단 위치를 확인하지 못해 건너뛰었습니다.\n\n"
+                f"처리한 셀: {cells_visited}개 / 실패한 셀: {cells_range_failed}개",
+            )
+        elif changed == 0:
+            messagebox.showinfo(label, "선택한 셀에서 일괄처리 규칙과 일치하는 텍스트를 찾지 못했습니다.")
 
     def wrap_regulation_names_in_selection(self) -> None:
         label = "｢규정명｣"

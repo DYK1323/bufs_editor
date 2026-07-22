@@ -102,7 +102,8 @@
           "outline_markers": [
             "표점",
             "∙",
-            "표2"
+            "표2",
+            "-"
           ],
           "roles": []
         },
@@ -154,6 +155,15 @@
           "type": "leading_parenthesized_after_identifier",
           "target": "body",
           "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
+          "name": "첫머리 괄호 키워드",
+          "type": "leading_parenthesized_after_identifier",
+          "target": "table",
+          "style_role": "table_bold",
           "include_wrapper": true,
           "remove_markers": false,
           "enabled": true
@@ -211,6 +221,15 @@
           "enabled": true
         },
         {
+          "name": "첫머리 괄호 키워드",
+          "type": "leading_parenthesized_after_identifier",
+          "target": "table",
+          "style_role": "table_bold",
+          "include_wrapper": true,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
           "name": "마크다운 굵게",
           "type": "markdown_bold",
           "target": "body",
@@ -240,6 +259,15 @@
           "type": "leading_parenthesized_after_identifier",
           "target": "body",
           "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
+          "name": "첫머리 괄호 키워드",
+          "type": "leading_parenthesized_after_identifier",
+          "target": "table",
+          "style_role": "table_bold",
           "include_wrapper": true,
           "remove_markers": false,
           "enabled": true
