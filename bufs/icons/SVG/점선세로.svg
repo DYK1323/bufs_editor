@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="_레이어_2" data-name="레이어 2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18.69 19.36">
+  <defs>
+    <style>
+      .cls-1 {
+        stroke-dasharray: .5 .5;
+      }
+
+      .cls-1, .cls-2, .cls-3, .cls-4, .cls-5 {
+        fill: none;
+      }
+
+      .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6 {
+        stroke-linecap: round;
+        stroke-miterlimit: 10;
+      }
+
+      .cls-1, .cls-3, .cls-5, .cls-6 {
+        stroke: #e60012;
+        stroke-width: .1px;
+      }
+
+      .cls-2 {
+        stroke-dasharray: 1.05 1.05;
+      }
+
+      .cls-2, .cls-4 {
+        stroke: #231815;
+        stroke-width: .5px;
+      }
+
+      .cls-3 {
+        stroke-dasharray: .49 .49;
+      }
+
+      .cls-6 {
+        fill: #fff;
+        stroke-dasharray: .5 .5;
+      }
+    </style>
+  </defs>
+  <g id="_레이어_1-2" data-name="레이어 1">
+    <line class="cls-6" x1=".05" y1=".25" x2="18.64" y2=".25"/>
+    <g>
+      <line class="cls-5" x1=".05" y1="9.68" x2=".3" y2="9.68"/>
+      <line class="cls-3" x1=".79" y1="9.68" x2="18.15" y2="9.68"/>
+      <line class="cls-5" x1="18.39" y1="9.68" x2="18.64" y2="9.68"/>
+    </g>
+    <line class="cls-6" x1="18.64" y1="19.11" x2=".05" y2="19.11"/>
+    <g>
+      <line class="cls-5" x1="18.64" y1=".25" x2="18.64" y2=".5"/>
+      <line class="cls-1" x1="18.64" y1="1" x2="18.64" y2="18.61"/>
+      <line class="cls-5" x1="18.64" y1="18.86" x2="18.64" y2="19.11"/>
+    </g>
+    <g>
+      <line class="cls-5" x1=".05" y1="19.11" x2=".05" y2="18.86"/>
+      <line class="cls-1" x1=".05" y1="18.36" x2=".05" y2=".75"/>
+      <line class="cls-5" x1=".05" y1=".5" x2=".05" y2=".25"/>
+    </g>
+    <g>
+      <line class="cls-4" x1="9.35" y1="19.11" x2="9.35" y2="18.61"/>
+      <line class="cls-2" x1="9.35" y1="17.56" x2="9.35" y2="1.28"/>
+      <line class="cls-4" x1="9.35" y1=".75" x2="9.35" y2=".25"/>
+    </g>
+  </g>
+</svg>
