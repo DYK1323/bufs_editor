@@ -3391,6 +3391,18 @@ class MvpApp(tk.Tk):
         rule_include_wrapper_var = tk.BooleanVar(value=True)
         rule_remove_markers_var = tk.BooleanVar(value=False)
         rule_enabled_var = tk.BooleanVar(value=True)
+        adding_style_var = tk.BooleanVar(value=False)
+        adding_rule_var = tk.BooleanVar(value=False)
+        style_form_snapshot: list[tuple[object, ...] | None] = [None]
+        rule_form_snapshot: list[tuple[object, ...] | None] = [None]
+        style_selection_guard = [False]
+        rule_selection_guard = [False]
+        set_selection_guard = [False]
+        tab_selection_guard = [False]
+        last_style_selection: list[str | None] = [None]
+        last_rule_selection: list[str | None] = [None]
+        last_set_index: list[int | None] = [None]
+        last_tab: list[str | None] = [None]
         rule_role_combo_ref: list[ttk.Combobox] = []
 
         body = ttk.Frame(window, padding=10)
@@ -3559,6 +3571,57 @@ class MvpApp(tk.Tk):
                         return False
             return True
 
+        def style_form_values() -> tuple[object, ...]:
+            return (
+                style_type_var.get(),
+                style_name_var.get(),
+                table_style_var.get(),
+                caption_style_var.get(),
+                outline_markers_var.get(),
+                roles_var.get(),
+                numbering_group_var.get(),
+                numbering_level_var.get(),
+                numbering_restart_var.get(),
+                adding_style_var.get(),
+            )
+
+        def rule_form_values() -> tuple[object, ...]:
+            return (
+                rule_name_var.get(),
+                rule_type_var.get(),
+                rule_target_var.get(),
+                rule_role_var.get(),
+                rule_include_wrapper_var.get(),
+                rule_remove_markers_var.get(),
+                rule_enabled_var.get(),
+                adding_rule_var.get(),
+            )
+
+        def mark_style_form_clean() -> None:
+            style_form_snapshot[0] = style_form_values()
+
+        def mark_rule_form_clean() -> None:
+            rule_form_snapshot[0] = rule_form_values()
+
+        def style_form_dirty() -> bool:
+            return style_form_snapshot[0] is not None and style_form_values() != style_form_snapshot[0]
+
+        def rule_form_dirty() -> bool:
+            return rule_form_snapshot[0] is not None and rule_form_values() != rule_form_snapshot[0]
+
+        def confirm_discard_pending(scope: str = "") -> bool:
+            check_style = scope in {"", "스타일", "스타일/규칙"}
+            check_rule = scope in {"", "규칙", "스타일/규칙"}
+            dirty_scopes = []
+            if check_style and style_form_dirty():
+                dirty_scopes.append("스타일")
+            if check_rule and rule_form_dirty():
+                dirty_scopes.append("규칙")
+            if not dirty_scopes:
+                return True
+            label = ", ".join(dirty_scopes)
+            return messagebox.askyesno("저장 안 된 변경", f"{label}에 저장하지 않은 변경이 있습니다. 버리고 이동할까요?", parent=window)
+
         def persist_working_sets() -> None:
             active_name = selected_set().name
             self.style_sets = working_sets
@@ -3575,21 +3638,39 @@ class MvpApp(tk.Tk):
             self.debug(f"[style-sets] 즉시 저장: {STYLE_SETS_FILE}")
 
         def select_set(_event=None) -> None:
+            if set_selection_guard[0]:
+                return
             if not working_sets:
+                return
+            new_index = selected_set_index()
+            if last_set_index[0] is not None and new_index != last_set_index[0] and not confirm_discard_pending("스타일/규칙"):
+                set_selection_guard[0] = True
+                set_list.selection_clear(0, "end")
+                set_list.selection_set(last_set_index[0])
+                set_list.activate(last_set_index[0])
+                set_selection_guard[0] = False
                 return
             selected_set_var.set(selected_set().name)
             refresh_style_tree()
             refresh_rule_tree()
             refresh_rule_role_options()
+            clear_style_form()
+            clear_rule_form()
+            last_set_index[0] = selected_set_index()
 
         def replace_selected_set(style_set: StyleSet) -> None:
             working_sets[selected_set_index()] = style_set
+            set_selection_guard[0] = True
             refresh_set_list(style_set.name)
+            last_set_index[0] = selected_set_index()
+            set_selection_guard[0] = False
             refresh_style_tree()
             refresh_rule_tree()
             refresh_rule_role_options()
 
         def add_set() -> None:
+            if not confirm_discard_pending("스타일/규칙"):
+                return
             base = "새 세트"
             existing = {item.name for item in working_sets}
             name = base
@@ -3601,6 +3682,9 @@ class MvpApp(tk.Tk):
             refresh_set_list(name)
             refresh_style_tree()
             refresh_rule_tree()
+            clear_style_form()
+            clear_rule_form()
+            last_set_index[0] = selected_set_index()
             persist_working_sets()
 
         def unique_set_name(base: str) -> str:
@@ -3614,6 +3698,8 @@ class MvpApp(tk.Tk):
             return name
 
         def import_style_set_from_file() -> None:
+            if not confirm_discard_pending("스타일/규칙"):
+                return
             raw_path = filedialog.askopenfilename(
                 parent=window,
                 title="스타일 세트로 불러올 한글 파일 선택",
@@ -3642,10 +3728,15 @@ class MvpApp(tk.Tk):
             refresh_set_list(name)
             refresh_style_tree()
             refresh_rule_tree()
+            clear_style_form()
+            clear_rule_form()
+            last_set_index[0] = selected_set_index()
             persist_working_sets()
             self.log(f"스타일 세트 불러오기: {path.name}, styles={len(records)}, set={name}")
 
         def remove_set() -> None:
+            if not confirm_discard_pending("스타일/규칙"):
+                return
             if len(working_sets) <= 1:
                 messagebox.showwarning("삭제 불가", "스타일 세트는 최소 1개가 필요합니다.", parent=window)
                 return
@@ -3654,6 +3745,9 @@ class MvpApp(tk.Tk):
             refresh_set_list(working_sets[min(index, len(working_sets) - 1)].name)
             refresh_style_tree()
             refresh_rule_tree()
+            clear_style_form()
+            clear_rule_form()
+            last_set_index[0] = selected_set_index()
             persist_working_sets()
 
         def rename_set() -> None:
@@ -3670,25 +3764,25 @@ class MvpApp(tk.Tk):
             refresh_set_list(name)
             persist_working_sets()
 
-        def add_style() -> None:
+        def style_entry_from_form(style_type: str, replace_index: int | None = None) -> StyleEntry | None:
             name = style_name_var.get().strip()
             if not name:
                 messagebox.showwarning("스타일 이름 필요", "스타일 이름을 입력하세요.", parent=window)
-                return
+                return None
             item = selected_set()
-            target = item.character_styles if style_type_var.get() == "글자" else item.paragraph_styles
-            if any(entry.name == name for entry in target):
+            target = item.character_styles if style_type == "글자" else item.paragraph_styles
+            if any(index != replace_index and entry.name == name for index, entry in enumerate(target)):
                 messagebox.showwarning("스타일 이름 중복", "같은 구분에 이미 있는 스타일 이름입니다.", parent=window)
-                return
+                return None
             markers = parse_style_marker_text(outline_markers_var.get())
             roles = parse_role_text(roles_var.get())
-            if not validate_style_roles(style_type_var.get(), roles):
-                return
+            if not validate_style_roles(style_type, roles, replace_index if style_type == "글자" else None):
+                return None
             numbering_level = normalize_numbering_level(numbering_level_var.get())
             numbering_group = normalize_numbering_group(numbering_group_var.get())
             if numbering_level and not numbering_group:
                 numbering_group = "table" if table_style_var.get() else "body"
-            entry = StyleEntry(
+            return StyleEntry(
                 name,
                 table_style_var.get(),
                 caption_style_var.get(),
@@ -3698,17 +3792,72 @@ class MvpApp(tk.Tk):
                 numbering_level,
                 numbering_restart_var.get(),
             )
-            if style_type_var.get() == "글자":
-                replace_selected_set(StyleSet(item.name, item.paragraph_styles, [*item.character_styles, entry], item.inline_rules))
-            else:
-                replace_selected_set(StyleSet(item.name, [*item.paragraph_styles, entry], item.character_styles, item.inline_rules))
+
+        def clear_style_form() -> None:
             style_name_var.set("")
+            table_style_var.set(False)
+            caption_style_var.set(False)
             outline_markers_var.set("")
             roles_var.set("")
             numbering_group_var.set("")
             numbering_level_var.set("")
             numbering_restart_var.set(False)
+            mark_style_form_clean()
+
+        def start_new_style() -> None:
+            if not confirm_discard_pending("스타일"):
+                return
+            adding_style_var.set(True)
+            style_selection_guard[0] = True
+            style_tree.selection_remove(style_tree.selection())
+            last_style_selection[0] = None
+            style_selection_guard[0] = False
+            clear_style_form()
+
+        def save_style_form() -> None:
+            style_type = style_type_var.get()
+            ref = selected_style_ref()
+            item = selected_set()
+            paragraph_styles = list(item.paragraph_styles)
+            character_styles = list(item.character_styles)
+            is_new = adding_style_var.get() or ref is None
+            replace_index = None
+            if not is_new:
+                selected_type, selected_index = ref
+                style_type = selected_type
+                replace_index = selected_index
+            entry = style_entry_from_form(style_type, replace_index)
+            if entry is None:
+                return
+            if style_type == "글자":
+                if is_new:
+                    character_styles.append(entry)
+                elif replace_index is not None and replace_index < len(character_styles):
+                    character_styles[replace_index] = entry
+                else:
+                    return
+            else:
+                if is_new:
+                    paragraph_styles.append(entry)
+                elif replace_index is not None and replace_index < len(paragraph_styles):
+                    paragraph_styles[replace_index] = entry
+                else:
+                    return
+            replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles, item.inline_rules))
+            adding_style_var.set(False)
+            clear_style_form()
+            last_style_selection[0] = None
             persist_working_sets()
+
+        def delete_selected_style() -> None:
+            if adding_style_var.get():
+                if confirm_discard_pending("스타일"):
+                    adding_style_var.set(False)
+                    clear_style_form()
+                return
+            update_selected_style(remove=True)
+            clear_style_form()
+            last_style_selection[0] = None
 
         def selected_style_ref() -> tuple[str, int] | None:
             selection = style_tree.selection()
@@ -3757,6 +3906,18 @@ class MvpApp(tk.Tk):
             persist_working_sets()
 
         def fill_form_from_selected_style(_event=None) -> None:
+            if style_selection_guard[0]:
+                return
+            selection = style_tree.selection()
+            new_selection = selection[0] if selection else None
+            if new_selection != last_style_selection[0] and not confirm_discard_pending("스타일"):
+                style_selection_guard[0] = True
+                style_tree.selection_remove(style_tree.selection())
+                if last_style_selection[0]:
+                    style_tree.selection_set(last_style_selection[0])
+                    style_tree.focus(last_style_selection[0])
+                style_selection_guard[0] = False
+                return
             ref = selected_style_ref()
             if ref is None:
                 return
@@ -3775,6 +3936,9 @@ class MvpApp(tk.Tk):
             numbering_group_var.set(numbering_group_label(entry.numbering_group))
             numbering_level_var.set(str(entry.numbering_level) if entry.numbering_level else "")
             numbering_restart_var.set(entry.restart_after_higher_level)
+            adding_style_var.set(False)
+            last_style_selection[0] = new_selection
+            mark_style_form_clean()
 
         def selected_rule_index() -> int | None:
             selection = rule_tree.selection()
@@ -3784,6 +3948,18 @@ class MvpApp(tk.Tk):
             return int(raw_index)
 
         def fill_form_from_selected_rule(_event=None) -> None:
+            if rule_selection_guard[0]:
+                return
+            selection = rule_tree.selection()
+            new_selection = selection[0] if selection else None
+            if new_selection != last_rule_selection[0] and not confirm_discard_pending("규칙"):
+                rule_selection_guard[0] = True
+                rule_tree.selection_remove(rule_tree.selection())
+                if last_rule_selection[0]:
+                    rule_tree.selection_set(last_rule_selection[0])
+                    rule_tree.focus(last_rule_selection[0])
+                rule_selection_guard[0] = False
+                return
             index = selected_rule_index()
             if index is None:
                 return
@@ -3798,6 +3974,9 @@ class MvpApp(tk.Tk):
             rule_include_wrapper_var.set(rule.include_wrapper)
             rule_remove_markers_var.set(rule.remove_markers)
             rule_enabled_var.set(rule.enabled)
+            adding_rule_var.set(False)
+            last_rule_selection[0] = new_selection
+            mark_rule_form_clean()
 
         def rule_from_form() -> InlineRule | None:
             name = rule_name_var.get().strip()
@@ -3827,26 +4006,50 @@ class MvpApp(tk.Tk):
             replace_selected_set(StyleSet(item.name, item.paragraph_styles, item.character_styles, rules))
             persist_working_sets()
 
-        def add_inline_rule() -> None:
-            rule = rule_from_form()
-            if rule is None:
+        def clear_rule_form() -> None:
+            rule_name_var.set("")
+            rule_type_var.set(inline_rule_type_label("leading_parenthesized_after_identifier"))
+            rule_target_var.set("body")
+            roles = character_role_options()
+            rule_role_var.set(roles[0] if roles else "")
+            rule_include_wrapper_var.set(True)
+            rule_remove_markers_var.set(False)
+            rule_enabled_var.set(True)
+            mark_rule_form_clean()
+
+        def start_new_rule() -> None:
+            if not confirm_discard_pending("규칙"):
                 return
-            replace_inline_rules([*selected_set().inline_rules, rule])
+            adding_rule_var.set(True)
+            rule_selection_guard[0] = True
+            rule_tree.selection_remove(rule_tree.selection())
+            last_rule_selection[0] = None
+            rule_selection_guard[0] = False
+            clear_rule_form()
 
         def save_selected_rule() -> None:
-            index = selected_rule_index()
-            if index is None:
-                return
             rule = rule_from_form()
             if rule is None:
                 return
             rules = list(selected_set().inline_rules)
-            if index >= len(rules):
+            index = selected_rule_index()
+            if adding_rule_var.get() or index is None:
+                rules.append(rule)
+            elif index < len(rules):
+                rules[index] = rule
+            else:
                 return
-            rules[index] = rule
+            adding_rule_var.set(False)
             replace_inline_rules(rules)
+            clear_rule_form()
+            last_rule_selection[0] = None
 
         def remove_selected_rule() -> None:
+            if adding_rule_var.get():
+                if confirm_discard_pending("규칙"):
+                    adding_rule_var.set(False)
+                    clear_rule_form()
+                return
             index = selected_rule_index()
             if index is None:
                 return
@@ -3855,6 +4058,23 @@ class MvpApp(tk.Tk):
                 return
             del rules[index]
             replace_inline_rules(rules)
+            clear_rule_form()
+            last_rule_selection[0] = None
+
+        def on_tab_changed(_event=None) -> None:
+            if tab_selection_guard[0]:
+                return
+            current_tab = notebook.select()
+            if last_tab[0] is not None and current_tab != last_tab[0] and not confirm_discard_pending("스타일/규칙"):
+                tab_selection_guard[0] = True
+                notebook.select(last_tab[0])
+                tab_selection_guard[0] = False
+                return
+            last_tab[0] = current_tab
+
+        def close_window() -> None:
+            if confirm_discard_pending("스타일/규칙"):
+                window.destroy()
 
         set_form = ttk.Frame(body)
         set_form.grid(row=0, column=1, sticky="ew", pady=(0, 8))
@@ -3870,7 +4090,6 @@ class MvpApp(tk.Tk):
         ttk.Entry(add_form, textvariable=style_name_var, width=20).pack(side="left", fill="x", expand=True, padx=(6, 0))
         ttk.Checkbutton(add_form, text="표", variable=table_style_var).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(add_form, text="캡션", variable=caption_style_var).pack(side="left")
-        ttk.Button(add_form, text="추가", command=add_style).pack(side="left", padx=(6, 0))
 
         marker_form = ttk.Frame(style_tab)
         marker_form.grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -3889,11 +4108,12 @@ class MvpApp(tk.Tk):
         ttk.Label(marker_form, text="수준").pack(side="left", padx=(8, 0))
         ttk.Entry(marker_form, textvariable=numbering_level_var, width=4).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(marker_form, text="상위 개요 뒤 새 번호", variable=numbering_restart_var).pack(side="left", padx=(8, 0))
-        ttk.Button(marker_form, text="선택 항목 저장", command=lambda: update_selected_style(save_form=True)).pack(side="right", padx=(10, 0))
 
         item_buttons = ttk.Frame(style_tab)
         item_buttons.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(item_buttons, text="선택 삭제", command=lambda: update_selected_style(remove=True)).pack(side="left")
+        ttk.Button(item_buttons, text="추가", command=start_new_style).pack(side="left")
+        ttk.Button(item_buttons, text="삭제", command=delete_selected_style).pack(side="left", padx=(6, 0))
+        ttk.Button(item_buttons, text="저장", command=save_style_form).pack(side="right")
 
         rule_form = ttk.Frame(rule_tab)
         rule_form.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -3929,21 +4149,30 @@ class MvpApp(tk.Tk):
         ttk.Checkbutton(rule_options, text="경계 포함", variable=rule_include_wrapper_var).pack(side="left")
         ttk.Checkbutton(rule_options, text="표식 삭제", variable=rule_remove_markers_var).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(rule_options, text="사용", variable=rule_enabled_var).pack(side="left", padx=(6, 0))
-        ttk.Button(rule_options, text="규칙 추가", command=add_inline_rule).pack(side="left", padx=(12, 0))
-        ttk.Button(rule_options, text="선택 규칙 저장", command=save_selected_rule).pack(side="left", padx=(6, 0))
-        ttk.Button(rule_options, text="선택 규칙 삭제", command=remove_selected_rule).pack(side="left", padx=(6, 0))
+
+        rule_buttons = ttk.Frame(rule_tab)
+        rule_buttons.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(rule_buttons, text="추가", command=start_new_rule).pack(side="left")
+        ttk.Button(rule_buttons, text="삭제", command=remove_selected_rule).pack(side="left", padx=(6, 0))
+        ttk.Button(rule_buttons, text="저장", command=save_selected_rule).pack(side="right")
 
         buttons = ttk.Frame(body)
         buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        ttk.Button(buttons, text="닫기", command=window.destroy).pack(side="left")
+        ttk.Button(buttons, text="닫기", command=close_window).pack(side="left")
 
         set_list.bind("<<ListboxSelect>>", select_set)
         style_tree.bind("<<TreeviewSelect>>", fill_form_from_selected_style)
         rule_tree.bind("<<TreeviewSelect>>", fill_form_from_selected_rule)
+        notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+        window.protocol("WM_DELETE_WINDOW", close_window)
         refresh_set_list()
         refresh_style_tree()
         refresh_rule_tree()
         refresh_rule_role_options()
+        last_set_index[0] = selected_set_index()
+        last_tab[0] = notebook.select()
+        clear_style_form()
+        clear_rule_form()
 
     def populate_logo_chips(self, logos: list[Path]) -> None:
         for child in self.logo_chip_frame.winfo_children():
