@@ -1,0 +1,134 @@
+{
+  "active_set": "보고서용",
+  "style_sets": [
+    {
+      "name": "보고서용",
+      "paragraph_styles": [
+        {
+          "name": "바탕글",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "표내용-왼쪽",
+          "table_style": true,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "1. 본문-큰번호",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": ">> 본문-개요1",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "◦ 본문-개요2",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": [
+            "ㅇ",
+            "◦",
+            "○",
+            "원기호",
+            "원"
+          ]
+        },
+        {
+          "name": "- 본문-개요3",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": [
+            "바",
+            "-",
+            "선",
+            "대시",
+            "하이픈"
+          ]
+        },
+        {
+          "name": "∙본문-개요4",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": [
+            "·",
+            "점",
+            "쩜"
+          ]
+        },
+        {
+          "name": "표내용-중간",
+          "table_style": true,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "표내용-오른쪽",
+          "table_style": true,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "표내용-개요번호-레벨1",
+          "table_style": true,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "표내용-개요번호-레벨2",
+          "table_style": true,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "[표/그림] 캡션",
+          "table_style": false,
+          "caption_style": true,
+          "outline_markers": []
+        },
+        {
+          "name": "[표/그림] (단위: ㅇㅇ)",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "<표 아래: 주>",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": []
+        }
+      ],
+      "character_styles": [
+        {
+          "name": "본문-굵게",
+          "table_style": false,
+          "caption_style": false,
+          "outline_markers": []
+        },
+        {
+          "name": "표내용-굵게",
+          "table_style": true,
+          "caption_style": false,
+          "outline_markers": []
+        }
+      ]
+    },
+    {
+      "name": "일반보고용",
+      "paragraph_styles": [],
+      "character_styles": []
+    },
+    {
+      "name": "공문용",
+      "paragraph_styles": [],
+      "character_styles": []
+    }
+  ]
+}

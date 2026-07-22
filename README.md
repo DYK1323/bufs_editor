@@ -86,8 +86,9 @@ bufs/
   run-mvp.ps1            # 실행 스크립트
   verify-readiness.ps1   # 한글 COM/템플릿 검증 스크립트
   table-settings.json    # 표 색상, 선, 제목셀, 여백, 단축키 설정
-  style-order.json       # 스타일 표시 순서
-  보고서 본문 서식.hwpx   # 스타일 라이브러리
+  style-sets.json        # 스타일 세트, 문단/글자 구분, 표/캡션 플래그
+  style-order.json       # 구버전 스타일 표시 순서 호환용
+  보고서 본문 서식.hwpx   # 구버전 스타일 라이브러리/테스트 문서
   표지.hwpx              # 표지 템플릿
   logos/                 # 로고 이미지
   APP_INDEX.md           # 개발자를 위한 앱 구조 인덱스

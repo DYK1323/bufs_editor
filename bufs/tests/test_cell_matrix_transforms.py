@@ -34,8 +34,11 @@ from hwp_style_mvp import (  # noqa: E402
     UnsafeUnitConversionNumberError,
     ensure_no_suspicious_decimal_numbers,
     ensure_safe_decimal_unit_conversion_text,
+    find_outline_style_rule,
+    is_standard_regulation_wrapper,
     parse_cell_addresses_from_formula_command,
     parse_cell_address_from_keyindicator,
+    parse_style_marker_text,
     looks_like_single_copied_cell,
     TABLE_BORDER_ICON_BUTTON_SIZE,
     TABLE_BORDER_ICON_PRESETS,
@@ -43,9 +46,16 @@ from hwp_style_mvp import (  # noqa: E402
     TABLE_ICON_BUTTON_GAP,
     TABLE_STYLE_ICON_BUTTON_SIZE,
     TABLE_STYLE_ICON_PRESETS,
+    StyleEntry,
     StyleRecord,
+    StyleSet,
+    load_style_sets,
     read_style_records,
+    read_style_records_from_hwp_file,
     read_style_records_from_hwpml,
+    needs_regulation_wrapper_conversion,
+    save_style_sets,
+    style_set_from_records,
     transform_cell_matrix,
     MvpApp,
 )
@@ -95,6 +105,81 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(records["표내용-중간"].style_id, 97)
         self.assertEqual(records["표내용-중간"].style_index, 1)
+
+    def test_style_sets_round_trip_table_and_caption_flags(self) -> None:
+        old_path = hwp_style_mvp.STYLE_SETS_FILE
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                hwp_style_mvp.STYLE_SETS_FILE = Path(temp_dir) / "style-sets.json"
+                style_sets = [
+                    StyleSet(
+                        "보고서용",
+                        [
+                            StyleEntry("표내용-중간", table_style=True),
+                            StyleEntry("[표/그림] 캡션", caption_style=True),
+                            StyleEntry("본문-개요2", outline_markers=("ㅇ", "○")),
+                        ],
+                        [StyleEntry("표내용-굵게", table_style=True)],
+                    )
+                ]
+
+                save_style_sets("보고서용", style_sets)
+                active_name, loaded_sets = load_style_sets()
+            finally:
+                hwp_style_mvp.STYLE_SETS_FILE = old_path
+
+        self.assertEqual(active_name, "보고서용")
+        self.assertTrue(loaded_sets[0].paragraph_styles[0].table_style)
+        self.assertTrue(loaded_sets[0].paragraph_styles[1].caption_style)
+        self.assertEqual(loaded_sets[0].paragraph_styles[2].outline_markers, ("ㅇ", "○"))
+        self.assertTrue(loaded_sets[0].character_styles[0].table_style)
+
+    def test_imported_hwpx_style_records_can_build_style_set(self) -> None:
+        header = """<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:styles>
+    <hh:style id="1" type="PARA" name="표내용-중간"/>
+    <hh:style id="2" type="PARA" name="[표/그림] 캡션"/>
+    <hh:style id="3" type="CHAR" name="표내용-굵게"/>
+  </hh:styles>
+</hh:head>
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sample.hwpx"
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("Contents/header.xml", header)
+
+            records = read_style_records_from_hwp_file(path)
+
+        style_set = style_set_from_records("sample", records)
+
+        self.assertEqual(style_set.name, "sample")
+        self.assertTrue(style_set.paragraph_styles[0].table_style)
+        self.assertTrue(style_set.paragraph_styles[1].caption_style)
+        self.assertTrue(style_set.character_styles[0].table_style)
+
+    def test_parse_style_marker_text_splits_commas_and_removes_duplicates(self) -> None:
+        self.assertEqual(parse_style_marker_text("ㅇ, ○, 원기호, 원, ㅇ"), ["ㅇ", "○", "원기호", "원"])
+
+    def test_regulation_wrapper_conversion_detects_nonstandard_corner_brackets(self) -> None:
+        self.assertTrue(needs_regulation_wrapper_conversion("「규정명」"))
+        self.assertFalse(needs_regulation_wrapper_conversion("｢규정명｣"))
+        self.assertTrue(is_standard_regulation_wrapper("｢규정명｣"))
+
+    def test_find_outline_style_rule_prefers_longer_marker(self) -> None:
+        style_set = StyleSet(
+            "보고서용",
+            [
+                StyleEntry("본문-개요2", outline_markers=("원",)),
+                StyleEntry("본문-개요3", outline_markers=("원기호",)),
+            ],
+            [],
+        )
+
+        entry, prefix_length = find_outline_style_rule("  원기호 세부 내용", style_set)
+
+        self.assertEqual(entry.name, "본문-개요3")
+        self.assertEqual(prefix_length, len("  원기호 "))
 
     def test_execute_style_record_applies_current_document_style_id_after_name_match(self) -> None:
         class FakeStyleSet:
@@ -191,6 +276,44 @@ class CellMatrixTransformTests(unittest.TestCase):
         )
         self.assertEqual(app.table_content_style_button_label(app.style_records[1]), "숨은문자")
         self.assertEqual(app.table_content_style_button_label(app.style_records[3]), "굵게")
+
+    def test_table_content_style_records_include_checked_table_styles(self) -> None:
+        app = object.__new__(MvpApp)
+        app.style_records = [
+            StyleRecord(1, 1, "PARA", "표 셀 기본"),
+            StyleRecord(2, 2, "CHAR", "강조 문자"),
+            StyleRecord(3, 3, "PARA", "본문"),
+        ]
+        app.active_style_set_name = "보고서용"
+        app.style_sets = [
+            StyleSet(
+                "보고서용",
+                [StyleEntry("표 셀 기본", table_style=True), StyleEntry("본문")],
+                [StyleEntry("강조 문자", table_style=True)],
+            )
+        ]
+
+        self.assertEqual(
+            [record.name for record in app.table_content_style_records()],
+            ["표 셀 기본", "강조 문자"],
+        )
+
+    def test_caption_style_record_uses_checked_caption_style(self) -> None:
+        app = object.__new__(MvpApp)
+        app.style_records = [
+            StyleRecord(1, 1, "PARA", "본문"),
+            StyleRecord(2, 2, "PARA", "캡션 스타일"),
+        ]
+        app.active_style_set_name = "보고서용"
+        app.style_sets = [
+            StyleSet(
+                "보고서용",
+                [StyleEntry("본문"), StyleEntry("캡션 스타일", caption_style=True)],
+                [],
+            )
+        ]
+
+        self.assertEqual(app.caption_style_record().name, "캡션 스타일")
 
     def test_refresh_current_doc_style_map_prefers_hwp_memory_styles(self) -> None:
         class FakeHwp:
@@ -1267,6 +1390,82 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertNotIn((0, 5, 0), visited_positions)
         self.assertEqual(restored, ["original"])
         self.assertEqual(messages, [])
+
+    def test_configured_outline_style_bulk_applies_matching_paragraph_styles(self) -> None:
+        app = object.__new__(MvpApp)
+        selected_ranges: list[tuple[int, int, int, int]] = []
+
+        class FakeHwp:
+            SelectionMode = 1
+
+            def SelectText(self, spara, spos, epara, epos):
+                selected_ranges.append((spara, spos, epara, epos))
+                return True
+
+        app.hwp = FakeHwp()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((0, 2, 0), (0, 4, 3))
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = restored.append
+        app.clear_hwp_selection = lambda: True
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.debug = lambda _message: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "보고서용"
+        app.style_sets = [
+            StyleSet(
+                "보고서용",
+                [StyleEntry("본문-개요2", outline_markers=("ㅇ", "○"))],
+                [],
+            )
+        ]
+        current_record = StyleRecord(97, 1, "PARA", "본문-개요2")
+        app.find_current_doc_style_record = lambda name: current_record if name == "본문-개요2" else None
+        paragraphs = {2: "ㅇ 첫째", 3: "본문", 4: "○ 둘째"}
+        app.read_current_paragraph_text = lambda _list_id, para: paragraphs[para]
+        deleted: list[tuple[int, int, int, int]] = []
+        def delete_range(list_id, para, start, end):
+            deleted.append((list_id, para, start, end))
+            paragraphs[para] = paragraphs[para][:start] + paragraphs[para][end:]
+            return True
+
+        app.delete_hwp_text_range = delete_range
+        positions: list[tuple[int, int, int]] = []
+        app.set_hwp_pos = lambda pos: positions.append(pos) or True
+        applied: list[StyleRecord] = []
+        app.execute_style_record = lambda record: applied.append(record) or True
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(deleted, [(0, 2, 0, len("ㅇ ")), (0, 4, 0, len("○ "))])
+        self.assertEqual(selected_ranges, [(2, 0, 2, len("첫째")), (4, 0, 4, len("둘째"))])
+        self.assertEqual(applied, [current_record, current_record])
+        self.assertEqual(restored, ["original"])
+
+    def test_wrap_regulation_button_converts_existing_corner_brackets(self) -> None:
+        app = object.__new__(MvpApp)
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((0, 2, 5), (0, 2, 10))
+        app.run_hwp_command = lambda command: command == "Copy"
+        app.get_clipboard_text = lambda: "「규정명」"
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.debug = lambda _message: None
+
+        deleted: list[tuple[int, int, int, int]] = []
+        positions: list[tuple[int, int, int]] = []
+        inserted: list[str] = []
+        app.delete_hwp_text_range = lambda list_id, para, start, end: deleted.append((list_id, para, start, end)) or True
+        app.set_hwp_pos = lambda pos: positions.append(pos) or True
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
+
+        app.wrap_regulation_names_in_selection()
+
+        self.assertEqual(deleted, [(0, 2, 9, 10), (0, 2, 5, 6)])
+        self.assertEqual(positions, [(0, 2, 9), (0, 2, 5)])
+        self.assertEqual(inserted, ["｣", "｢"])
 
 
 if __name__ == "__main__":
