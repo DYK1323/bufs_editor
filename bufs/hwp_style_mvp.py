@@ -25,6 +25,7 @@ import time
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape
@@ -614,6 +615,55 @@ def parse_cell_clipboard_matrix(text: str) -> list[list[str]]:
     return [row.split("\t") for row in normalized.split("\n")]
 
 
+def is_rectangular_cell_matrix(matrix: list[list[str]]) -> bool:
+    if not matrix:
+        return False
+    width = len(matrix[0])
+    return width > 0 and all(len(row) == width for row in matrix)
+
+
+def cell_matrix_size(matrix: list[list[str]]) -> tuple[int, int]:
+    if not matrix:
+        return 0, 0
+    return len(matrix), len(matrix[0])
+
+
+def transform_cell_matrix(
+    matrix: list[list[str]],
+    transform,
+    *,
+    strip_wrapping_lines: bool = False,
+) -> tuple[list[list[str]], int]:
+    transformed_matrix: list[list[str]] = []
+    changed = 0
+    for row in matrix:
+        transformed_row: list[str] = []
+        for cell_text in row:
+            source_text = strip_wrapping_blank_lines(cell_text) if strip_wrapping_lines else cell_text
+            transformed = transform(source_text) if source_text else source_text
+            if transformed != source_text:
+                changed += 1
+            transformed_row.append(transformed)
+        transformed_matrix.append(transformed_row)
+    return transformed_matrix, changed
+
+
+def cell_matrix_to_tsv(matrix: list[list[str]]) -> str:
+    return "\r\n".join("\t".join(row) for row in matrix)
+
+
+def flatten_cell_matrix(matrix: list[list[str]], *, strip_wrapping_lines: bool = False) -> list[str]:
+    values: list[str] = []
+    for row in matrix:
+        for cell_text in row:
+            values.append(strip_wrapping_blank_lines(cell_text) if strip_wrapping_lines else cell_text.strip())
+    return values
+
+
+def normalize_clipboard_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
 def looks_like_cell_clipboard_matrix(text: str) -> bool:
     rows = parse_cell_clipboard_matrix(text)
     if not rows:
@@ -639,6 +689,25 @@ def parse_cell_address(address: str) -> tuple[int, int] | None:
     for char in match.group(1).upper():
         col = col * 26 + (ord(char) - ord("A") + 1)
     return col, int(match.group(2))
+
+
+def parse_cell_addresses_from_formula_command(command: str) -> list[tuple[int, int]]:
+    raw_addresses = re.findall(r"(?<![A-Za-z0-9_])\$?[A-Za-z]+\$?\d+(?![A-Za-z0-9_])", command)
+    addresses: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+    for raw_address in raw_addresses:
+        address = parse_cell_address(raw_address)
+        if address is not None and address not in seen:
+            seen.add(address)
+            addresses.append(address)
+    return addresses
+
+
+def parse_cell_address_from_keyindicator(value: str) -> tuple[int, int] | None:
+    match = re.search(r"\(([A-Za-z]+\d+)\)", value)
+    if match is None:
+        return None
+    return parse_cell_address(match.group(1))
 
 
 def parse_markdown_table(text: str) -> list[list[str]] | None:
@@ -3061,6 +3130,7 @@ class MvpApp(tk.Tk):
     def set_clipboard_text(self, text: str) -> None:
         if win32clipboard is None:
             raise RuntimeError("win32clipboard를 사용할 수 없습니다.")
+        clipboard_text = normalize_clipboard_newlines(text)
         last_exc = None
         for _ in range(5):
             try:
@@ -3068,9 +3138,9 @@ class MvpApp(tk.Tk):
                 try:
                     win32clipboard.EmptyClipboard()
                     if hasattr(win32clipboard, "SetClipboardText"):
-                        win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
+                        win32clipboard.SetClipboardText(clipboard_text, win32clipboard.CF_UNICODETEXT)
                     else:
-                        win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+                        win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, clipboard_text)
                     return
                 finally:
                     win32clipboard.CloseClipboard()
@@ -3121,6 +3191,36 @@ class MvpApp(tk.Tk):
             if not self.run_hwp_command(command):
                 return False
             time.sleep(0.02)
+        return True
+
+    def get_current_cell_address(self) -> tuple[int, int] | None:
+        try:
+            indicator = self.hwp.KeyIndicator()
+        except Exception as exc:
+            self.debug(f"[cell-address] KeyIndicator 실패: {type(exc).__name__}: {exc}")
+            return None
+        for value in reversed(indicator if isinstance(indicator, tuple) else (indicator,)):
+            address = parse_cell_address_from_keyindicator(safe_str(value))
+            if address is not None:
+                return address
+        self.debug(f"[cell-address] KeyIndicator 주소 없음: {indicator!r}")
+        return None
+
+    def move_between_table_addresses(
+        self,
+        current: tuple[int, int],
+        target: tuple[int, int],
+    ) -> bool:
+        current_col, current_row = current
+        target_col, target_row = target
+        if target_col > current_col and not self.move_table_cell("TableRightCell", target_col - current_col):
+            return False
+        if target_col < current_col and not self.move_table_cell("TableLeftCell", current_col - target_col):
+            return False
+        if target_row > current_row and not self.move_table_cell("TableLowerCell", target_row - current_row):
+            return False
+        if target_row < current_row and not self.move_table_cell("TableUpperCell", current_row - target_row):
+            return False
         return True
 
     def set_hwp_pos(self, pos: tuple[int, int, int]) -> bool:
@@ -3179,11 +3279,9 @@ class MvpApp(tk.Tk):
         except Exception as exc:
             self.debug(f"[cell-formula-range] TableFormula 범위 확인 실패: {type(exc).__name__}: {exc}")
             return None
-        parts = [part.strip() for part in command[2:-1].split(",") if part.strip()]
-        addresses = [parse_cell_address(part) for part in parts]
-        addresses = [address for address in addresses if address is not None]
+        addresses = parse_cell_addresses_from_formula_command(command)
         if not addresses:
-            self.debug(f"[cell-formula-range] 주소 없음: command={command!r}, parts={parts}")
+            self.debug(f"[cell-formula-range] 주소 없음: command={command!r}")
             return None
         cols = [address[0] for address in addresses]
         rows = [address[1] for address in addresses]
@@ -3201,6 +3299,22 @@ class MvpApp(tk.Tk):
             "cells": (last_col - first_col + 1) * (last_row - first_row + 1),
         }
 
+    def get_selection_mode_base(self) -> tuple[int | None, int | None]:
+        try:
+            raw = int(getattr(self.hwp, "SelectionMode"))
+        except Exception as exc:
+            self.debug(f"[selection-mode] SelectionMode 확인 실패: {type(exc).__name__}: {exc}")
+            return None, None
+        return raw, raw & 0x0F
+
+    def is_selected_cell_block(self) -> bool:
+        raw, base = self.get_selection_mode_base()
+        if base == 3:
+            self.debug(f"[selection-mode] 셀 선택 확인: raw={raw}, base={base}")
+            return True
+        self.debug(f"[selection-mode] 셀 선택 아님: raw={raw}, base={base}")
+        return False
+
     def get_selected_text_positions(self) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
         try:
             result = self.hwp.GetSelectedPos()
@@ -3216,6 +3330,19 @@ class MvpApp(tk.Tk):
             return None
         ordered_start, ordered_end = sorted((start, end))
         return ordered_start, ordered_end
+
+    def get_selected_pos_endpoints(self) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
+        try:
+            result = self.hwp.GetSelectedPos()
+        except Exception as exc:
+            self.debug(f"[selection-pos] GetSelectedPos raw 실패: {type(exc).__name__}: {exc}")
+            return None
+        if not isinstance(result, tuple) or len(result) < 7 or not result[0]:
+            self.debug(f"[selection-pos] GetSelectedPos raw invalid: {result}")
+            return None
+        start = (int(result[1]), int(result[2]), int(result[3]))
+        end = (int(result[4]), int(result[5]), int(result[6]))
+        return start, end
 
     def reselect_hwp_text(self, start: tuple[int, int, int], text: str) -> bool:
         if not text or not self.set_hwp_pos(start):
@@ -3339,16 +3466,33 @@ class MvpApp(tk.Tk):
         self,
         endpoint: tuple[int, int, int],
         selected_values: list[str],
+        preferred_shape: tuple[int, int] | None = None,
+        only_preferred_shape: bool = False,
     ) -> dict | None:
         total = len(selected_values)
         if total < 2:
             return None
         corners = ("bottom_right", "bottom_left", "top_right", "top_left")
         best: dict | None = None
-        for rows in range(1, total + 1):
-            if total % rows != 0:
-                continue
-            cols = total // rows
+        selected_counter = Counter(selected_values)
+        shapes: list[tuple[int, int]] = []
+        if preferred_shape is not None and preferred_shape[0] * preferred_shape[1] == total:
+            shapes.append(preferred_shape)
+        if not only_preferred_shape:
+            for rows in range(1, total + 1):
+                if total % rows != 0:
+                    continue
+                cols = total // rows
+                shape = (rows, cols)
+                if cols > 1 and shape not in shapes:
+                    shapes.append(shape)
+            for rows in range(1, total + 1):
+                if total % rows != 0:
+                    continue
+                shape = (rows, total // rows)
+                if shape not in shapes:
+                    shapes.append(shape)
+        for rows, cols in shapes:
             for corner in corners:
                 values, start_label = self.read_cell_rect_values(endpoint, rows, cols, corner)
                 if values is None:
@@ -3360,6 +3504,14 @@ class MvpApp(tk.Tk):
                         "cols": cols,
                         "corner": corner,
                         "start_label": start_label,
+                    }
+                if cols > 1 and Counter(values) == selected_counter:
+                    return {
+                        "rows": rows,
+                        "cols": cols,
+                        "corner": corner,
+                        "start_label": start_label,
+                        "match": "unordered",
                     }
                 if best is None or score > best["score"]:
                     best = {
@@ -3413,6 +3565,47 @@ class MvpApp(tk.Tk):
                     return None
         return visited, changed
 
+    def transform_formula_address_cells(
+        self,
+        label: str,
+        addresses: list[tuple[int, int]],
+        transform,
+        *,
+        strip_wrapping_lines: bool = False,
+    ) -> tuple[int, int] | None:
+        if len(addresses) < 2:
+            return None
+        current_address = self.get_current_cell_address()
+        if current_address is None:
+            return None
+        if not self.move_between_table_addresses(current_address, addresses[0]):
+            return None
+
+        current_address = addresses[0]
+        visited = 0
+        changed = 0
+        for address in addresses:
+            if address != current_address:
+                if not self.move_between_table_addresses(current_address, address):
+                    return None
+                current_address = address
+            current_text = self.read_current_cell_text()
+            if current_text is None:
+                return None
+            source_text = strip_wrapping_blank_lines(current_text) if strip_wrapping_lines else current_text
+            transformed = transform(source_text) if source_text else source_text
+            visited += 1
+            if source_text and transformed != source_text:
+                if not self.select_current_table_cell_for_replace():
+                    return None
+                self.set_clipboard_text(transformed)
+                if not self.paste_text_into_selected_cell():
+                    return None
+                changed += 1
+            self.clear_hwp_selection()
+        self.log(f"{label}: TableFormula 주소 순회 완료, visited={visited}, changed={changed}")
+        return visited, changed
+
     def transform_selected_cells_by_iteration(
         self,
         label: str,
@@ -3455,14 +3648,12 @@ class MvpApp(tk.Tk):
         range_info = self.get_selected_cell_range_by_formula()
         if range_info is not None:
             if range_info["cols"] != 1 or range_info["rows"] != len(selected_values):
-                messagebox.showwarning(
-                    label,
-                    "한 열 범위만 처리할 수 있습니다.\n\n"
-                    "여러 열을 선택했거나, 병합 셀이 포함된 범위는 중단했습니다.",
+                self.log(
+                    f"{label}: TableFormula 참고값 불일치, "
+                    f"range={range_info}, values={len(selected_values)}; 실제 셀 내용 검증으로 진행"
                 )
-                self.log(f"{label}: TableFormula 범위 중단, range={range_info}, values={len(selected_values)}")
-                return True
-            self.debug(f"[cell-column-iterate] TableFormula range={range_info}")
+            else:
+                self.debug(f"[cell-column-iterate] TableFormula range={range_info}")
 
         def read_column_values_from_current() -> tuple[tuple[int, int, int] | None, list[str]]:
             try:
@@ -3558,6 +3749,190 @@ class MvpApp(tk.Tk):
         self.log(f"{label}: 한 열 셀 순회 완료, visited={visited}, changed={changed}")
         return True
 
+    def transform_selected_cell_matrix(
+        self,
+        label: str,
+        text: str,
+        transform,
+        *,
+        strip_wrapping_lines: bool = False,
+        range_info: dict | None = None,
+    ) -> bool:
+        if not self.is_selected_cell_block():
+            self.debug(f"[cell-matrix] {label}: SelectionMode가 셀 블록이 아니어서 일반 텍스트 경로 사용")
+            return False
+        if range_info is None:
+            range_info = self.get_selected_cell_range_by_formula()
+
+        if range_info is not None:
+            formula_addresses = list(range_info.get("addresses", []))
+            if len(formula_addresses) >= 2:
+                result = self.transform_formula_address_cells(
+                    label,
+                    formula_addresses,
+                    transform,
+                    strip_wrapping_lines=strip_wrapping_lines,
+                )
+                if result is not None:
+                    visited, iter_changed = result
+                    self.activate_hwp_window()
+                    self.log(
+                        f"{label}: TableFormula 주소 기반 셀 변환 완료, "
+                        f"rows={range_info['rows']}, cols={range_info['cols']}, "
+                        f"visited={visited}, changed={iter_changed}"
+                    )
+                    return True
+                messagebox.showwarning(
+                    label,
+                    "선택한 셀 주소 범위를 순회하지 못해 중단했습니다.\n\n"
+                    "TableFormula가 선택 셀 주소를 반환했으므로 다른 셀을 추측해서 훑지 않습니다.",
+                )
+                self.log(
+                    f"{label}: TableFormula 주소 기반 순회 실패, 감지 스캔 없이 중단, "
+                    f"addresses={formula_addresses}"
+                )
+                return True
+
+        matrix = parse_cell_clipboard_matrix(text)
+        if not matrix:
+            return False
+
+        if len(matrix) == 1 and len(matrix[0]) == 1:
+            return False
+
+        if not is_rectangular_cell_matrix(matrix):
+            messagebox.showwarning(
+                label,
+                "선택한 셀 범위가 직사각형 표 데이터로 확인되지 않았습니다.\n\n"
+                "병합 셀이 포함된 범위이거나 일부 행의 열 수가 달라 중단했습니다.",
+            )
+            self.log(f"{label}: 행렬 셀 변환 중단, 비직사각형 matrix={cell_matrix_size(matrix)}")
+            return True
+
+        rows, cols = cell_matrix_size(matrix)
+        if range_info is not None and (range_info["rows"] != rows or range_info["cols"] != cols):
+            self.log(
+                f"{label}: 행렬 크기 참고값 불일치, "
+                f"selected={range_info['rows']}x{range_info['cols']}, clipboard={rows}x{cols}; "
+                "클립보드 행렬 기준으로 진행"
+            )
+        expected_values = flatten_cell_matrix(matrix, strip_wrapping_lines=strip_wrapping_lines)
+        target_rows, target_cols = rows, cols
+        if range_info is not None and range_info["rows"] * range_info["cols"] == len(expected_values):
+            target_rows, target_cols = int(range_info["rows"]), int(range_info["cols"])
+            if (target_rows, target_cols) != (rows, cols):
+                self.log(
+                    f"{label}: 클립보드가 {rows}x{cols}로 복사됐지만 "
+                    f"선택 범위 {target_rows}x{target_cols} 기준으로 셀 순회 시도"
+                )
+        try:
+            endpoint = self.hwp.GetPos()
+        except Exception as exc:
+            endpoint = None
+            self.debug(f"[cell-matrix] {label}: 선택 끝 위치 확인 실패: {type(exc).__name__}: {exc}")
+        endpoint_candidates: list[tuple[int, int, int]] = []
+        raw_endpoints = self.get_selected_pos_endpoints()
+        raw_candidates: list[tuple[int, int, int] | None] = [endpoint]
+        if raw_endpoints is not None:
+            raw_candidates.extend(raw_endpoints)
+        for candidate in raw_candidates:
+            if candidate is not None and candidate not in endpoint_candidates:
+                endpoint_candidates.append(candidate)
+
+        detected_endpoint: tuple[int, int, int] | None = None
+        detected_rect: dict | None = None
+        if endpoint_candidates:
+            preferred_shape = (target_rows, target_cols) if target_cols > 1 else None
+            only_preferred_shape = bool(range_info is not None and target_cols > 1)
+            for candidate in endpoint_candidates:
+                rect = self.detect_selected_cell_rect(
+                    candidate,
+                    expected_values,
+                    preferred_shape,
+                    only_preferred_shape=only_preferred_shape,
+                )
+                if rect is not None and int(rect["cols"]) > 1:
+                    detected_endpoint = candidate
+                    detected_rect = rect
+                    break
+                if detected_rect is None:
+                    detected_endpoint = candidate
+                    detected_rect = rect
+            rect = detected_rect
+            endpoint_for_rect = detected_endpoint
+        else:
+            rect = None
+            endpoint_for_rect = None
+
+        if endpoint_for_rect is not None and rect is not None and int(rect["cols"]) > 1:
+            target_rows, target_cols = int(rect["rows"]), int(rect["cols"])
+            if rect is not None and int(rect["rows"]) == target_rows and int(rect["cols"]) == target_cols:
+                result = self.transform_detected_cell_rect(
+                    label,
+                    endpoint_for_rect,
+                    rect,
+                    transform,
+                    strip_wrapping_lines=strip_wrapping_lines,
+                )
+                if result is not None:
+                    visited, iter_changed = result
+                    self.activate_hwp_window()
+                    self.log(
+                        f"{label}: 다열 셀 순회 완료, rows={target_rows}, cols={target_cols}, "
+                        f"visited={visited}, changed={iter_changed}"
+                    )
+                    return True
+                self.log(f"{label}: 다열 셀 순회 실패, TSV 행렬 붙여넣기 경로 시도")
+            if endpoint is not None:
+                self.set_hwp_pos(endpoint)
+        elif target_cols > 1:
+            self.log(f"{label}: 다열 셀 범위 감지 실패, TSV 행렬 붙여넣기 경로 시도")
+            if endpoint is not None:
+                self.set_hwp_pos(endpoint)
+        elif endpoint_candidates:
+            if endpoint is not None:
+                self.set_hwp_pos(endpoint)
+        if target_cols > 1 and cols == 1:
+            messagebox.showwarning(
+                label,
+                "선택한 여러 열 셀 범위를 실제 셀 위치로 확인하지 못했습니다.\n\n"
+                "병합 셀이 포함되었거나 선택 끝 위치가 불안정해 문서 변경을 중단했습니다.",
+            )
+            self.log(
+                f"{label}: 줄 단위 클립보드의 다열 셀 순회 중단, "
+                f"selected={target_rows}x{target_cols}, clipboard={rows}x{cols}"
+            )
+            return True
+        if cols == 1:
+            self.debug(f"[cell-matrix] {label}: 단일 열 선택은 셀별 순회 경로 사용, rows={rows}")
+            return self.transform_selected_cells_by_iteration(
+                label,
+                text,
+                transform,
+                strip_wrapping_lines=strip_wrapping_lines,
+            )
+
+        transformed_matrix, changed = transform_cell_matrix(
+            matrix,
+            transform,
+            strip_wrapping_lines=strip_wrapping_lines,
+        )
+        if changed == 0:
+            self.activate_hwp_window()
+            self.log(f"{label}: 행렬 셀 변환 변경 없음, rows={rows}, cols={cols}")
+            return True
+
+        self.set_clipboard_text(cell_matrix_to_tsv(transformed_matrix))
+        paste_ok = self.run_hwp_command("Paste")
+        if paste_ok:
+            self.activate_hwp_window()
+            self.log(f"{label}: 행렬 셀 변환 완료, rows={rows}, cols={cols}, changed={changed}")
+            return True
+
+        messagebox.showwarning(label, "변환한 표 데이터를 클립보드에 넣었지만 한글 붙여넣기가 실패했습니다.")
+        self.log(f"{label}: 행렬 셀 변환 붙여넣기 실패, rows={rows}, cols={cols}, changed={changed}")
+        return True
+
     def transform_selected_text(
         self,
         label: str,
@@ -3574,6 +3949,15 @@ class MvpApp(tk.Tk):
             return
         try:
             selected_positions = self.get_selected_text_positions() if reselect_after_paste else None
+            pre_copy_cell_range = None
+            if allow_cell_iteration and self.is_selected_cell_block():
+                pre_copy_cell_range = self.get_selected_cell_range_by_formula()
+                if pre_copy_cell_range is not None:
+                    self.log(
+                        f"{label}: Copy 전 셀 범위 스냅샷, "
+                        f"rows={pre_copy_cell_range['rows']}, cols={pre_copy_cell_range['cols']}, "
+                        f"addresses={pre_copy_cell_range.get('addresses')}"
+                    )
             copy_ok = self.run_hwp_command("Copy")
             time.sleep(0.08)
             text = self.get_clipboard_text()
@@ -3581,12 +3965,12 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(label, "한글에서 변환할 글자 영역을 먼저 선택하세요.")
                 self.log(f"{label}: 선택 텍스트 없음")
                 return
-            if allow_cell_iteration and self.transform_selected_cells_by_iteration(
+            if allow_cell_iteration and self.transform_selected_cell_matrix(
                 label,
                 text,
                 transform,
                 strip_wrapping_lines=strip_wrapping_lines,
-                preserve_clipboard_cells=preserve_clipboard_cells,
+                range_info=pre_copy_cell_range,
             ):
                 return
             if preserve_clipboard_cells and "\t" in text:
@@ -3597,7 +3981,7 @@ class MvpApp(tk.Tk):
                 )
                 self.log(f"{label}: 셀 범위 전체 붙여넣기 중단")
                 return
-            if block_multiline_number_block and looks_like_multiline_number_block(text):
+            if block_multiline_number_block and self.is_selected_cell_block() and looks_like_multiline_number_block(text):
                 self.log(f"{label}: 여러 셀 숫자 블록으로 보여 자동 붙여넣기 중단")
                 messagebox.showwarning(
                     label,
@@ -3681,6 +4065,7 @@ class MvpApp(tk.Tk):
         self.transform_selected_text(
             "줄바꿈/띄어쓰기 정리",
             clean_manual_line_breaks,
+            allow_cell_iteration=True,
             reselect_after_paste=True,
         )
 
