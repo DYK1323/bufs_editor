@@ -26,6 +26,7 @@ from hwp_style_mvp import (  # noqa: E402
     normalize_dates,
     normalize_clipboard_newlines,
     parse_cell_clipboard_matrix,
+    parse_cover_input,
     remove_manual_outline_prefixes,
     remove_number_commas,
     remove_weekdays_from_dates,
@@ -66,6 +67,7 @@ from hwp_style_mvp import (  # noqa: E402
     save_style_sets,
     style_set_from_records,
     today_ymd_text,
+    today_ym_text,
     transform_cell_matrix,
     MvpApp,
 )
@@ -74,6 +76,87 @@ from hwp_style_mvp import (  # noqa: E402
 class CellMatrixTransformTests(unittest.TestCase):
     def test_today_ymd_text_uses_unpadded_year_month_day(self) -> None:
         self.assertEqual(today_ymd_text(hwp_style_mvp.datetime(2026, 7, 2)), "2026. 7. 2.")
+
+    def test_today_ym_text_uses_unpadded_year_month(self) -> None:
+        self.assertEqual(today_ym_text(hwp_style_mvp.datetime(2026, 7, 2)), "2026. 7.")
+
+    def test_parse_cover_input_uses_today_month_when_date_line_is_empty(self) -> None:
+        title, date_text, department = parse_cover_input(
+            "\ubb38\uc11c\uc81c\ubaa9\n\n\ubd80\uc11c\uba85",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(title, "\ubb38\uc11c\uc81c\ubaa9")
+        self.assertEqual(date_text, "2026. 7.")
+        self.assertEqual(department, "\ubd80\uc11c\uba85")
+
+    def test_parse_cover_input_uses_today_month_when_date_line_is_missing(self) -> None:
+        title, date_text, department = parse_cover_input(
+            "\ubb38\uc11c\uc81c\ubaa9\n\ubd80\uc11c\uba85",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(title, "\ubb38\uc11c\uc81c\ubaa9")
+        self.assertEqual(date_text, "2026. 7.")
+        self.assertEqual(department, "\ubd80\uc11c\uba85")
+
+    def test_parse_cover_input_removes_labels(self) -> None:
+        title, date_text, department = parse_cover_input(
+            "\uc81c\ubaa9: \ubb38\uc11c\uc81c\ubaa9\n\ub0a0\uc9dc: 2026. 8.\n\ubd80\uc11c: \ubd80\uc11c\uba85",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(title, "\ubb38\uc11c\uc81c\ubaa9")
+        self.assertEqual(date_text, "2026. 8.")
+        self.assertEqual(department, "\ubd80\uc11c\uba85")
+
+    def test_parse_cover_input_uses_today_month_when_labeled_date_is_missing(self) -> None:
+        title, date_text, department = parse_cover_input(
+            "\uc81c\ubaa9: \ubb38\uc11c\uc81c\ubaa9\n\ubd80\uc11c: \ubd80\uc11c\uba85",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(title, "\ubb38\uc11c\uc81c\ubaa9")
+        self.assertEqual(date_text, "2026. 7.")
+        self.assertEqual(department, "\ubd80\uc11c\uba85")
+
+    def test_parse_cover_input_accepts_today_markers(self) -> None:
+        for marker in ("{{\uc624\ub298}}", "\uc624\ub298"):
+            with self.subTest(marker=marker):
+                title, date_text, department = parse_cover_input(
+                    f"\uc81c\ubaa9: \ubb38\uc11c\uc81c\ubaa9\n\ub0a0\uc9dc: {marker}\n\ubd80\uc11c: \ubd80\uc11c\uba85",
+                    hwp_style_mvp.datetime(2026, 7, 22),
+                )
+
+                self.assertEqual(title, "\ubb38\uc11c\uc81c\ubaa9")
+                self.assertEqual(date_text, "2026. 7.")
+                self.assertEqual(department, "\ubd80\uc11c\uba85")
+
+    def test_parse_report_template_input_uses_today_when_date_value_is_empty(self) -> None:
+        fields = parse_report_template_input(
+            "\uc81c\ubaa9: \ubcf4\uace0\n\ubd80\uc11c: \uc13c\ud130\n\ub0a0\uc9dc:",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(fields.date_text, "2026. 7. 22.")
+
+    def test_parse_report_template_input_uses_today_when_date_field_is_missing(self) -> None:
+        fields = parse_report_template_input(
+            "\uc81c\ubaa9: \ubcf4\uace0\n\ubd80\uc11c: \uc13c\ud130",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(fields.date_text, "2026. 7. 22.")
+
+    def test_parse_report_template_input_accepts_today_markers(self) -> None:
+        for marker in ("{{\uc624\ub298}}", "\uc624\ub298"):
+            with self.subTest(marker=marker):
+                fields = parse_report_template_input(
+                    f"\uc81c\ubaa9: \ubcf4\uace0\n\ubd80\uc11c: \uc13c\ud130\n\ub0a0\uc9dc: {marker}",
+                    hwp_style_mvp.datetime(2026, 7, 22),
+                )
+
+                self.assertEqual(fields.date_text, "2026. 7. 22.")
 
     def test_parse_report_template_input_replaces_today_marker(self) -> None:
         fields = parse_report_template_input(
@@ -125,6 +208,16 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(settings.bottom_margin, 4252)
         self.assertEqual(settings.header_len, 2835)
         self.assertEqual(settings.footer_len, 2835)
+
+    def test_read_hwpx_page_settings_reads_cover_template_margins(self) -> None:
+        settings = read_hwpx_page_settings(hwp_style_mvp.COVER_FILE)
+
+        self.assertIsNotNone(settings)
+        assert settings is not None
+        self.assertGreater(settings.paper_width, 0)
+        self.assertGreater(settings.paper_height, 0)
+        self.assertGreaterEqual(settings.left_margin, 0)
+        self.assertGreaterEqual(settings.right_margin, 0)
 
     def test_page_settings_match_compares_all_page_values(self) -> None:
         expected = PageSettings(59528, 84188, 0, 5669, 5669, 4252, 4252, 2835, 2835, 0, 0)

@@ -917,11 +917,65 @@ def read_cover_placeholders(path: Path = COVER_FILE) -> dict[str, bool]:
     }
 
 
-def parse_cover_input(text: str) -> tuple[str, str, str]:
-    values = split_cover_lines(text)
-    if len(values) < 3:
-        raise ValueError("표지로 만들 제목, 날짜, 부서명 3줄을 선택하세요.")
-    return values[0], values[1], "\n".join(values[2:])
+def today_ym_text(now: datetime | None = None) -> str:
+    value = now or datetime.now()
+    return f"{value.year}. {value.month}."
+
+
+def resolve_cover_date(value: str, now: datetime | None = None) -> str:
+    stripped = value.strip()
+    return today_ym_text(now) if not stripped or stripped in {"{{오늘}}", "오늘"} else stripped
+
+
+def split_cover_input_lines(value: str) -> list[str]:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n").replace("\v", "\n").replace("\u2028", "\n")
+    lines = [line.strip() for line in normalized.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+def parse_labeled_cover_input(text: str, now: datetime | None = None) -> tuple[str, str, str] | None:
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    key_map = {
+        "제목": "title",
+        "문서제목": "title",
+        "부서": "department",
+        "부서명": "department",
+        "날짜": "date_text",
+    }
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").replace("\v", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^([^:：]+)\s*[:：]\s*(.*)$", line)
+        if match and match.group(1).strip() in key_map:
+            current_key = key_map[match.group(1).strip()]
+            fields[current_key] = match.group(2).strip()
+        elif current_key:
+            fields[current_key] = (fields[current_key] + "\n" + line).strip()
+    if "title" not in fields and "department" not in fields and "date_text" not in fields:
+        return None
+    missing = [label for label, key in (("제목", "title"), ("부서", "department")) if not fields.get(key)]
+    if missing:
+        raise ValueError("표지 입력에서 다음 항목을 찾지 못했습니다: " + ", ".join(missing))
+    return fields["title"], resolve_cover_date(fields.get("date_text", ""), now), fields["department"]
+
+
+def parse_cover_input(text: str, now: datetime | None = None) -> tuple[str, str, str]:
+    labeled = parse_labeled_cover_input(text, now)
+    if labeled is not None:
+        return labeled
+    values = split_cover_input_lines(text)
+    if len(values) < 2:
+        raise ValueError("표지로 만들 제목, 부서명 또는 제목, 날짜, 부서명 줄을 선택하세요.")
+    if len(values) == 2:
+        return values[0], today_ym_text(now), values[1]
+    date_text = resolve_cover_date(values[1], now)
+    return values[0], date_text, "\n".join(values[2:])
 
 
 def today_ymd_text(now: datetime | None = None) -> str:
@@ -931,7 +985,7 @@ def today_ymd_text(now: datetime | None = None) -> str:
 
 def resolve_report_template_date(value: str, now: datetime | None = None) -> str:
     stripped = value.strip()
-    return today_ymd_text(now) if stripped == "{{오늘}}" else stripped
+    return today_ymd_text(now) if not stripped or stripped in {"{{오늘}}", "오늘"} else stripped
 
 
 def parse_report_template_input(text: str, now: datetime | None = None) -> ReportTemplateFields:
@@ -960,13 +1014,17 @@ def parse_report_template_input(text: str, now: datetime | None = None) -> Repor
         elif current_key:
             fields[current_key] = (fields[current_key] + "\n" + line).strip()
 
-    missing = [label for label, key in (("제목", "title"), ("부서", "department"), ("날짜", "date_text")) if not fields.get(key)]
+    missing = [
+        label
+        for label, key in (("제목", "title"), ("부서", "department"))
+        if key not in fields or (key != "date_text" and not fields.get(key))
+    ]
     if missing:
         raise ValueError("보고양식 입력에서 다음 항목을 찾지 못했습니다: " + ", ".join(missing))
     return ReportTemplateFields(
         title=fields["title"],
         department=fields["department"],
-        date_text=resolve_report_template_date(fields["date_text"], now),
+        date_text=resolve_report_template_date(fields.get("date_text", ""), now),
         note=fields.get("note", ""),
         table_title=fields.get("table_title"),
         table_title_line=fields.get("table_title_line"),
@@ -3055,7 +3113,7 @@ class MvpApp(tk.Tk):
         cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=8)
         cover_group.pack(fill="x", pady=(0, 10))
         ttk.Checkbutton(cover_group, text="대외비 표시", variable=self.cover_confidential).pack(anchor="w")
-        ttk.Button(cover_group, text="선택 3줄로 표지 만들기", command=self.create_cover_from_selected_lines).pack(
+        ttk.Button(cover_group, text="선택 내용으로 표지 만들기", command=self.create_cover_from_selected_lines).pack(
             fill="x", pady=(6, 0)
         )
         ttk.Label(
@@ -5601,7 +5659,7 @@ class MvpApp(tk.Tk):
             time.sleep(0.08)
             original_text = self.get_clipboard_text()
             if not copy_ok or not original_text:
-                messagebox.showwarning("표지 입력 선택 필요", "한글에서 제목, 날짜, 부서명 3줄을 먼저 선택하세요.")
+                messagebox.showwarning("표지 입력 선택 필요", "한글에서 제목/부서명 또는 제목/날짜/부서명 줄을 먼저 선택하세요.")
                 self.log("표지 만들기: 선택 텍스트 없음")
                 return
 
@@ -5630,12 +5688,26 @@ class MvpApp(tk.Tk):
                 self.log(f"표지 삽입 실패: file={cover_path}, restored={restore_ok}")
                 return
 
+            page_settings = read_hwpx_page_settings(COVER_FILE)
+            if page_settings is None:
+                page_action = "read_failed"
+                page_ok = False
+                page_detail = "none"
+                page_target = "none"
+            else:
+                page_target = format_page_settings(page_settings)
+                page_action, page_ok, page_detail = self.apply_page_settings(page_settings, apply_to=3)
             self.activate_hwp_window()
-            self.log(
-                "표지 만들기 완료: "
-                f"제목={title}, 날짜={date_text}, 부서={department}, "
-                f"대외비={self.cover_confidential.get()}, file={cover_path.name}"
-            )
+            self.log([
+                (
+                    "표지 만들기 완료: "
+                    f"제목={title}, 날짜={date_text}, 부서={department}, "
+                    f"대외비={self.cover_confidential.get()}, file={cover_path.name}, "
+                    f"page_setup={page_ok}({page_action})"
+                ),
+                f"표지 쪽설정 목표: {page_target}",
+                f"표지 쪽설정 결과: {page_detail}",
+            ])
         except Exception as exc:
             self.log(f"표지 만들기 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror("표지 만들기 실패", str(exc))
