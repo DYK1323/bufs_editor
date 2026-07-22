@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -178,9 +179,11 @@ class CellMatrixTransformTests(unittest.TestCase):
 
     def test_style_sets_round_trip_table_and_caption_flags(self) -> None:
         old_path = hwp_style_mvp.STYLE_SETS_FILE
+        old_bundled_path = hwp_style_mvp.BUNDLED_STYLE_SETS_FILE
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
                 hwp_style_mvp.STYLE_SETS_FILE = Path(temp_dir) / "style-sets.json"
+                hwp_style_mvp.BUNDLED_STYLE_SETS_FILE = Path(temp_dir) / "style-sets.default.json"
                 style_sets = [
                     StyleSet(
                         "보고서용",
@@ -197,12 +200,50 @@ class CellMatrixTransformTests(unittest.TestCase):
                 active_name, loaded_sets = load_style_sets()
             finally:
                 hwp_style_mvp.STYLE_SETS_FILE = old_path
+                hwp_style_mvp.BUNDLED_STYLE_SETS_FILE = old_bundled_path
 
         self.assertEqual(active_name, "보고서용")
         self.assertTrue(loaded_sets[0].paragraph_styles[0].table_style)
         self.assertTrue(loaded_sets[0].paragraph_styles[1].caption_style)
         self.assertEqual(loaded_sets[0].paragraph_styles[2].outline_markers, ("ㅇ", "○"))
         self.assertTrue(loaded_sets[0].character_styles[0].table_style)
+
+    def test_style_sets_copy_bundled_default_to_user_config_on_first_load(self) -> None:
+        old_path = hwp_style_mvp.STYLE_SETS_FILE
+        old_bundled_path = hwp_style_mvp.BUNDLED_STYLE_SETS_FILE
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                temp_root = Path(temp_dir)
+                hwp_style_mvp.STYLE_SETS_FILE = temp_root / "user" / "style-sets.json"
+                hwp_style_mvp.BUNDLED_STYLE_SETS_FILE = temp_root / "bundle" / "style-sets.json"
+                hwp_style_mvp.BUNDLED_STYLE_SETS_FILE.parent.mkdir()
+                hwp_style_mvp.BUNDLED_STYLE_SETS_FILE.write_text(
+                    json.dumps(
+                        {
+                            "active_set": "배포기본",
+                            "style_sets": [
+                                {
+                                    "name": "배포기본",
+                                    "paragraph_styles": [{"name": "본문", "outline_markers": ["ㅇ"]}],
+                                    "character_styles": [],
+                                    "inline_rules": [],
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                active_name, loaded_sets = load_style_sets()
+                user_file_exists = hwp_style_mvp.STYLE_SETS_FILE.exists()
+            finally:
+                hwp_style_mvp.STYLE_SETS_FILE = old_path
+                hwp_style_mvp.BUNDLED_STYLE_SETS_FILE = old_bundled_path
+
+        self.assertEqual(active_name, "배포기본")
+        self.assertEqual(loaded_sets[0].paragraph_styles[0].outline_markers, ("ㅇ",))
+        self.assertTrue(user_file_exists)
 
     def test_imported_hwpx_style_records_can_build_style_set(self) -> None:
         header = """<?xml version="1.0" encoding="UTF-8"?>

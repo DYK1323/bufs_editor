@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -44,12 +45,17 @@ def app_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def user_config_root() -> Path:
+    base = os.environ.get("APPDATA")
+    if base:
+        return Path(base) / "BUFS-HWP-Editor"
+    return Path.home() / ".bufs-hwp-editor"
+
+
 ROOT = app_root()
 if Path.cwd().resolve() != ROOT:
     # 설치 폴더 루트에는 쉽다한글이 번들링한 python312.dll이 있어
     # Python 3.11 가상환경의 pywin32 로딩과 충돌할 수 있다.
-    import os
-
     os.chdir(ROOT)
 
 try:
@@ -77,9 +83,13 @@ STYLE_FILE = ROOT / "보고서 본문 서식.hwpx"
 COVER_FILE = ROOT / "표지.hwpx"
 LOGO_DIR = ROOT / "logos"
 TEST_OUTPUT_DIR = ROOT / "test-output"
-STYLE_ORDER_FILE = ROOT / "style-order.json"
-STYLE_SETS_FILE = ROOT / "style-sets.json"
-TABLE_SETTINGS_FILE = ROOT / "table-settings.json"
+CONFIG_ROOT = user_config_root()
+BUNDLED_STYLE_ORDER_FILE = ROOT / "style-order.json"
+BUNDLED_STYLE_SETS_FILE = ROOT / "style-sets.json"
+BUNDLED_TABLE_SETTINGS_FILE = ROOT / "table-settings.json"
+STYLE_ORDER_FILE = CONFIG_ROOT / "style-order.json"
+STYLE_SETS_FILE = CONFIG_ROOT / "style-sets.json"
+TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
 
 
@@ -318,6 +328,16 @@ def close_import_hwp(hwp) -> None:
         pass
 
 
+def ensure_user_config_file(user_path: Path, bundled_path: Path) -> None:
+    if user_path.exists() or not bundled_path.exists():
+        return
+    try:
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(bundled_path, user_path)
+    except Exception:
+        pass
+
+
 def read_style_records_from_hwp_file(path: Path) -> list[StyleRecord]:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -346,6 +366,7 @@ def read_style_records_from_hwp_file(path: Path) -> list[StyleRecord]:
 
 
 def load_style_order() -> list[str]:
+    ensure_user_config_file(STYLE_ORDER_FILE, BUNDLED_STYLE_ORDER_FILE)
     if not STYLE_ORDER_FILE.exists():
         return []
     try:
@@ -362,6 +383,7 @@ def load_style_order() -> list[str]:
 
 def save_style_order(records: list[StyleRecord]) -> None:
     data = {"style_order": [record.name for record in records]}
+    STYLE_ORDER_FILE.parent.mkdir(parents=True, exist_ok=True)
     STYLE_ORDER_FILE.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -651,6 +673,7 @@ def default_style_sets() -> tuple[str, list[StyleSet]]:
 
 def load_style_sets() -> tuple[str, list[StyleSet]]:
     default_active, default_sets = default_style_sets()
+    ensure_user_config_file(STYLE_SETS_FILE, BUNDLED_STYLE_SETS_FILE)
     if not STYLE_SETS_FILE.exists():
         return default_active, default_sets
     try:
@@ -718,6 +741,7 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
             for item in style_sets
         ],
     }
+    STYLE_SETS_FILE.parent.mkdir(parents=True, exist_ok=True)
     STYLE_SETS_FILE.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -744,6 +768,7 @@ def normalize_table_settings(settings: dict) -> dict:
 
 
 def load_table_settings() -> dict:
+    ensure_user_config_file(TABLE_SETTINGS_FILE, BUNDLED_TABLE_SETTINGS_FILE)
     if not TABLE_SETTINGS_FILE.exists():
         settings = merge_dict(DEFAULT_TABLE_SETTINGS, {})
         return normalize_table_settings(settings)
@@ -760,6 +785,7 @@ def load_table_settings() -> dict:
 
 
 def save_table_settings(settings: dict) -> None:
+    TABLE_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     TABLE_SETTINGS_FILE.write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -2810,7 +2836,9 @@ class MvpApp(tk.Tk):
         self.status_text.delete("1.0", "end")
         self.debug_text.delete("1.0", "end")
         self.log(f"작업 폴더: {ROOT}")
-        self.log(f"스타일 세트 파일: {STYLE_SETS_FILE.exists()} / {STYLE_SETS_FILE.name}")
+        self.log(f"사용자 설정 폴더: {CONFIG_ROOT}")
+        self.log(f"스타일 세트 파일: {STYLE_SETS_FILE.exists()} / {STYLE_SETS_FILE}")
+        self.log(f"기본 스타일 세트 파일: {BUNDLED_STYLE_SETS_FILE.exists()} / {BUNDLED_STYLE_SETS_FILE.name}")
         self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.name}")
 
         self.active_style_set_name, self.style_sets = load_style_sets()
