@@ -53,6 +53,11 @@ from hwp_style_mvp import (  # noqa: E402
     StyleSet,
     find_inline_rule_ranges,
     find_inline_rule_ranges_for_style_set,
+    format_page_settings,
+    parse_report_template_input,
+    page_settings_match,
+    PageSettings,
+    read_hwpx_page_settings,
     load_style_sets,
     read_style_records,
     read_style_records_from_hwp_file,
@@ -60,12 +65,82 @@ from hwp_style_mvp import (  # noqa: E402
     needs_regulation_wrapper_conversion,
     save_style_sets,
     style_set_from_records,
+    today_ymd_text,
     transform_cell_matrix,
     MvpApp,
 )
 
 
 class CellMatrixTransformTests(unittest.TestCase):
+    def test_today_ymd_text_uses_unpadded_year_month_day(self) -> None:
+        self.assertEqual(today_ymd_text(hwp_style_mvp.datetime(2026, 7, 2)), "2026. 7. 2.")
+
+    def test_parse_report_template_input_replaces_today_marker(self) -> None:
+        fields = parse_report_template_input(
+            "제목 : 오마이갓 이런일이\n부서 : 대학성과분석센터\n날짜 : {{오늘}}\n",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(fields.title, "오마이갓 이런일이")
+        self.assertEqual(fields.department, "대학성과분석센터")
+        self.assertEqual(fields.date_text, "2026. 7. 22.")
+
+    def test_parse_report_template_input_keeps_explicit_date_text(self) -> None:
+        fields = parse_report_template_input(
+            "제목: 보고\n부서: 센터\n날짜: 2026. 8. 3.",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(fields.date_text, "2026. 8. 3.")
+
+    def test_parse_report_template_input_does_not_reuse_title_for_table_placeholders(self) -> None:
+        fields = parse_report_template_input(
+            "\uc81c\ubaa9: \ubcf4\uace0\n\ubd80\uc11c: \uc13c\ud130\n\ub0a0\uc9dc: 2026. 8. 3.",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertIsNone(fields.table_title)
+        self.assertIsNone(fields.table_title_line)
+
+    def test_parse_report_template_input_accepts_explicit_table_placeholders(self) -> None:
+        fields = parse_report_template_input(
+            "\uc81c\ubaa9: \ubcf4\uace0\n\ubd80\uc11c: \uc13c\ud130\n\ub0a0\uc9dc: 2026. 8. 3.\n"
+            "\ud45c\uc81c\ubaa9: \ud45c \uc81c\ubaa9\n\ud45c\uc81c\ubaa9\uc904: \ud45c \uc81c\ubaa9\uc904",
+            hwp_style_mvp.datetime(2026, 7, 22),
+        )
+
+        self.assertEqual(fields.table_title, "\ud45c \uc81c\ubaa9")
+        self.assertEqual(fields.table_title_line, "\ud45c \uc81c\ubaa9\uc904")
+
+    def test_read_hwpx_page_settings_reads_general_report_template_margins(self) -> None:
+        settings = read_hwpx_page_settings(hwp_style_mvp.GENERAL_REPORT_TEMPLATE_FILE)
+
+        self.assertIsNotNone(settings)
+        assert settings is not None
+        self.assertEqual(settings.paper_width, 59528)
+        self.assertEqual(settings.paper_height, 84188)
+        self.assertEqual(settings.left_margin, 5669)
+        self.assertEqual(settings.right_margin, 5669)
+        self.assertEqual(settings.top_margin, 4252)
+        self.assertEqual(settings.bottom_margin, 4252)
+        self.assertEqual(settings.header_len, 2835)
+        self.assertEqual(settings.footer_len, 2835)
+
+    def test_page_settings_match_compares_all_page_values(self) -> None:
+        expected = PageSettings(59528, 84188, 0, 5669, 5669, 4252, 4252, 2835, 2835, 0, 0)
+        actual = PageSettings(59528, 84188, 0, 5669, 5669, 4252, 4252, 2835, 2835, 0, 0)
+        changed = PageSettings(59528, 84188, 0, 5669, 5669, 4252, 4252, 2835, 2835, 1, 0)
+
+        self.assertTrue(page_settings_match(expected, actual))
+        self.assertFalse(page_settings_match(expected, changed))
+        self.assertFalse(page_settings_match(expected, None))
+
+    def test_format_page_settings_includes_margins_for_diagnostics(self) -> None:
+        settings = PageSettings(59528, 84188, 0, 5669, 5669, 4252, 4252, 2835, 2835, 0, 0)
+
+        self.assertIn("margin=L5669 R5669 T4252 B4252", format_page_settings(settings))
+        self.assertEqual(format_page_settings(None), "none")
+
     def test_inline_rule_ranges_match_parenthesized_keyword_with_spaces(self) -> None:
         rule = InlineRule("keyword", "leading_parenthesized_after_identifier", include_wrapper=True)
 

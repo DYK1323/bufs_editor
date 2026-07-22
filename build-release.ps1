@@ -35,14 +35,11 @@ $pyinstallerArgs = @(
   "--collect-submodules", "win32com"
 )
 
-Get-ChildItem -LiteralPath (Join-Path $root "bufs") -Filter "*.hwpx" | ForEach-Object {
-  $pyinstallerArgs += @("--add-data", "$($_.FullName);bufs")
-}
-
 $pyinstallerArgs += @(
   "--add-data", "$(Join-Path $root 'bufs\style-sets.json');bufs",
   "--add-data", "$(Join-Path $root 'bufs\table-settings.json');bufs",
   "--add-data", "$(Join-Path $root 'bufs\style-order.json');bufs",
+  "--add-data", "$(Join-Path $root 'bufs\templates');bufs\templates",
   "--add-data", "$(Join-Path $root 'bufs\icons');bufs\icons",
   "--add-data", "$(Join-Path $root 'bufs\logos');bufs\logos",
   $app

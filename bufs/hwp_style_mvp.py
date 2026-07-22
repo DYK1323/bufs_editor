@@ -80,7 +80,9 @@ except Exception:
 
 
 STYLE_FILE = ROOT / "보고서 본문 서식.hwpx"
-COVER_FILE = ROOT / "표지.hwpx"
+TEMPLATE_DIR = ROOT / "templates"
+COVER_FILE = TEMPLATE_DIR / "표지.hwpx"
+GENERAL_REPORT_TEMPLATE_FILE = TEMPLATE_DIR / "일반보고_양식.hwpx"
 LOGO_DIR = ROOT / "logos"
 TEST_OUTPUT_DIR = ROOT / "test-output"
 CONFIG_ROOT = user_config_root()
@@ -237,6 +239,73 @@ def read_zip_text(path: Path, entry_name: str) -> str:
     with zipfile.ZipFile(path) as zf:
         with zf.open(entry_name) as fp:
             return fp.read().decode("utf-8", errors="ignore")
+
+
+def xml_local_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1] if "}" in name else name
+
+
+def hwp_page_landscape_value(raw_value: str | None, width: int, height: int) -> int:
+    if raw_value:
+        normalized = raw_value.strip().upper()
+        if normalized in {"1", "TRUE", "LANDSCAPE", "WIDE", "WIDELY"}:
+            return 1 if width > height else 0
+        if normalized in {"0", "FALSE", "PORTRAIT", "NARROWLY"}:
+            return 0
+    return 1 if width > height else 0
+
+
+def hwp_gutter_type_value(raw_value: str | None) -> int:
+    normalized = (raw_value or "").strip().upper()
+    if normalized in {"BOTH_SIDES", "BOTH", "DOUBLE_SIDE", "1"}:
+        return 1
+    if normalized in {"TOP_ONLY", "TOP", "2"}:
+        return 2
+    return 0
+
+
+def read_hwpx_page_settings(path: Path) -> PageSettings | None:
+    if not path.exists():
+        return None
+    try:
+        section_xml = read_zip_text(path, "Contents/section0.xml")
+        root = ET.fromstring(section_xml)
+    except Exception:
+        return None
+
+    page_pr = None
+    for element in root.iter():
+        if xml_local_name(element.tag) == "pagePr":
+            page_pr = element
+            break
+    if page_pr is None:
+        return None
+
+    margin = next((child for child in page_pr if xml_local_name(child.tag) == "margin"), None)
+    if margin is None:
+        return None
+
+    def int_attr(element, name: str, default: int = 0) -> int:
+        try:
+            return int(element.get(name) or default)
+        except (TypeError, ValueError):
+            return default
+
+    width = int_attr(page_pr, "width")
+    height = int_attr(page_pr, "height")
+    return PageSettings(
+        paper_width=width,
+        paper_height=height,
+        landscape=hwp_page_landscape_value(page_pr.get("landscape"), width, height),
+        left_margin=int_attr(margin, "left"),
+        right_margin=int_attr(margin, "right"),
+        top_margin=int_attr(margin, "top"),
+        bottom_margin=int_attr(margin, "bottom"),
+        header_len=int_attr(margin, "header"),
+        footer_len=int_attr(margin, "footer"),
+        gutter_len=int_attr(margin, "gutter"),
+        gutter_type=hwp_gutter_type_value(page_pr.get("gutterType")),
+    )
 
 
 def read_style_records(path: Path = STYLE_FILE) -> list[StyleRecord]:
@@ -855,6 +924,55 @@ def parse_cover_input(text: str) -> tuple[str, str, str]:
     return values[0], values[1], "\n".join(values[2:])
 
 
+def today_ymd_text(now: datetime | None = None) -> str:
+    value = now or datetime.now()
+    return f"{value.year}. {value.month}. {value.day}."
+
+
+def resolve_report_template_date(value: str, now: datetime | None = None) -> str:
+    stripped = value.strip()
+    return today_ymd_text(now) if stripped == "{{오늘}}" else stripped
+
+
+def parse_report_template_input(text: str, now: datetime | None = None) -> ReportTemplateFields:
+    fields: dict[str, str] = {}
+    current_key: str | None = None
+    key_map = {
+        "제목": "title",
+        "문서제목": "title",
+        "부서": "department",
+        "부서명": "department",
+        "날짜": "date_text",
+        "주석": "note",
+        "표제목": "table_title",
+        "표 제목": "table_title",
+        "표제목줄": "table_title_line",
+        "표 제목줄": "table_title_line",
+    }
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").replace("\v", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = re.match(r"^([^:：]+)\s*[:：]\s*(.*)$", line)
+        if match and match.group(1).strip() in key_map:
+            current_key = key_map[match.group(1).strip()]
+            fields[current_key] = match.group(2).strip()
+        elif current_key:
+            fields[current_key] = (fields[current_key] + "\n" + line).strip()
+
+    missing = [label for label, key in (("제목", "title"), ("부서", "department"), ("날짜", "date_text")) if not fields.get(key)]
+    if missing:
+        raise ValueError("보고양식 입력에서 다음 항목을 찾지 못했습니다: " + ", ".join(missing))
+    return ReportTemplateFields(
+        title=fields["title"],
+        department=fields["department"],
+        date_text=resolve_report_template_date(fields["date_text"], now),
+        note=fields.get("note", ""),
+        table_title=fields.get("table_title"),
+        table_title_line=fields.get("table_title_line"),
+    )
+
+
 def hwp_xml_text(value: str) -> str:
     lines = [escape(line) for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     return "</hp:t><hp:lineBreak/><hp:t>".join(lines)
@@ -951,6 +1069,46 @@ def create_filled_cover_file(
             elif info.filename == "Preview/PrvText.txt":
                 text = data.decode("utf-8")
                 for old, new in preview_replacements.items():
+                    text = text.replace(old, new)
+                data = text.encode("utf-8")
+            dst.writestr(info, data)
+
+    return target
+
+
+def create_filled_general_report_template_file(
+    fields: ReportTemplateFields,
+    template: Path = GENERAL_REPORT_TEMPLATE_FILE,
+) -> Path:
+    if not template.exists():
+        raise FileNotFoundError(f"보고양식 템플릿을 찾지 못했습니다: {template}")
+
+    TEST_OUTPUT_DIR.mkdir(exist_ok=True)
+    target = TEST_OUTPUT_DIR / f"general-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.hwpx"
+    replacements = {
+        "{{제목}}": fields.title,
+        "{{문서제목}}": fields.title,
+        "{{부서}}": fields.department,
+        "{{부서명}}": fields.department,
+        "{{날짜}}": fields.date_text,
+        "{{주석}}": fields.note,
+    }
+    if fields.table_title is not None:
+        replacements["{{표제목}}"] = fields.table_title
+    if fields.table_title_line is not None:
+        replacements["{{표제목줄}}"] = fields.table_title_line
+
+    with zipfile.ZipFile(template, "r") as src, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename.endswith(".xml"):
+                text = data.decode("utf-8")
+                for old, new in replacements.items():
+                    text = text.replace(old, hwp_xml_text(new))
+                data = text.encode("utf-8")
+            elif info.filename == "Preview/PrvText.txt":
+                text = data.decode("utf-8")
+                for old, new in replacements.items():
                     text = text.replace(old, new)
                 data = text.encode("utf-8")
             dst.writestr(info, data)
@@ -1523,6 +1681,65 @@ class CaptionParts:
     suffix: str
 
 
+@dataclass(frozen=True)
+class ReportTemplateFields:
+    title: str
+    department: str
+    date_text: str
+    note: str = ""
+    table_title: str | None = None
+    table_title_line: str | None = None
+
+
+@dataclass(frozen=True)
+class PageSettings:
+    paper_width: int
+    paper_height: int
+    landscape: int
+    left_margin: int
+    right_margin: int
+    top_margin: int
+    bottom_margin: int
+    header_len: int
+    footer_len: int
+    gutter_len: int
+    gutter_type: int
+
+
+PAGE_SETTING_COMPARE_FIELDS = (
+    "paper_width",
+    "paper_height",
+    "landscape",
+    "left_margin",
+    "right_margin",
+    "top_margin",
+    "bottom_margin",
+    "header_len",
+    "footer_len",
+    "gutter_len",
+    "gutter_type",
+)
+
+
+def format_page_settings(settings: PageSettings | None) -> str:
+    if settings is None:
+        return "none"
+    return (
+        f"paper={settings.paper_width}x{settings.paper_height}, "
+        f"landscape={settings.landscape}, "
+        f"margin=L{settings.left_margin} R{settings.right_margin} "
+        f"T{settings.top_margin} B{settings.bottom_margin}, "
+        f"header_footer=H{settings.header_len} F{settings.footer_len}, "
+        f"gutter={settings.gutter_len} type={settings.gutter_type}"
+    )
+
+
+def page_settings_match(expected: PageSettings, actual: PageSettings | None) -> bool:
+    if actual is None:
+        return False
+    return all(getattr(expected, field_name) == getattr(actual, field_name) for field_name in PAGE_SETTING_COMPARE_FIELDS)
+
+
 def split_table_caption_parts(text: str, parser_settings: dict | None = None) -> CaptionParts:
     cleaned = strip_wrapping_blank_lines(text).strip()
     settings = merge_dict(DEFAULT_TABLE_SETTINGS["caption_parser"], parser_settings or {})
@@ -2001,6 +2218,7 @@ class MvpApp(tk.Tk):
 
         self._build_styles_tab()
         self._build_table_tab()
+        self._build_page_tab()
         self._build_cover_logo_tab()
         self._build_status_tab()
         self.bind_all("<Control-z>", self.on_global_undo)
@@ -2074,6 +2292,27 @@ class MvpApp(tk.Tk):
         self.table_frame = frame
         self.notebook.add(frame, text="표 편집")
         self.build_table_tab_content()
+
+    def _build_page_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(frame, text="쪽 편집")
+
+        hide_group = ttk.LabelFrame(frame, text="감추기", padding=8)
+        hide_group.pack(fill="x")
+        ttk.Button(
+            hide_group,
+            text="모두 감추기(머리말/꼬리말/쪽번호)",
+            command=self.hide_current_page_header_footer_page_number,
+        ).pack(fill="x")
+
+        number_group = ttk.LabelFrame(frame, text="새 번호 개체", padding=8)
+        number_group.pack(fill="x", pady=(12, 0))
+        for text, num_type in (("새 쪽 번호", 0), ("새 표 번호", 4), ("새 그림 번호", 3)):
+            ttk.Button(
+                number_group,
+                text=text,
+                command=lambda value=num_type, label=text: self.insert_new_number_object(value, label),
+            ).pack(fill="x", pady=(0, 6))
 
     def load_icon_image(self, icon_name: str) -> tk.PhotoImage | None:
         if icon_name in self.icon_images:
@@ -2175,6 +2414,16 @@ class MvpApp(tk.Tk):
         )
         for button in table_action_row.winfo_children():
             button.pack_configure(ipady=8)
+
+        section_label("번호종류")
+        numbering_row = ttk.Frame(content)
+        numbering_row.pack(fill="x", pady=(6, 12))
+        for text, numbering_type in (("없음", 0), ("표", 2), ("그림", 1)):
+            ttk.Button(
+                numbering_row,
+                text=text,
+                command=lambda value=numbering_type, label=text: self.apply_selected_object_numbering_type(value, label),
+            ).pack(side="left", fill="x", expand=True, padx=(0 if numbering_type == 0 else 6, 0))
 
         section_label("표내용 스타일")
         table_style_buttons = ttk.Frame(content)
@@ -2793,7 +3042,15 @@ class MvpApp(tk.Tk):
 
     def _build_cover_logo_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
-        self.notebook.add(frame, text="표지/로고")
+        self.notebook.add(frame, text="양식/로고")
+
+        template_group = ttk.LabelFrame(frame, text="보고 양식", padding=8)
+        template_group.pack(fill="x", pady=(0, 10))
+        ttk.Button(
+            template_group,
+            text="보고양식 불러오기",
+            command=self.insert_general_report_template,
+        ).pack(fill="x")
 
         cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=8)
         cover_group.pack(fill="x", pady=(0, 10))
@@ -2839,7 +3096,8 @@ class MvpApp(tk.Tk):
         self.log(f"사용자 설정 폴더: {CONFIG_ROOT}")
         self.log(f"스타일 세트 파일: {STYLE_SETS_FILE.exists()} / {STYLE_SETS_FILE}")
         self.log(f"기본 스타일 세트 파일: {BUNDLED_STYLE_SETS_FILE.exists()} / {BUNDLED_STYLE_SETS_FILE.name}")
-        self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.name}")
+        self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.relative_to(ROOT)}")
+        self.log(f"보고양식 파일: {GENERAL_REPORT_TEMPLATE_FILE.exists()} / {GENERAL_REPORT_TEMPLATE_FILE.relative_to(ROOT)}")
 
         self.active_style_set_name, self.style_sets = load_style_sets()
         self.style_set_var.set(self.active_style_set_name)
@@ -3613,6 +3871,62 @@ class MvpApp(tk.Tk):
                 return action, True
         return last_action, False
 
+    def hwp_parameter_set(self, name: str):
+        return getattr(self.hwp.HParameterSet, name)
+
+    def execute_configured_hwp_action(self, action_name: str, parameter_set_name: str, values: dict[str, object]) -> tuple[bool, bool]:
+        pset = self.hwp_parameter_set(parameter_set_name)
+        default_ok = bool(self.hwp.HAction.GetDefault(action_name, pset.HSet))
+        for item, value in values.items():
+            self.set_parameter_item(pset, item, value, action_name)
+            try:
+                self.set_parameter_item(pset.HSet, item, value, action_name)
+            except Exception:
+                pass
+        executed = bool(self.hwp.HAction.Execute(action_name, pset.HSet))
+        return default_ok, executed
+
+    def hide_current_page_header_footer_page_number(self) -> None:
+        label = "쪽 모두 감추기"
+        if not self.ensure_hwp():
+            return
+        fields = 0x01 | 0x02 | 0x20
+        try:
+            self.activate_hwp_window()
+            default_ok, executed = self.execute_configured_hwp_action("PageHiding", "HPageHiding", {"Fields": fields})
+            self.log(f"{label}: Fields={fields:#04x}, GetDefault={default_ok}, result={executed}")
+            if not executed:
+                messagebox.showwarning(
+                    label,
+                    "한글이 쪽 감추기 명령을 실패로 반환했습니다. 본문 쪽에 커서를 둔 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def insert_new_number_object(self, num_type: int, label: str) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            default_ok, executed = self.execute_configured_hwp_action(
+                "NewNumber",
+                "HAutoNum",
+                {
+                    "NumType": num_type,
+                    "NewNumber": 1,
+                },
+            )
+            self.log(f"{label}: NumType={num_type}, NewNumber=1, GetDefault={default_ok}, result={executed}")
+            if not executed:
+                messagebox.showwarning(
+                    label,
+                    "한글이 새 번호 개체 삽입을 실패로 반환했습니다. 번호를 넣을 위치에 커서를 둔 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
     def apply_cell_fill_color(self, color: PaletteColor) -> None:
         if not self.ensure_hwp():
             return
@@ -4376,6 +4690,147 @@ class MvpApp(tk.Tk):
         self.debug(f"[table-property] GetDefault={default_ok}, SelectCtrlReverse={selected}")
         return pset
 
+    def get_parameter_item_value(self, target, item: str):
+        for candidate in (target, getattr(target, "HSet", None)):
+            if candidate is None:
+                continue
+            try:
+                return candidate.Item(item)
+            except Exception:
+                pass
+            try:
+                return getattr(candidate, item)
+            except Exception:
+                pass
+        return None
+
+    def set_selected_ctrl_property_item(self, ctrl, item: str, value, log_prefix: str) -> tuple[bool, object | None, object | None]:
+        try:
+            props = ctrl.Properties
+        except Exception as exc:
+            self.debug(f"[{log_prefix}] Ctrl.Properties 읽기 실패: {type(exc).__name__}: {exc}")
+            return False, None, None
+
+        before = self.get_parameter_item_value(props, item)
+        set_ok = self.set_parameter_item(props, item, value, log_prefix)
+        after = self.get_parameter_item_value(props, item)
+        commit_ok = False
+        if set_ok:
+            try:
+                ctrl.Properties = props
+                commit_ok = True
+            except Exception as exc:
+                self.debug(f"[{log_prefix}] Ctrl.Properties 커밋 실패: {type(exc).__name__}: {exc}")
+        return set_ok and commit_ok, before, after
+
+    def nearby_caption_autonum_ctrls(self, base_ctrl, max_steps: int = 8) -> list:
+        found = []
+        seen: set[int] = set()
+        for attr in ("Next", "Prev"):
+            ctrl = base_ctrl
+            for _ in range(max_steps):
+                try:
+                    ctrl = getattr(ctrl, attr)
+                except Exception:
+                    break
+                if ctrl is None:
+                    break
+                identity = id(ctrl)
+                if identity in seen:
+                    break
+                seen.add(identity)
+                ctrl_id = safe_str(getattr(ctrl, "CtrlID", ""))
+                if ctrl_id == "atno":
+                    found.append(ctrl)
+                    break
+        return found
+
+    def set_nearby_caption_autonum_type(self, base_ctrl, numbering_type: int) -> tuple[int, int, list[str]]:
+        autonum_type_by_numbering_type = {
+            1: 3,  # 그림 번호
+            2: 4,  # 표 번호
+        }
+        autonum_type = autonum_type_by_numbering_type.get(numbering_type)
+        if autonum_type is None:
+            return 0, 0, ["skipped"]
+
+        changed = 0
+        scanned = 0
+        details: list[str] = []
+        for ctrl in self.nearby_caption_autonum_ctrls(base_ctrl):
+            scanned += 1
+            ctrl_id = safe_str(getattr(ctrl, "CtrlID", ""))
+            user_desc = safe_str(getattr(ctrl, "UserDesc", ""))
+            ok, before, after = self.set_selected_ctrl_property_item(
+                ctrl,
+                "NumType",
+                autonum_type,
+                "caption-autonum",
+            )
+            if ok:
+                changed += 1
+            details.append(f"{ctrl_id}:{user_desc}:before={before}:after={after}:ok={ok}")
+        return changed, scanned, details
+
+    def set_selected_object_numbering_type(
+        self,
+        numbering_type: int,
+    ) -> tuple[str, bool, object | None, object | None, tuple[int, int, list[str]]]:
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        selected = self.has_selected_object()
+        if not selected:
+            selected = self.select_current_table_object()
+
+        try:
+            ctrl = self.hwp.CurSelectedCtrl
+        except Exception:
+            ctrl = None
+        if ctrl is None:
+            self.debug(f"[object-numbering] 선택 개체 없음, SelectCtrlReverse={selected}")
+            return "CurSelectedCtrl.Properties", False, None, None, (0, 0, [])
+
+        ctrl_id = safe_str(getattr(ctrl, "CtrlID", ""))
+        object_ok, before, after = self.set_selected_ctrl_property_item(
+            ctrl,
+            "NumberingType",
+            numbering_type,
+            "object-numbering",
+        )
+        autonum_result = self.set_nearby_caption_autonum_type(ctrl, numbering_type)
+        try:
+            self.hwp.Refresh()
+        except Exception:
+            pass
+        self.debug(
+            "[object-numbering] "
+            f"selected={selected}, CtrlID={ctrl_id!r}, before={before}, "
+            f"target={numbering_type}, after={after}, object_ok={object_ok}, "
+            f"caption_autonum={autonum_result}"
+        )
+        return "CurSelectedCtrl.Properties", object_ok, before, after, autonum_result
+
+    def apply_selected_object_numbering_type(self, numbering_type: int, label: str) -> None:
+        title = "번호종류"
+        if not self.ensure_hwp():
+            return
+        try:
+            action_name, ok, before, after, autonum_result = self.set_selected_object_numbering_type(numbering_type)
+            autonum_changed, autonum_scanned, _autonum_details = autonum_result
+            self.log(
+                f"{title} 적용: {label}({numbering_type}), "
+                f"before={before}, after={after}, action={action_name}, "
+                f"caption_autonum={autonum_changed}/{autonum_scanned}, result={ok}"
+            )
+            if not ok:
+                messagebox.showwarning(
+                    f"{title} 적용 확인",
+                    "한글이 번호 종류 변경을 실패로 반환했습니다.\n표나 그림 개체를 선택한 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"{title} 적용 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{title} 적용 실패", str(exc))
+
     def set_table_outside_margins(self) -> tuple[str, bool]:
         pset = self.get_table_property_set()
         margins = self.table_settings["table_margins"]
@@ -4903,7 +5358,7 @@ class MvpApp(tk.Tk):
     def _finish_style_apply(self) -> None:
         self._applying_style = False
 
-    def insert_file_at_cursor(self, path: Path) -> bool:
+    def insert_file_at_cursor(self, path: Path, *, keep_section: int = 0) -> bool:
         option = self.hwp.HParameterSet.HInsertFile
         self.hwp.HAction.GetDefault("InsertFile", option.HSet)
         try:
@@ -4914,11 +5369,97 @@ class MvpApp(tk.Tk):
             option.Filename = str(path)
         except Exception:
             pass
-        option.KeepSection = 0
+        option.KeepSection = keep_section
         option.KeepCharshape = 1
         option.KeepParashape = 1
         option.KeepStyle = 1
         return bool(self.hwp.HAction.Execute("InsertFile", option.HSet))
+
+    def page_settings_values(self, settings: PageSettings, *, apply_to: int = 3) -> dict[str, int]:
+        return {
+            "PaperWidth": settings.paper_width,
+            "PaperHeight": settings.paper_height,
+            "Landscape": settings.landscape,
+            "LeftMargin": settings.left_margin,
+            "RightMargin": settings.right_margin,
+            "TopMargin": settings.top_margin,
+            "BottomMargin": settings.bottom_margin,
+            "HeaderLen": settings.header_len,
+            "FooterLen": settings.footer_len,
+            "GutterLen": settings.gutter_len,
+            "GutterType": settings.gutter_type,
+            "ApplyTo": apply_to,
+            "ApplyClass": 0x08 if apply_to == 3 else 0x04,
+        }
+
+    def configure_secdef_page_settings(
+        self,
+        sec,
+        settings: PageSettings,
+        *,
+        apply_to: int = 3,
+    ) -> dict[str, int]:
+        page = sec.PageDef
+        values = self.page_settings_values(settings, apply_to=apply_to)
+        for item, value in values.items():
+            try:
+                setattr(page, item, value)
+            except Exception as exc:
+                self.debug(f"[page-settings] {item} 설정 실패: {type(exc).__name__}: {exc}")
+        try:
+            sec.PageDef = page
+        except Exception as exc:
+            self.debug(f"[page-settings] PageDef 반영 실패: {type(exc).__name__}: {exc}")
+        return values
+
+    def read_current_page_settings(self) -> tuple[bool, PageSettings | None]:
+        try:
+            sec = self.hwp.HParameterSet.HSecDef
+            default_ok = bool(self.hwp.HAction.GetDefault("PageSetup", sec.HSet))
+            page = sec.PageDef
+            return default_ok, PageSettings(
+                paper_width=int(page.PaperWidth),
+                paper_height=int(page.PaperHeight),
+                landscape=int(page.Landscape),
+                left_margin=int(page.LeftMargin),
+                right_margin=int(page.RightMargin),
+                top_margin=int(page.TopMargin),
+                bottom_margin=int(page.BottomMargin),
+                header_len=int(page.HeaderLen),
+                footer_len=int(page.FooterLen),
+                gutter_len=int(page.GutterLen),
+                gutter_type=int(page.GutterType),
+            )
+        except Exception as exc:
+            self.debug(f"[page-settings] 현재 쪽 설정 읽기 실패: {type(exc).__name__}: {exc}")
+            return False, None
+
+    def current_page_settings_summary(self) -> str:
+        default_ok, settings = self.read_current_page_settings()
+        return f"GetDefault={default_ok}, {format_page_settings(settings)}"
+
+    def apply_page_settings(self, settings: PageSettings, *, apply_to: int = 3) -> tuple[str, bool, str]:
+        action_name = "PageMarginSetup"
+        default_ok = False
+        executed = False
+        current_ok = False
+        current_settings = None
+        values = self.page_settings_values(settings, apply_to=apply_to)
+        try:
+            sec = self.hwp.HParameterSet.HSecDef
+            default_ok = bool(self.hwp.HAction.GetDefault(action_name, sec.HSet))
+            values = self.configure_secdef_page_settings(sec, settings, apply_to=apply_to)
+            executed = bool(self.hwp.HAction.Execute(action_name, sec.HSet))
+            current_ok, current_settings = self.read_current_page_settings()
+        except Exception as exc:
+            self.debug(f"[page-settings] {action_name} 실패: {type(exc).__name__}: {exc}")
+        matched = page_settings_match(settings, current_settings)
+        detail = (
+            f"{action_name}:default={default_ok}:exec={executed}:read={current_ok}:"
+            f"match={matched}:current={format_page_settings(current_settings)}"
+        )
+        self.debug(f"[page-settings] values={values}, {detail}")
+        return action_name, matched, detail
 
     def insert_logo_at_cursor(self, path: Path) -> None:
         if not self.ensure_hwp():
@@ -4955,6 +5496,79 @@ class MvpApp(tk.Tk):
         except Exception as exc:
             self.log(f"로고 삽입 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror("로고 삽입 실패", str(exc))
+
+    def insert_general_report_template(self) -> None:
+        label = "보고양식 불러오기"
+        if not self.ensure_hwp():
+            return
+        template_path = GENERAL_REPORT_TEMPLATE_FILE
+        original_text = ""
+        try:
+            if not template_path.exists():
+                messagebox.showwarning(label, f"보고양식 파일을 찾을 수 없습니다.\n\n{template_path}")
+                self.log(f"{label}: 파일 없음, path={template_path}")
+                return
+            style_count = len(read_style_records(template_path))
+
+            copy_ok = self.run_hwp_command("Copy")
+            time.sleep(0.08)
+            original_text = self.get_clipboard_text() if copy_ok else ""
+            filled_fields = None
+            insert_path = template_path
+            if original_text.strip():
+                try:
+                    filled_fields = parse_report_template_input(original_text)
+                except ValueError as exc:
+                    messagebox.showwarning(label, str(exc))
+                    self.log(f"{label}: 입력 파싱 실패, Copy={copy_ok}, error={exc}")
+                    return
+                insert_path = create_filled_general_report_template_file(filled_fields, template_path)
+                delete_ok = self.run_hwp_command("Delete")
+                if not delete_ok:
+                    messagebox.showwarning(label, "입력값은 확인했지만 선택 텍스트를 삭제하지 못했습니다. 선택 영역을 확인하세요.")
+                    self.log(f"{label}: 선택 영역 삭제 실패")
+                    return
+
+            insert_ok = self.insert_file_at_cursor(insert_path, keep_section=1)
+            if not insert_ok:
+                if filled_fields is not None:
+                    self.set_clipboard_text(original_text)
+                    restore_ok = self.run_hwp_command("Paste")
+                else:
+                    restore_ok = None
+                messagebox.showwarning(label, "한글이 보고양식 삽입을 실패로 반환했습니다. 삽입할 위치에 커서를 둔 상태인지 확인하세요.")
+                self.log(f"{label}: 삽입 실패, file={insert_path.name}, styles={style_count}, restored={restore_ok}")
+                return
+            page_settings = read_hwpx_page_settings(template_path)
+            if page_settings is None:
+                page_action = "read_failed"
+                page_ok = False
+                page_detail = "none"
+                page_target = "none"
+            else:
+                page_target = format_page_settings(page_settings)
+                page_action, page_ok, page_detail = self.apply_page_settings(page_settings, apply_to=3)
+            self.refresh_current_doc_style_map(force=True)
+            self.activate_hwp_window()
+            if filled_fields is None:
+                fill_summary = "fill=none"
+            else:
+                fill_summary = (
+                    f"제목={filled_fields.title}, 부서={filled_fields.department}, "
+                    f"날짜={filled_fields.date_text}"
+                )
+            log_lines = [
+                (
+                    f"{label} 완료: file={insert_path.name}, template_styles={style_count}, "
+                    f"KeepStyle=1, KeepSection=1, page_setup={page_ok}({page_action}), {fill_summary}"
+                ),
+                f"보고양식 쪽설정 목표: {page_target}",
+                f"보고양식 쪽설정 결과: {page_detail}",
+            ]
+            self.log(log_lines)
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
 
     def insert_picture_at_cursor(self, path: Path, width_mm: float, height_mm: float) -> bool:
         file_name = str(path.resolve())
