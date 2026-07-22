@@ -40,6 +40,7 @@ Get-ChildItem -LiteralPath (Join-Path $root "bufs") -Filter "*.hwpx" | ForEach-O
 }
 
 $pyinstallerArgs += @(
+  "--add-data", "$(Join-Path $root 'bufs\style-sets.json');bufs",
   "--add-data", "$(Join-Path $root 'bufs\table-settings.json');bufs",
   "--add-data", "$(Join-Path $root 'bufs\style-order.json');bufs",
   "--add-data", "$(Join-Path $root 'bufs\icons');bufs\icons",
