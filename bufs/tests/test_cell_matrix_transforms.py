@@ -17,6 +17,7 @@ from hwp_style_mvp import (  # noqa: E402
     cell_matrix_size,
     cell_matrix_to_tsv,
     clean_manual_line_breaks,
+    consume_numbering_entry,
     flatten_cell_matrix,
     find_suspicious_decimal_numbers,
     is_rectangular_cell_matrix,
@@ -49,6 +50,7 @@ from hwp_style_mvp import (  # noqa: E402
     TABLE_STYLE_ICON_BUTTON_SIZE,
     TABLE_STYLE_ICON_PRESETS,
     InlineRule,
+    NumberingRunState,
     StyleEntry,
     StyleRecord,
     StyleSet,
@@ -272,6 +274,17 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(find_inline_rule_ranges_for_style_set(text, rule, style_set), [(2, 11, None)])
 
+    def test_numbering_restart_state_restarts_lower_level_after_higher_level(self) -> None:
+        state = NumberingRunState()
+        level_1 = StyleEntry("body-outline-1", numbering_group="body", numbering_level=1, restart_after_higher_level=True)
+        level_2 = StyleEntry("body-outline-2", numbering_group="body", numbering_level=2, restart_after_higher_level=True)
+
+        self.assertFalse(consume_numbering_entry(state, level_2))
+        self.assertFalse(consume_numbering_entry(state, level_2))
+        self.assertFalse(consume_numbering_entry(state, level_1))
+        self.assertTrue(consume_numbering_entry(state, level_2))
+        self.assertFalse(consume_numbering_entry(state, level_2))
+
     def test_outline_rule_filters_duplicate_markers_by_table_context(self) -> None:
         style_set = StyleSet(
             "set",
@@ -358,7 +371,13 @@ class CellMatrixTransformTests(unittest.TestCase):
                         [
                             StyleEntry("표내용-중간", table_style=True),
                             StyleEntry("[표/그림] 캡션", caption_style=True),
-                            StyleEntry("본문-개요2", outline_markers=("ㅇ", "○")),
+                            StyleEntry(
+                                "본문-개요2",
+                                outline_markers=("ㅇ", "○"),
+                                numbering_group="body",
+                                numbering_level=2,
+                                restart_after_higher_level=True,
+                            ),
                         ],
                         [StyleEntry("표내용-굵게", table_style=True)],
                     )
@@ -374,6 +393,9 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertTrue(loaded_sets[0].paragraph_styles[0].table_style)
         self.assertTrue(loaded_sets[0].paragraph_styles[1].caption_style)
         self.assertEqual(loaded_sets[0].paragraph_styles[2].outline_markers, ("ㅇ", "○"))
+        self.assertEqual(loaded_sets[0].paragraph_styles[2].numbering_group, "body")
+        self.assertEqual(loaded_sets[0].paragraph_styles[2].numbering_level, 2)
+        self.assertTrue(loaded_sets[0].paragraph_styles[2].restart_after_higher_level)
         self.assertTrue(loaded_sets[0].character_styles[0].table_style)
 
     def test_style_sets_copy_bundled_default_to_user_config_on_first_load(self) -> None:
@@ -1088,6 +1110,11 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(transformed, [["1234", "1234567"]])
         self.assertEqual(changed, 2)
 
+    def test_remove_commas_handles_korean_unit_suffixes(self) -> None:
+        self.assertEqual(remove_number_commas("1,250,000원"), "1250000원")
+        self.assertEqual(remove_number_commas("2,500천원"), "2500천원")
+        self.assertEqual(remove_number_commas("-1,234.56원"), "-1234.56원")
+
     def test_normalize_decimal_numbers_rounding_modes(self) -> None:
         self.assertEqual(
             normalize_decimal_numbers("1234.567 -1234.561", 2, "반올림"),
@@ -1749,7 +1776,8 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         app.apply_configured_outline_styles_to_selection()
 
-        self.assertEqual(calls, [{}, {}])
+        self.assertEqual([call.get("force_in_table") for call in calls], [None, None])
+        self.assertTrue(all(isinstance(call.get("numbering_state"), NumberingRunState) for call in calls))
         self.assertEqual(restored, ["original"])
 
     def test_configured_outline_style_bulk_normal_selection_uses_body_marker_style_when_duplicate(self) -> None:

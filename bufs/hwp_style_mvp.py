@@ -93,6 +93,27 @@ STYLE_ORDER_FILE = CONFIG_ROOT / "style-order.json"
 STYLE_SETS_FILE = CONFIG_ROOT / "style-sets.json"
 TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
+NUMBERING_GROUP_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("", ""),
+    ("body", "본문"),
+    ("table", "표"),
+    ("note", "주석"),
+    ("proof", "증빙"),
+    ("appendix", "별첨"),
+    ("custom1", "기타1"),
+    ("custom2", "기타2"),
+)
+NUMBERING_GROUP_LABELS = tuple(label for _key, label in NUMBERING_GROUP_OPTIONS)
+NUMBERING_GROUP_BY_LABEL = {label: key for key, label in NUMBERING_GROUP_OPTIONS}
+NUMBERING_GROUP_LABEL_BY_KEY = {key: label for key, label in NUMBERING_GROUP_OPTIONS}
+INLINE_RULE_TYPE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("leading_parenthesized_after_identifier", "첫머리 괄호 키워드"),
+    ("leading_text_before_colon_after_identifier", "첫머리 콜론 앞"),
+    ("markdown_bold", "마크다운 굵게"),
+)
+INLINE_RULE_TYPE_LABELS = tuple(label for _key, label in INLINE_RULE_TYPE_OPTIONS)
+INLINE_RULE_TYPE_BY_LABEL = {label: key for key, label in INLINE_RULE_TYPE_OPTIONS}
+INLINE_RULE_TYPE_LABEL_BY_KEY = {key: label for key, label in INLINE_RULE_TYPE_OPTIONS}
 
 
 @dataclass(frozen=True)
@@ -118,6 +139,9 @@ class StyleEntry:
     caption_style: bool = False
     outline_markers: tuple[str, ...] = ()
     roles: tuple[str, ...] = ()
+    numbering_group: str = ""
+    numbering_level: int = 0
+    restart_after_higher_level: bool = False
 
 
 @dataclass(frozen=True)
@@ -137,6 +161,14 @@ class StyleSet:
     paragraph_styles: list[StyleEntry]
     character_styles: list[StyleEntry]
     inline_rules: list[InlineRule] = field(default_factory=list)
+
+
+@dataclass
+class NumberingRunState:
+    seen_levels: dict[str, set[int]] = field(default_factory=dict)
+    reset_levels: dict[str, set[int]] = field(default_factory=dict)
+    restarted: int = 0
+    restart_failed: int = 0
 
 
 @dataclass
@@ -551,6 +583,63 @@ def parse_role_text(text: str) -> list[str]:
     return unique_role_names(part for part in text.split(","))
 
 
+def normalize_numbering_level(value: object) -> int:
+    try:
+        return max(0, int(str(value).strip() or "0"))
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_numbering_group(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    aliases = {
+        "본문": "body",
+        "body": "body",
+        "표": "table",
+        "table": "table",
+        "주석": "note",
+        "note": "note",
+        "증빙": "proof",
+        "proof": "proof",
+        "별첨": "appendix",
+        "appendix": "appendix",
+        "기타1": "custom1",
+        "custom1": "custom1",
+        "기타2": "custom2",
+        "custom2": "custom2",
+    }
+    return aliases.get(text, text)
+
+
+def numbering_group_label(value: object) -> str:
+    key = normalize_numbering_group(value)
+    return NUMBERING_GROUP_LABEL_BY_KEY.get(key, key)
+
+
+def normalize_inline_rule_type(value: object) -> str:
+    text = str(value or "").strip()
+    return INLINE_RULE_TYPE_BY_LABEL.get(text, text)
+
+
+def inline_rule_type_label(value: object) -> str:
+    key = normalize_inline_rule_type(value)
+    return INLINE_RULE_TYPE_LABEL_BY_KEY.get(key, key)
+
+
+def inferred_numbering_level(name: str) -> int:
+    match = re.search(r"개요(?:번호)?[^\d]*(\d+)", normalize_style_name(name))
+    return normalize_numbering_level(match.group(1)) if match else 0
+
+
+def inferred_numbering_group(name: str, *, table_style: bool = False) -> str:
+    level = inferred_numbering_level(name)
+    if not level:
+        return ""
+    return "table" if table_style else "body"
+
+
 def inferred_style_roles(name: str, *, table_style: bool = False) -> tuple[str, ...]:
     normalized = normalize_style_name(name)
     roles: list[str] = []
@@ -565,12 +654,17 @@ def normalize_style_entry(item: object) -> StyleEntry | None:
         if not name:
             return None
         roles = item.roles or inferred_style_roles(name, table_style=item.table_style)
+        numbering_level = item.numbering_level or inferred_numbering_level(name)
+        numbering_group = normalize_numbering_group(item.numbering_group) or inferred_numbering_group(name, table_style=item.table_style)
         return StyleEntry(
             name,
             table_style=item.table_style,
             caption_style=item.caption_style,
             outline_markers=tuple(unique_style_marker_names(item.outline_markers)),
             roles=tuple(unique_role_names(roles)),
+            numbering_group=numbering_group,
+            numbering_level=numbering_level,
+            restart_after_higher_level=bool(item.restart_after_higher_level),
         )
     if isinstance(item, dict):
         name = str(item.get("name", "")).strip()
@@ -578,17 +672,37 @@ def normalize_style_entry(item: object) -> StyleEntry | None:
             return None
         table_style = bool(item.get("table_style", False))
         roles = unique_role_names(item.get("roles", inferred_style_roles(name, table_style=table_style)))
+        numbering = item.get("numbering") if isinstance(item.get("numbering"), dict) else {}
+        numbering_level = normalize_numbering_level(numbering.get("level", item.get("numbering_level", 0)))
+        if not numbering_level:
+            numbering_level = inferred_numbering_level(name)
+        numbering_group = normalize_numbering_group(numbering.get("group", item.get("numbering_group", "")))
+        if not numbering_group:
+            numbering_group = inferred_numbering_group(name, table_style=table_style)
+        restart_after_higher = numbering.get("restart_after_higher_level", item.get("restart_after_higher_level", None))
+        if restart_after_higher is None:
+            restart_after_higher = bool(numbering_level)
         return StyleEntry(
             name=name,
             table_style=table_style,
             caption_style=bool(item.get("caption_style", False)),
             outline_markers=tuple(unique_style_marker_names(item.get("outline_markers", []))),
             roles=tuple(roles),
+            numbering_group=numbering_group,
+            numbering_level=numbering_level,
+            restart_after_higher_level=bool(restart_after_higher),
         )
     name = str(item).strip()
     if not name:
         return None
-    return StyleEntry(name=name, roles=inferred_style_roles(name))
+    numbering_level = inferred_numbering_level(name)
+    return StyleEntry(
+        name=name,
+        roles=inferred_style_roles(name),
+        numbering_group=inferred_numbering_group(name),
+        numbering_level=numbering_level,
+        restart_after_higher_level=bool(numbering_level),
+    )
 
 
 def normalize_inline_rule(item: object) -> InlineRule | None:
@@ -781,6 +895,11 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
                         "caption_style": entry.caption_style,
                         "outline_markers": list(entry.outline_markers),
                         "roles": list(entry.roles),
+                        "numbering": {
+                            "group": entry.numbering_group,
+                            "level": entry.numbering_level,
+                            "restart_after_higher_level": entry.restart_after_higher_level,
+                        },
                     }
                     for entry in unique_style_entries(item.paragraph_styles)
                 ],
@@ -791,6 +910,11 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
                         "caption_style": entry.caption_style,
                         "outline_markers": list(entry.outline_markers),
                         "roles": list(entry.roles),
+                        "numbering": {
+                            "group": entry.numbering_group,
+                            "level": entry.numbering_level,
+                            "restart_after_higher_level": entry.restart_after_higher_level,
+                        },
                     }
                     for entry in unique_style_entries(item.character_styles)
                 ],
@@ -1258,7 +1382,10 @@ def add_thousand_commas(text: str) -> str:
 
 
 def remove_number_commas(text: str) -> str:
-    return re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+    def repl(match: re.Match[str]) -> str:
+        return match.group("number").replace(",", "")
+
+    return re.sub(r"(?<![\d,])(?P<number>-?\d{1,3}(?:,\d{3})+(?:\.\d+)?)(?![\d,])", repl, text)
 
 
 class SuspiciousDecimalNumberError(ValueError):
@@ -1939,6 +2066,22 @@ def find_outline_style_rule(
         if prefix_length:
             return entry, prefix_length
     return None
+
+
+def consume_numbering_entry(state: NumberingRunState | None, entry: StyleEntry) -> bool:
+    if state is None or not entry.numbering_group or entry.numbering_level <= 0:
+        return False
+    group = entry.numbering_group
+    level = entry.numbering_level
+    reset_levels = state.reset_levels.setdefault(group, set())
+    seen_levels = state.seen_levels.setdefault(group, set())
+    restart = entry.restart_after_higher_level and level in reset_levels
+    reset_levels.discard(level)
+    for seen_level in seen_levels:
+        if seen_level > level:
+            reset_levels.add(seen_level)
+    seen_levels.add(level)
+    return restart
 
 
 def find_inline_rule_ranges(text: str, rule: InlineRule) -> list[tuple[int, int, tuple[int, int] | None]]:
@@ -2970,22 +3113,24 @@ class MvpApp(tk.Tk):
         cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=8)
         cleanup_group.pack(fill="x", pady=(8, 0))
 
-        sentence_buttons = ttk.Frame(cleanup_group)
-        sentence_buttons.pack(fill="x")
         sentence_button_defs = (
             ("줄바꿈정리", self.clean_selected_line_breaks),
             ("기호제거", self.clean_selected_outline_prefixes),
             ("일괄처리", self.apply_configured_outline_styles_to_selection),
+            ("새 번호", self.put_new_paragraph_number_at_cursor),
             ("「 」 씌우기", self.wrap_regulation_names_in_selection),
         )
-        for index, (button_text, command) in enumerate(sentence_button_defs):
-            ttk.Button(sentence_buttons, text=button_text, command=command).pack(
-                side="left",
-                fill="x",
-                expand=True,
-                padx=(6 if index else 0, 0),
-                ipady=8,
-            )
+        for row_index, row_defs in enumerate((sentence_button_defs[:3], sentence_button_defs[3:])):
+            sentence_buttons = ttk.Frame(cleanup_group)
+            sentence_buttons.pack(fill="x", pady=(0 if row_index == 0 else 6, 0))
+            for index, (button_text, command) in enumerate(row_defs):
+                ttk.Button(sentence_buttons, text=button_text, command=command).pack(
+                    side="left",
+                    fill="x",
+                    expand=True,
+                    padx=(6 if index else 0, 0),
+                    ipady=8,
+                )
 
         number_group = ttk.LabelFrame(parent, text="숫자 정리", padding=8)
         number_group.pack(fill="x", pady=(8, 0))
@@ -3216,7 +3361,8 @@ class MvpApp(tk.Tk):
     def open_style_sets_window(self) -> None:
         window = tk.Toplevel(self)
         window.title("스타일 세트 관리")
-        window.geometry("780x560")
+        window.geometry("1240x620")
+        window.minsize(1100, 560)
         window.transient(self)
 
         working_sets = [
@@ -3235,13 +3381,17 @@ class MvpApp(tk.Tk):
         caption_style_var = tk.BooleanVar(value=False)
         outline_markers_var = tk.StringVar()
         roles_var = tk.StringVar()
+        numbering_group_var = tk.StringVar()
+        numbering_level_var = tk.StringVar()
+        numbering_restart_var = tk.BooleanVar(value=False)
         rule_name_var = tk.StringVar()
-        rule_type_var = tk.StringVar(value="leading_parenthesized_after_identifier")
+        rule_type_var = tk.StringVar(value=inline_rule_type_label("leading_parenthesized_after_identifier"))
         rule_target_var = tk.StringVar(value="body")
         rule_role_var = tk.StringVar(value="body_bold")
         rule_include_wrapper_var = tk.BooleanVar(value=True)
         rule_remove_markers_var = tk.BooleanVar(value=False)
         rule_enabled_var = tk.BooleanVar(value=True)
+        rule_role_combo_ref: list[ttk.Combobox] = []
 
         body = ttk.Frame(window, padding=10)
         body.pack(fill="both", expand=True)
@@ -3251,22 +3401,44 @@ class MvpApp(tk.Tk):
         set_list = tk.Listbox(body, height=6, exportselection=False)
         set_list.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 10))
 
-        style_tree = ttk.Treeview(body, columns=("type", "table", "caption", "outline", "roles"), show="tree headings", height=10)
+        notebook = ttk.Notebook(body)
+        notebook.grid(row=1, column=1, sticky="nsew")
+        style_tab = ttk.Frame(notebook, padding=(0, 8, 0, 0))
+        rule_tab = ttk.Frame(notebook, padding=(0, 8, 0, 0))
+        style_tab.grid_columnconfigure(0, weight=1)
+        style_tab.grid_rowconfigure(0, weight=1)
+        rule_tab.grid_columnconfigure(0, weight=1)
+        rule_tab.grid_rowconfigure(0, weight=1)
+        notebook.add(style_tab, text="스타일")
+        notebook.add(rule_tab, text="규칙")
+
+        style_tree = ttk.Treeview(
+            style_tab,
+            columns=("type", "table", "caption", "outline", "roles", "num_group", "num_level", "num_restart"),
+            show="tree headings",
+            height=10,
+        )
         style_tree.heading("#0", text="스타일 이름")
         style_tree.heading("type", text="구분")
         style_tree.heading("table", text="표")
         style_tree.heading("caption", text="캡션")
         style_tree.heading("outline", text="식별자")
         style_tree.heading("roles", text="역할")
-        style_tree.column("#0", width=230)
+        style_tree.heading("num_group", text="번호그룹")
+        style_tree.heading("num_level", text="수준")
+        style_tree.heading("num_restart", text="새번호")
+        style_tree.column("#0", width=260)
         style_tree.column("type", width=52, stretch=False)
         style_tree.column("table", width=42, stretch=False, anchor="center")
         style_tree.column("caption", width=52, stretch=False, anchor="center")
-        style_tree.column("outline", width=120)
-        style_tree.column("roles", width=120)
-        style_tree.grid(row=1, column=1, sticky="nsew")
+        style_tree.column("outline", width=150)
+        style_tree.column("roles", width=130)
+        style_tree.column("num_group", width=110)
+        style_tree.column("num_level", width=44, stretch=False, anchor="center")
+        style_tree.column("num_restart", width=56, stretch=False, anchor="center")
+        style_tree.grid(row=0, column=0, sticky="nsew")
 
-        rule_tree = ttk.Treeview(body, columns=("type", "target", "role", "options"), show="tree headings", height=5)
+        rule_tree = ttk.Treeview(rule_tab, columns=("type", "target", "role", "options"), show="tree headings", height=8)
         rule_tree.heading("#0", text="규칙 이름")
         rule_tree.heading("type", text="찾을 형식")
         rule_tree.heading("target", text="대상")
@@ -3277,7 +3449,7 @@ class MvpApp(tk.Tk):
         rule_tree.column("target", width=70, stretch=False)
         rule_tree.column("role", width=100)
         rule_tree.column("options", width=120)
-        rule_tree.grid(row=5, column=1, sticky="nsew", pady=(10, 0))
+        rule_tree.grid(row=0, column=0, sticky="nsew")
 
         def selected_set_index() -> int:
             selection = set_list.curselection()
@@ -3315,6 +3487,9 @@ class MvpApp(tk.Tk):
                             "✓" if entry.caption_style else "",
                             ", ".join(entry.outline_markers),
                             ", ".join(entry.roles),
+                            numbering_group_label(entry.numbering_group),
+                            entry.numbering_level if entry.numbering_level else "",
+                            "✓" if entry.restart_after_higher_level else "",
                         ),
                     )
 
@@ -3322,11 +3497,7 @@ class MvpApp(tk.Tk):
             return {"body": "본문", "table": "표", "all": "본문+표"}.get(target, target)
 
         def rule_type_label(rule_type: str) -> str:
-            return {
-                "leading_parenthesized_after_identifier": "첫머리 괄호 키워드",
-                "markdown_bold": "마크다운 굵게",
-                "leading_text_before_colon_after_identifier": "첫머리 콜론 앞",
-            }.get(rule_type, rule_type)
+            return inline_rule_type_label(rule_type)
 
         def refresh_rule_tree() -> None:
             rule_tree.delete(*rule_tree.get_children())
@@ -3351,6 +3522,43 @@ class MvpApp(tk.Tk):
                     ),
                 )
 
+        def character_role_options() -> list[str]:
+            roles: list[str] = []
+            seen: set[str] = set()
+            for entry in selected_set().character_styles:
+                for role in entry.roles:
+                    if role and role not in seen:
+                        roles.append(role)
+                        seen.add(role)
+            return roles
+
+        def refresh_rule_role_options() -> None:
+            if not rule_role_combo_ref:
+                return
+            roles = character_role_options()
+            rule_role_combo_ref[0].configure(values=roles)
+            if roles and rule_role_var.get() not in roles:
+                rule_role_var.set(roles[0])
+            elif not roles:
+                rule_role_var.set("")
+
+        def validate_style_roles(style_type: str, roles: list[str], replace_index: int | None = None) -> bool:
+            if roles and style_type != "글자":
+                messagebox.showwarning("글자 역할 제한", "역할은 글자 스타일에만 지정할 수 있습니다.", parent=window)
+                return False
+            for role in roles:
+                for index, entry in enumerate(selected_set().character_styles):
+                    if replace_index is not None and index == replace_index:
+                        continue
+                    if role in entry.roles:
+                        messagebox.showwarning(
+                            "글자 역할 중복",
+                            f"'{role}' 역할은 이미 '{entry.name}' 글자 스타일에 지정되어 있습니다.",
+                            parent=window,
+                        )
+                        return False
+            return True
+
         def persist_working_sets() -> None:
             active_name = selected_set().name
             self.style_sets = working_sets
@@ -3363,6 +3571,7 @@ class MvpApp(tk.Tk):
             self.build_table_tab_content()
             if self.hwp is not None:
                 self.refresh_current_doc_style_map(force=True)
+            refresh_rule_role_options()
             self.debug(f"[style-sets] 즉시 저장: {STYLE_SETS_FILE}")
 
         def select_set(_event=None) -> None:
@@ -3371,12 +3580,14 @@ class MvpApp(tk.Tk):
             selected_set_var.set(selected_set().name)
             refresh_style_tree()
             refresh_rule_tree()
+            refresh_rule_role_options()
 
         def replace_selected_set(style_set: StyleSet) -> None:
             working_sets[selected_set_index()] = style_set
             refresh_set_list(style_set.name)
             refresh_style_tree()
             refresh_rule_tree()
+            refresh_rule_role_options()
 
         def add_set() -> None:
             base = "새 세트"
@@ -3470,12 +3681,22 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning("스타일 이름 중복", "같은 구분에 이미 있는 스타일 이름입니다.", parent=window)
                 return
             markers = parse_style_marker_text(outline_markers_var.get())
+            roles = parse_role_text(roles_var.get())
+            if not validate_style_roles(style_type_var.get(), roles):
+                return
+            numbering_level = normalize_numbering_level(numbering_level_var.get())
+            numbering_group = normalize_numbering_group(numbering_group_var.get())
+            if numbering_level and not numbering_group:
+                numbering_group = "table" if table_style_var.get() else "body"
             entry = StyleEntry(
                 name,
                 table_style_var.get(),
                 caption_style_var.get(),
                 tuple(markers),
-                tuple(parse_role_text(roles_var.get())),
+                tuple(roles),
+                numbering_group,
+                numbering_level,
+                numbering_restart_var.get(),
             )
             if style_type_var.get() == "글자":
                 replace_selected_set(StyleSet(item.name, item.paragraph_styles, [*item.character_styles, entry], item.inline_rules))
@@ -3484,6 +3705,9 @@ class MvpApp(tk.Tk):
             style_name_var.set("")
             outline_markers_var.set("")
             roles_var.set("")
+            numbering_group_var.set("")
+            numbering_level_var.set("")
+            numbering_restart_var.set(False)
             persist_working_sets()
 
         def selected_style_ref() -> tuple[str, int] | None:
@@ -3512,12 +3736,22 @@ class MvpApp(tk.Tk):
             if remove:
                 del entries[index]
             else:
+                saved_roles = tuple(parse_role_text(roles_var.get())) if save_form else entry.roles
+                if save_form and not validate_style_roles(style_type, list(saved_roles), index if style_type == "글자" else None):
+                    return
+                saved_numbering_level = normalize_numbering_level(numbering_level_var.get()) if save_form else entry.numbering_level
+                saved_numbering_group = normalize_numbering_group(numbering_group_var.get()) if save_form else entry.numbering_group
+                if save_form and saved_numbering_level and not saved_numbering_group:
+                    saved_numbering_group = "table" if table_style_var.get() else "body"
                 entries[index] = StyleEntry(
                     entry.name,
                     table_style=table_style_var.get() if save_form else entry.table_style,
                     caption_style=caption_style_var.get() if save_form else entry.caption_style,
                     outline_markers=tuple(parse_style_marker_text(outline_markers_var.get())) if save_form else entry.outline_markers,
-                    roles=tuple(parse_role_text(roles_var.get())) if save_form else entry.roles,
+                    roles=saved_roles,
+                    numbering_group=saved_numbering_group,
+                    numbering_level=saved_numbering_level,
+                    restart_after_higher_level=numbering_restart_var.get() if save_form else entry.restart_after_higher_level,
                 )
             replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles, item.inline_rules))
             persist_working_sets()
@@ -3538,6 +3772,9 @@ class MvpApp(tk.Tk):
             caption_style_var.set(entry.caption_style)
             outline_markers_var.set(", ".join(entry.outline_markers))
             roles_var.set(", ".join(entry.roles))
+            numbering_group_var.set(numbering_group_label(entry.numbering_group))
+            numbering_level_var.set(str(entry.numbering_level) if entry.numbering_level else "")
+            numbering_restart_var.set(entry.restart_after_higher_level)
 
         def selected_rule_index() -> int | None:
             selection = rule_tree.selection()
@@ -3555,7 +3792,7 @@ class MvpApp(tk.Tk):
                 return
             rule = rules[index]
             rule_name_var.set(rule.name)
-            rule_type_var.set(rule.rule_type)
+            rule_type_var.set(inline_rule_type_label(rule.rule_type))
             rule_target_var.set(rule.target)
             rule_role_var.set(rule.style_role)
             rule_include_wrapper_var.set(rule.include_wrapper)
@@ -3564,13 +3801,16 @@ class MvpApp(tk.Tk):
 
         def rule_from_form() -> InlineRule | None:
             name = rule_name_var.get().strip()
-            rule_type = rule_type_var.get().strip()
+            rule_type = normalize_inline_rule_type(rule_type_var.get())
             style_role = rule_role_var.get().strip()
             if not name:
                 messagebox.showwarning("규칙 이름 필요", "규칙 이름을 입력하세요.", parent=window)
                 return None
             if not style_role:
-                messagebox.showwarning("글자 역할 필요", "적용할 글자 역할을 입력하세요.", parent=window)
+                messagebox.showwarning("글자 역할 필요", "적용할 글자 역할을 선택하세요.", parent=window)
+                return None
+            if style_role not in character_role_options():
+                messagebox.showwarning("글자 역할 없음", "현재 스타일 세트의 글자 스타일에 등록된 역할만 선택할 수 있습니다.", parent=window)
                 return None
             return InlineRule(
                 name=name,
@@ -3624,39 +3864,48 @@ class MvpApp(tk.Tk):
         ttk.Button(set_form, text="파일에서 불러오기", command=import_style_set_from_file).pack(side="left", padx=(6, 0))
         ttk.Button(set_form, text="세트삭제", command=remove_set).pack(side="left", padx=(6, 0))
 
-        add_form = ttk.Frame(body)
-        add_form.grid(row=2, column=1, sticky="ew", pady=(8, 0))
+        add_form = ttk.Frame(style_tab)
+        add_form.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Combobox(add_form, textvariable=style_type_var, values=["문단", "글자"], state="readonly", width=6).pack(side="left")
         ttk.Entry(add_form, textvariable=style_name_var, width=20).pack(side="left", fill="x", expand=True, padx=(6, 0))
         ttk.Checkbutton(add_form, text="표", variable=table_style_var).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(add_form, text="캡션", variable=caption_style_var).pack(side="left")
         ttk.Button(add_form, text="추가", command=add_style).pack(side="left", padx=(6, 0))
 
-        marker_form = ttk.Frame(body)
-        marker_form.grid(row=3, column=1, sticky="ew", pady=(8, 0))
+        marker_form = ttk.Frame(style_tab)
+        marker_form.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(marker_form, text="식별자").pack(side="left")
-        ttk.Entry(marker_form, textvariable=outline_markers_var, width=24).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ttk.Entry(marker_form, textvariable=outline_markers_var, width=22).pack(side="left", fill="x", expand=True, padx=(6, 0))
         ttk.Label(marker_form, text="역할").pack(side="left", padx=(8, 0))
-        ttk.Entry(marker_form, textvariable=roles_var, width=22).pack(side="left", fill="x", expand=True, padx=(6, 0))
-        ttk.Button(marker_form, text="선택 항목 저장", command=lambda: update_selected_style(save_form=True)).pack(side="left", padx=(6, 0))
+        ttk.Entry(marker_form, textvariable=roles_var, width=14).pack(side="left", padx=(6, 0))
+        ttk.Label(marker_form, text="번호그룹").pack(side="left", padx=(8, 0))
+        ttk.Combobox(
+            marker_form,
+            textvariable=numbering_group_var,
+            values=NUMBERING_GROUP_LABELS,
+            state="readonly",
+            width=8,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Label(marker_form, text="수준").pack(side="left", padx=(8, 0))
+        ttk.Entry(marker_form, textvariable=numbering_level_var, width=4).pack(side="left", padx=(6, 0))
+        ttk.Checkbutton(marker_form, text="상위 개요 뒤 새 번호", variable=numbering_restart_var).pack(side="left", padx=(8, 0))
+        ttk.Button(marker_form, text="선택 항목 저장", command=lambda: update_selected_style(save_form=True)).pack(side="right", padx=(10, 0))
 
-        item_buttons = ttk.Frame(body)
-        item_buttons.grid(row=4, column=1, sticky="ew", pady=(8, 0))
+        item_buttons = ttk.Frame(style_tab)
+        item_buttons.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(item_buttons, text="선택 삭제", command=lambda: update_selected_style(remove=True)).pack(side="left")
 
-        rule_form = ttk.Frame(body)
-        rule_form.grid(row=6, column=1, sticky="ew", pady=(8, 0))
+        rule_form = ttk.Frame(rule_tab)
+        rule_form.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Entry(rule_form, textvariable=rule_name_var, width=18).pack(side="left", fill="x", expand=True)
         ttk.Combobox(
             rule_form,
             textvariable=rule_type_var,
             values=[
-                "leading_parenthesized_after_identifier",
-                "leading_text_before_colon_after_identifier",
-                "markdown_bold",
+                *INLINE_RULE_TYPE_LABELS,
             ],
             state="readonly",
-            width=34,
+            width=18,
         ).pack(side="left", padx=(6, 0))
         ttk.Combobox(
             rule_form,
@@ -3665,10 +3914,18 @@ class MvpApp(tk.Tk):
             state="readonly",
             width=8,
         ).pack(side="left", padx=(6, 0))
-        ttk.Entry(rule_form, textvariable=rule_role_var, width=14).pack(side="left", padx=(6, 0))
+        rule_role_combo = ttk.Combobox(
+            rule_form,
+            textvariable=rule_role_var,
+            values=character_role_options(),
+            state="readonly",
+            width=14,
+        )
+        rule_role_combo.pack(side="left", padx=(6, 0))
+        rule_role_combo_ref.append(rule_role_combo)
 
-        rule_options = ttk.Frame(body)
-        rule_options.grid(row=7, column=1, sticky="ew", pady=(8, 0))
+        rule_options = ttk.Frame(rule_tab)
+        rule_options.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         ttk.Checkbutton(rule_options, text="경계 포함", variable=rule_include_wrapper_var).pack(side="left")
         ttk.Checkbutton(rule_options, text="표식 삭제", variable=rule_remove_markers_var).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(rule_options, text="사용", variable=rule_enabled_var).pack(side="left", padx=(6, 0))
@@ -3677,7 +3934,7 @@ class MvpApp(tk.Tk):
         ttk.Button(rule_options, text="선택 규칙 삭제", command=remove_selected_rule).pack(side="left", padx=(6, 0))
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(buttons, text="닫기", command=window.destroy).pack(side="left")
 
         set_list.bind("<<ListboxSelect>>", select_set)
@@ -3686,6 +3943,7 @@ class MvpApp(tk.Tk):
         refresh_set_list()
         refresh_style_tree()
         refresh_rule_tree()
+        refresh_rule_role_options()
 
     def populate_logo_chips(self, logos: list[Path]) -> None:
         for child in self.logo_chip_frame.winfo_children():
@@ -6195,6 +6453,42 @@ class MvpApp(tk.Tk):
             self.debug(f"[paragraph-heading] 제거 실패: {type(exc).__name__}: {exc}")
             return False
 
+    def execute_put_new_para_number(self) -> tuple[bool, bool]:
+        pset = self.hwp.HParameterSet.HParaShape
+        default_ok = bool(self.hwp.HAction.GetDefault("PutNewParaNumber", pset.HSet))
+        executed = bool(self.hwp.HAction.Execute("PutNewParaNumber", pset.HSet))
+        return default_ok, executed
+
+    def put_new_para_number_at_paragraph(self, list_id: int, para: int) -> bool:
+        original_pos = self.get_hwp_pos_by_set()
+        try:
+            self.clear_hwp_selection()
+            if not self.set_hwp_pos((list_id, para, 0)):
+                return False
+            default_ok, executed = self.execute_put_new_para_number()
+            self.debug(f"[para-number] PutNewParaNumber para={para}, default={default_ok}, result={executed}")
+            return executed
+        except Exception as exc:
+            self.debug(f"[para-number] PutNewParaNumber 실패 para={para}: {type(exc).__name__}: {exc}")
+            return False
+        finally:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+
+    def put_new_paragraph_number_at_cursor(self) -> None:
+        label = "문단 새 번호"
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            default_ok, executed = self.execute_put_new_para_number()
+            self.log(f"{label}: PutNewParaNumber, GetDefault={default_ok}, result={executed}")
+            if not executed:
+                messagebox.showwarning(label, "현재 문단에서 새 번호 시작 명령이 실패했습니다. 문단번호가 적용된 문단인지 확인하세요.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
     def delete_hwp_text_range(self, list_id: int, para: int, start_pos: int, end_pos: int) -> bool:
         if end_pos <= start_pos:
             return False
@@ -6340,6 +6634,7 @@ class MvpApp(tk.Tk):
         missing_styles: set[str],
         missing_roles: set[str],
         force_in_table: bool | None = None,
+        numbering_state: NumberingRunState | None = None,
     ) -> tuple[bool, bool, bool, int]:
         paragraph_text = self.read_current_paragraph_text(list_id, para)
         if paragraph_text is None:
@@ -6353,6 +6648,7 @@ class MvpApp(tk.Tk):
         if rule is not None:
             entry, prefix_length = rule
             matched = True
+            should_restart_numbering = consume_numbering_entry(numbering_state, entry)
             current_record = self.find_current_doc_style_record(entry.name)
             if current_record is None:
                 missing_styles.add(entry.name)
@@ -6364,9 +6660,15 @@ class MvpApp(tk.Tk):
                 style_ok = self.apply_style_to_paragraph_text(list_id, para, current_record)
                 if delete_ok and style_ok:
                     changed = True
+                    if should_restart_numbering and numbering_state is not None:
+                        if self.put_new_para_number_at_paragraph(list_id, para):
+                            numbering_state.restarted += 1
+                        else:
+                            numbering_state.restart_failed += 1
                 self.debug(
                     f"[outline-style] para={para}, marker={paragraph_text[:prefix_length]!r}, "
-                    f"style={entry.name}, delete={delete_ok}, style_ok={style_ok}"
+                    f"style={entry.name}, delete={delete_ok}, style_ok={style_ok}, "
+                    f"numbering_restart={should_restart_numbering}"
                 )
 
         inline_applied = self.apply_inline_rules_to_paragraph(
@@ -7447,6 +7749,7 @@ class MvpApp(tk.Tk):
             inline_applied = 0
             missing_styles: set[str] = set()
             missing_roles: set[str] = set()
+            numbering_state = NumberingRunState()
 
             for para in range(first_para, last_para + 1):
                 self.clear_hwp_selection()
@@ -7458,6 +7761,7 @@ class MvpApp(tk.Tk):
                     active_set,
                     missing_styles,
                     missing_roles,
+                    numbering_state=numbering_state,
                 )
                 if not processed:
                     continue
@@ -7473,7 +7777,9 @@ class MvpApp(tk.Tk):
             self.log(
                 f"{label}: 문단 순회 완료, set={active_set.name}, "
                 f"outline_rules={rule_count}, inline_rules={inline_rule_count}, "
-                f"visited={visited}, matched={matched}, changed={changed}, inline_applied={inline_applied}"
+                f"visited={visited}, matched={matched}, changed={changed}, inline_applied={inline_applied}, "
+                f"numbering_restarted={numbering_state.restarted}, "
+                f"numbering_restart_failed={numbering_state.restart_failed}"
             )
             if missing_styles or missing_roles:
                 parts = []
@@ -7525,6 +7831,7 @@ class MvpApp(tk.Tk):
         scan_probe_logged = 0
         missing_styles: set[str] = set()
         missing_roles: set[str] = set()
+        numbering_state = NumberingRunState()
 
         for address, cell_pos in address_positions:
             if not self.set_hwp_pos_by_set(cell_pos):
@@ -7558,6 +7865,7 @@ class MvpApp(tk.Tk):
                     missing_styles,
                     missing_roles,
                     force_in_table=True,
+                    numbering_state=numbering_state,
                 )
                 if not processed:
                     continue
@@ -7574,6 +7882,8 @@ class MvpApp(tk.Tk):
             f"outline_rules={rule_count}, inline_rules={inline_rule_count}, "
             f"cells={cells_visited}/{len(address_positions)}, visited={visited}, "
             f"matched={matched}, changed={changed}, "
+            f"numbering_restarted={numbering_state.restarted}, "
+            f"numbering_restart_failed={numbering_state.restart_failed}, "
             f"restore_failed={cells_restore_failed}, range_failed={cells_range_failed}"
         )
         if missing_styles or missing_roles:
