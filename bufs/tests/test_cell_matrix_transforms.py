@@ -17,15 +17,23 @@ from hwp_style_mvp import (  # noqa: E402
     cell_matrix_to_tsv,
     clean_manual_line_breaks,
     flatten_cell_matrix,
+    find_suspicious_decimal_numbers,
     is_rectangular_cell_matrix,
     looks_like_cell_clipboard_matrix,
     manual_outline_prefix_length,
+    normalize_decimal_numbers,
     normalize_dates,
     normalize_clipboard_newlines,
     parse_cell_clipboard_matrix,
     remove_manual_outline_prefixes,
     remove_number_commas,
     remove_weekdays_from_dates,
+    scale_decimal_numbers,
+    scale_decimal_numbers_for_unit_conversion,
+    SuspiciousDecimalNumberError,
+    UnsafeUnitConversionNumberError,
+    ensure_no_suspicious_decimal_numbers,
+    ensure_safe_decimal_unit_conversion_text,
     parse_cell_addresses_from_formula_command,
     parse_cell_address_from_keyindicator,
     looks_like_single_copied_cell,
@@ -677,6 +685,113 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(transformed, [["1234", "1234567"]])
         self.assertEqual(changed, 2)
+
+    def test_normalize_decimal_numbers_rounding_modes(self) -> None:
+        self.assertEqual(
+            normalize_decimal_numbers("1234.567 -1234.561", 2, "반올림"),
+            "1,234.57 -1,234.56",
+        )
+        self.assertEqual(
+            normalize_decimal_numbers("1234.561 -1234.561", 2, "올림"),
+            "1,234.57 -1,234.57",
+        )
+        self.assertEqual(
+            normalize_decimal_numbers("1234.569 -1234.569", 2, "버림"),
+            "1,234.56 -1,234.56",
+        )
+
+    def test_normalize_decimal_numbers_can_skip_commas_and_preserve_dates(self) -> None:
+        self.assertEqual(normalize_decimal_numbers("1,234.567", 1, "반올림", use_commas=False), "1234.6")
+        self.assertEqual(
+            normalize_decimal_numbers("2026. 7. 22. 051-123-4567 12.345", 1, "반올림"),
+            "2026. 7. 22. 051-123-4567 12.3",
+        )
+
+    def test_find_suspicious_decimal_numbers_detects_bad_commas(self) -> None:
+        text = "정상 1,234 1,234.56 오류 2,00,000 1,234,56 123,45 날짜 2026. 7. 22. 전화 051-123-4567"
+
+        self.assertEqual(find_suspicious_decimal_numbers(text), ["2,00,000", "1,234,56", "123,45"])
+
+    def test_decimal_preflight_blocks_suspicious_numbers(self) -> None:
+        with self.assertRaises(SuspiciousDecimalNumberError) as ctx:
+            ensure_no_suspicious_decimal_numbers("매출 2,00,000 비용 1,234,56")
+
+        self.assertEqual(ctx.exception.values, ["2,00,000", "1,234,56"])
+
+    def test_decimal_preflight_allows_valid_commas_dates_and_phones(self) -> None:
+        ensure_no_suspicious_decimal_numbers("1,234 1,234.56 2026. 7. 22. 051-123-4567")
+
+    def test_normalize_decimal_numbers_cell_by_cell(self) -> None:
+        matrix = [["1234.567", "2026. 7. 22."], ["-1234.561", "051-123-4567"]]
+
+        transformed, changed = transform_cell_matrix(
+            matrix,
+            lambda text: normalize_decimal_numbers(text, 1, "반올림"),
+        )
+
+        self.assertEqual(transformed, [["1,234.6", "2026. 7. 22."], ["-1,234.6", "051-123-4567"]])
+        self.assertEqual(changed, 2)
+
+    def test_scale_decimal_numbers_unit_conversion(self) -> None:
+        self.assertEqual(
+            scale_decimal_numbers("1,234,567 2,345", hwp_style_mvp.Decimal("0.001"), 1, "반올림"),
+            "1,234.6 2.3",
+        )
+        self.assertEqual(
+            scale_decimal_numbers("1,234.6 -2.3", hwp_style_mvp.Decimal("1000"), 0, "반올림"),
+            "1,234,600 -2,300",
+        )
+
+    def test_scale_decimal_numbers_preserves_dates_and_phones(self) -> None:
+        self.assertEqual(
+            scale_decimal_numbers("2026. 7. 22. 051-123-4567 1200", hwp_style_mvp.Decimal("0.001"), 2, "반올림"),
+            "2026. 7. 22. 051-123-4567 1.20",
+        )
+
+    def test_scale_decimal_numbers_cell_by_cell(self) -> None:
+        matrix = [["1234567", "2026. 7. 22."], ["2000000", "051-123-4567"]]
+
+        transformed, changed = transform_cell_matrix(
+            matrix,
+            lambda text: scale_decimal_numbers(text, hwp_style_mvp.Decimal("0.000001"), 2, "반올림"),
+        )
+
+        self.assertEqual(transformed, [["1.23", "2026. 7. 22."], ["2.00", "051-123-4567"]])
+        self.assertEqual(changed, 2)
+
+    def test_unit_conversion_updates_matching_currency_suffix(self) -> None:
+        self.assertEqual(
+            scale_decimal_numbers_for_unit_conversion(
+                "1,234천원 12백만원 500",
+                hwp_style_mvp.Decimal("1000"),
+                {"천원": "원", "백만원": "천원"},
+                0,
+                "반올림",
+            ),
+            "1,234,000원 12,000천원 500,000",
+        )
+        self.assertEqual(
+            scale_decimal_numbers_for_unit_conversion(
+                "1,234,000원 2,000천원",
+                hwp_style_mvp.Decimal("0.001"),
+                {"원": "천원", "천원": "백만원"},
+                0,
+                "반올림",
+            ),
+            "1,234천원 2백만원",
+        )
+
+    def test_unit_conversion_preflight_blocks_other_currency_units(self) -> None:
+        with self.assertRaises(UnsafeUnitConversionNumberError) as ctx:
+            ensure_safe_decimal_unit_conversion_text("1,234원 12억원", {"천원", "백만원"})
+
+        self.assertEqual(ctx.exception.values, ["1,234원", "12억원"])
+
+    def test_unit_conversion_preflight_blocks_non_currency_units(self) -> None:
+        with self.assertRaises(UnsafeUnitConversionNumberError) as ctx:
+            ensure_safe_decimal_unit_conversion_text("12.5% 120m^2 30㎡", {"원"})
+
+        self.assertEqual(ctx.exception.values, ["12.5%", "120m^2", "30㎡"])
 
     def test_normalize_dates_cell_by_cell(self) -> None:
         matrix = [["2026.7.22", "2026-07-22"]]

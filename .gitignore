@@ -11,3 +11,8 @@ __pycache__/
 # Generated test documents
 bufs/test-output/*.hwpx
 bufs/test-output/logo-thumbs/*.png
+
+# Build artifacts
+build/
+dist/
+*.spec

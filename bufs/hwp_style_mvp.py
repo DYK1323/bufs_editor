@@ -27,13 +27,24 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP, ROUND_UP
 from datetime import datetime
 from html import escape
 from html import unescape
 from pathlib import Path
 from typing import Iterable
 
-ROOT = Path(__file__).resolve().parent
+
+def app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        for candidate in (bundle_root / "bufs", Path(sys.executable).resolve().parent / "bufs", bundle_root):
+            if (candidate / "보고서 본문 서식.hwpx").exists():
+                return candidate
+    return Path(__file__).resolve().parent
+
+
+ROOT = app_root()
 if Path.cwd().resolve() != ROOT:
     # 설치 폴더 루트에는 쉽다한글이 번들링한 python312.dll이 있어
     # Python 3.11 가상환경의 pywin32 로딩과 충돌할 수 있다.
@@ -576,6 +587,212 @@ def add_thousand_commas(text: str) -> str:
 
 def remove_number_commas(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+
+
+class SuspiciousDecimalNumberError(ValueError):
+    def __init__(self, values: list[str]) -> None:
+        self.values = values
+        preview = ", ".join(values[:5])
+        if len(values) > 5:
+            preview += f" 외 {len(values) - 5}개"
+        super().__init__(preview)
+
+
+class UnsafeUnitConversionNumberError(ValueError):
+    def __init__(self, values: list[str]) -> None:
+        self.values = values
+        preview = ", ".join(values[:5])
+        if len(values) > 5:
+            preview += f" 외 {len(values) - 5}개"
+        super().__init__(preview)
+
+
+CURRENCY_UNIT_FACTORS = {
+    "원": Decimal("1"),
+    "천원": Decimal("1000"),
+    "백만원": Decimal("1000000"),
+    "억원": Decimal("100000000"),
+}
+NUMBER_PATTERN = r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+UNSAFE_UNIT_PATTERN = r"%|％|㎡|m\^2|m2|m²|평|명|개|건|회"
+
+
+def find_suspicious_decimal_numbers(text: str) -> list[str]:
+    candidates = re.finditer(
+        r"(?<![\d.-])(?P<number>-?\d[\d,]*(?:\.\d+)?)(?![\d.-]|년|년도|학년도|월|일)",
+        text,
+    )
+    suspicious: list[str] = []
+    seen: set[str] = set()
+    valid_comma_number = re.compile(r"-?\d{1,3}(?:,\d{3})+(?:\.\d+)?")
+    for match in candidates:
+        value = match.group("number")
+        if "," not in value:
+            continue
+        if valid_comma_number.fullmatch(value):
+            continue
+        if value not in seen:
+            suspicious.append(value)
+            seen.add(value)
+    return suspicious
+
+
+def ensure_no_suspicious_decimal_numbers(text: str) -> None:
+    suspicious = find_suspicious_decimal_numbers(text)
+    if suspicious:
+        raise SuspiciousDecimalNumberError(suspicious)
+
+
+def find_unsafe_unit_conversion_numbers(text: str) -> list[str]:
+    candidates = re.finditer(
+        rf"(?<![\d,.-])(?P<value>{NUMBER_PATTERN})(?P<space>[ \t]*)(?P<unit>{UNSAFE_UNIT_PATTERN})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    unsafe: list[str] = []
+    seen: set[str] = set()
+    for match in candidates:
+        value = match.group("value") + match.group("space") + match.group("unit")
+        if value not in seen:
+            unsafe.append(value)
+            seen.add(value)
+    return unsafe
+
+
+def ensure_no_unsafe_unit_conversion_numbers(text: str) -> None:
+    unsafe = find_unsafe_unit_conversion_numbers(text)
+    if unsafe:
+        raise UnsafeUnitConversionNumberError(unsafe)
+
+
+def find_unexpected_currency_unit_numbers(text: str, expected_source_units: set[str]) -> list[str]:
+    unit_names = "|".join(sorted(map(re.escape, CURRENCY_UNIT_FACTORS), key=len, reverse=True))
+    candidates = re.finditer(
+        rf"(?<![\d,.-])(?P<value>{NUMBER_PATTERN})(?P<space>[ \t]*)(?P<unit>{unit_names})",
+        text,
+    )
+    unexpected: list[str] = []
+    seen: set[str] = set()
+    for match in candidates:
+        unit = match.group("unit")
+        if unit in expected_source_units:
+            continue
+        value = match.group("value") + match.group("space") + unit
+        if value not in seen:
+            unexpected.append(value)
+            seen.add(value)
+    return unexpected
+
+
+def ensure_safe_decimal_unit_conversion_text(text: str, expected_source_units: set[str]) -> None:
+    ensure_no_suspicious_decimal_numbers(text)
+    ensure_no_unsafe_unit_conversion_numbers(text)
+    unexpected = find_unexpected_currency_unit_numbers(text, expected_source_units)
+    if unexpected:
+        raise UnsafeUnitConversionNumberError(unexpected)
+
+
+def format_decimal_value(value: Decimal, places: int, use_commas: bool) -> str:
+    if places <= 0:
+        text = f"{value:.0f}"
+    else:
+        text = f"{value:.{places}f}"
+    if not use_commas:
+        return text
+    sign = ""
+    if text.startswith("-"):
+        sign, text = "-", text[1:]
+    integer, dot, decimal_part = text.partition(".")
+    return sign + f"{int(integer):,}" + (dot + decimal_part if dot else "")
+
+
+def scale_decimal_numbers(
+    text: str,
+    multiplier: Decimal,
+    places: int,
+    mode: str,
+    use_commas: bool = True,
+) -> str:
+    if places < 0:
+        raise ValueError("소수 자릿수는 0 이상이어야 합니다.")
+    rounding_by_mode = {
+        "반올림": ROUND_HALF_UP,
+        "올림": ROUND_UP,
+        "버림": ROUND_DOWN,
+        "내림": ROUND_FLOOR,
+    }
+    if mode not in rounding_by_mode:
+        raise ValueError(f"알 수 없는 소수 처리 방식입니다: {mode}")
+    quant = Decimal(1).scaleb(-places)
+    rounding = rounding_by_mode[mode]
+
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group("number")
+        normalized = raw.replace(",", "")
+        value = (Decimal(normalized) * multiplier).quantize(quant, rounding=rounding)
+        if value == 0:
+            value = abs(value)
+        return format_decimal_value(value, places, use_commas)
+
+    return re.sub(
+        r"(?<![\d,.-])(?P<number>-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?![\d,.-]|년|년도|학년도|월|일)",
+        repl,
+        text,
+    )
+
+
+def scale_decimal_numbers_for_unit_conversion(
+    text: str,
+    multiplier: Decimal,
+    unit_transitions: dict[str, str],
+    places: int,
+    mode: str,
+    use_commas: bool = True,
+) -> str:
+    if places < 0:
+        raise ValueError("소수 자릿수는 0 이상이어야 합니다.")
+    rounding_by_mode = {
+        "반올림": ROUND_HALF_UP,
+        "올림": ROUND_UP,
+        "버림": ROUND_DOWN,
+        "내림": ROUND_FLOOR,
+    }
+    if mode not in rounding_by_mode:
+        raise ValueError(f"알 수 없는 소수 처리 방식입니다: {mode}")
+    quant = Decimal(1).scaleb(-places)
+    rounding = rounding_by_mode[mode]
+
+    unit_names = "|".join(sorted(map(re.escape, CURRENCY_UNIT_FACTORS), key=len, reverse=True))
+    number_re = re.compile(
+        rf"(?<![\d,.-])(?P<number>{NUMBER_PATTERN})"
+        rf"(?:(?P<space>[ \t]*)(?P<unit>{unit_names})|"
+        rf"(?![\d,.-]|년|년도|학년도|월|일|[A-Za-z가-힣%％㎡²]))"
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group("number")
+        attached_unit = match.group("unit") or ""
+        normalized = raw.replace(",", "")
+        value = Decimal(normalized)
+        if attached_unit:
+            target_unit = unit_transitions.get(attached_unit)
+            if target_unit is None:
+                return match.group(0)
+            value = value * multiplier
+            suffix = target_unit
+        else:
+            value = value * multiplier
+            suffix = ""
+        value = value.quantize(quant, rounding=rounding)
+        if value == 0:
+            value = abs(value)
+        return format_decimal_value(value, places, use_commas) + suffix
+
+    return number_re.sub(repl, text)
+
+
+def normalize_decimal_numbers(text: str, places: int, mode: str, use_commas: bool = True) -> str:
+    return scale_decimal_numbers(text, Decimal(1), places, mode, use_commas)
 
 
 def strip_wrapping_blank_lines(text: str) -> str:
@@ -1187,6 +1404,12 @@ class MvpApp(tk.Tk):
         self.apply_on_select = tk.BooleanVar(value=True)
         self.cover_confidential = tk.BooleanVar(value=False)
         self.logo_height_var = tk.StringVar(value="12")
+        self.decimal_places_var = tk.StringVar(value="0")
+        self.decimal_mode_var = tk.StringVar(value="반올림")
+        self.decimal_use_commas_var = tk.BooleanVar(value=True)
+        self.unit_decimal_places_var = tk.StringVar(value="0")
+        self.unit_decimal_mode_var = tk.StringVar(value="반올림")
+        self.unit_decimal_use_commas_var = tk.BooleanVar(value=True)
         self.logo_chip_images: list[tk.PhotoImage] = []
         self.icon_images: dict[str, tk.PhotoImage] = {}
         self.pending_caption_title = ""
@@ -1197,13 +1420,7 @@ class MvpApp(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=(6, 4))
 
-        log_frame = ttk.LabelFrame(self, text="디버그 로그", padding=5)
-        log_frame.pack(fill="both", expand=False, padx=6, pady=(0, 6))
-        self.debug_text = tk.Text(log_frame, height=7, wrap="word")
-        self.debug_text.pack(side="left", fill="both", expand=True)
-        log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.debug_text.yview)
-        log_scroll.pack(side="right", fill="y")
-        self.debug_text.configure(yscrollcommand=log_scroll.set)
+        self.debug_text = tk.Text(self, height=1, wrap="word")
 
         self._build_styles_tab()
         self._build_table_tab()
@@ -1232,28 +1449,23 @@ class MvpApp(tk.Tk):
     def _build_styles_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
         self.notebook.add(frame, text="스타일/정리")
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
 
         style_group = ttk.LabelFrame(frame, text="스타일 적용", padding=8)
-        style_group.pack(fill="both", expand=True)
+        style_group.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(style_group, text="bufs/보고서 본문 서식.hwpx에서 읽은 스타일 이름").pack(anchor="w")
-        self.style_list = tk.Listbox(style_group, height=25)
+        self.style_list = tk.Listbox(style_group, height=6)
         self.style_list.pack(fill="both", expand=True, pady=(8, 0))
         self.style_list.bind("<<ListboxSelect>>", self.on_style_selected)
         self.style_list.bind("<Double-Button-1>", lambda _event: self.apply_selected_style(reason="double-click"))
 
         ttk.Label(
             style_group,
-            text="스타일을 클릭하면 이름 기준으로 현재 문서의 같은 스타일을 찾아 즉시 적용합니다.",
+            text="클릭하면 현재 문서의 같은 이름 스타일을 적용합니다.",
             wraplength=390,
         ).pack(anchor="w", pady=(8, 0))
-
-        row1 = ttk.Frame(style_group)
-        row1.pack(fill="x", pady=(8, 0))
-        ttk.Checkbutton(row1, text="클릭 즉시 적용", variable=self.apply_on_select).pack(side="left")
-        ttk.Button(row1, text="다시 적용", command=lambda: self.apply_selected_style(reason="button")).pack(
-            side="left", padx=(8, 0)
-        )
 
         row3 = ttk.Frame(style_group)
         row3.pack(fill="x", pady=(5, 0))
@@ -1261,7 +1473,9 @@ class MvpApp(tk.Tk):
         ttk.Button(row3, text="아래로", command=lambda: self.move_selected_style(1)).pack(side="left", padx=(8, 0))
         ttk.Button(row3, text="기본순서", command=self.reset_style_order).pack(side="left", padx=(8, 0))
 
-        self.build_cleanup_controls(frame)
+        cleanup_frame = ttk.Frame(frame)
+        cleanup_frame.grid(row=1, column=0, sticky="ew")
+        self.build_cleanup_controls(cleanup_frame)
 
     def _build_table_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
@@ -1820,19 +2034,21 @@ class MvpApp(tk.Tk):
         cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=8)
         cleanup_group.pack(fill="x", pady=(8, 0))
 
-        hwp_buttons1 = ttk.Frame(cleanup_group)
-        hwp_buttons1.pack(fill="x", pady=(8, 0))
-        ttk.Button(hwp_buttons1, text="줄바꿈/띄어쓰기 정리", command=self.clean_selected_line_breaks).pack(
-            side="left", fill="x", expand=True
+        sentence_buttons = ttk.Frame(cleanup_group)
+        sentence_buttons.pack(fill="x")
+        sentence_button_defs = (
+            ("줄바꿈정리", self.clean_selected_line_breaks),
+            ("기호제거", self.clean_selected_outline_prefixes),
+            ("「 」 씌우기", self.wrap_regulation_names_in_selection),
         )
-        ttk.Button(hwp_buttons1, text="개요 기호 제거", command=self.clean_selected_outline_prefixes).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
-        hwp_buttons2 = ttk.Frame(cleanup_group)
-        hwp_buttons2.pack(fill="x", pady=(6, 0))
-        ttk.Button(hwp_buttons2, text="｢규정명｣", command=self.wrap_regulation_names_in_selection).pack(
-            side="left", fill="x", expand=True
-        )
+        for index, (button_text, command) in enumerate(sentence_button_defs):
+            ttk.Button(sentence_buttons, text=button_text, command=command).pack(
+                side="left",
+                fill="x",
+                expand=True,
+                padx=(6 if index else 0, 0),
+                ipady=8,
+            )
 
         number_group = ttk.LabelFrame(parent, text="숫자 정리", padding=8)
         number_group.pack(fill="x", pady=(8, 0))
@@ -1844,6 +2060,67 @@ class MvpApp(tk.Tk):
         ttk.Button(number_buttons, text="쉼표 빼기", command=self.remove_commas_from_selection).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
+
+        decimal_group = ttk.LabelFrame(parent, text="소숫점 지정", padding=8)
+        decimal_group.pack(fill="x", pady=(8, 0))
+        decimal_row = ttk.Frame(decimal_group)
+        decimal_row.pack(fill="x")
+        ttk.Label(decimal_row, text="소숫점").pack(side="left")
+        ttk.Entry(decimal_row, textvariable=self.decimal_places_var, width=5).pack(side="left", padx=(4, 6))
+        ttk.Label(decimal_row, text="자리").pack(side="left")
+        ttk.Combobox(
+            decimal_row,
+            textvariable=self.decimal_mode_var,
+            values=("반올림", "올림", "버림"),
+            state="readonly",
+            width=7,
+        ).pack(side="left", padx=(8, 6))
+        ttk.Checkbutton(decimal_row, text="쉼표", variable=self.decimal_use_commas_var).pack(side="left")
+        ttk.Button(decimal_row, text="소숫점 처리", command=self.apply_decimal_rounding_to_selection).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        unit_group = ttk.LabelFrame(parent, text="단위 변환", padding=8)
+        unit_group.pack(fill="x", pady=(8, 0))
+        unit_decimal_row = ttk.Frame(unit_group)
+        unit_decimal_row.pack(fill="x")
+        ttk.Label(unit_decimal_row, text="변환 후 소숫점").pack(side="left")
+        ttk.Entry(unit_decimal_row, textvariable=self.unit_decimal_places_var, width=5).pack(side="left", padx=(4, 6))
+        ttk.Label(unit_decimal_row, text="자리").pack(side="left")
+        ttk.Combobox(
+            unit_decimal_row,
+            textvariable=self.unit_decimal_mode_var,
+            values=("반올림", "올림", "버림"),
+            state="readonly",
+            width=7,
+        ).pack(side="left", padx=(8, 6))
+        ttk.Checkbutton(unit_decimal_row, text="쉼표", variable=self.unit_decimal_use_commas_var).pack(side="left")
+        unit_row = ttk.Frame(unit_group)
+        unit_row.pack(fill="x", pady=(6, 0))
+        unit_buttons = (
+            ("× 천", Decimal("1000"), {"천원": "원", "백만원": "천원"}),
+            ("÷ 천", Decimal("0.001"), {"원": "천원", "천원": "백만원"}),
+            ("× 백만", Decimal("1000000"), {"백만원": "원"}),
+            ("÷ 백만", Decimal("0.000001"), {"원": "백만원"}),
+        )
+        unit_tooltips = {
+            "× 천": "숫자에 1,000을 곱합니다. 단위가 붙은 경우 천원→원, 백만원→천원으로 바꿉니다.",
+            "÷ 천": "숫자를 1,000으로 나눕니다. 단위가 붙은 경우 원→천원, 천원→백만원으로 바꿉니다.",
+            "× 백만": "숫자에 1,000,000을 곱합니다. 단위가 붙은 경우 백만원→원으로 바꿉니다.",
+            "÷ 백만": "숫자를 1,000,000으로 나눕니다. 단위가 붙은 경우 원→백만원으로 바꿉니다.",
+        }
+        for index, (button_text, multiplier, unit_transitions) in enumerate(unit_buttons):
+            button = ttk.Button(
+                unit_row,
+                text=button_text,
+                command=lambda label=button_text, factor=multiplier, transitions=unit_transitions: self.apply_decimal_unit_conversion_to_selection(
+                    label,
+                    factor,
+                    transitions,
+                ),
+            )
+            button.pack(side="left", fill="x", expand=True, padx=(6 if index else 0, 0))
+            ToolTip(button, unit_tooltips[button_text])
 
         date_group = ttk.LabelFrame(parent, text="날짜 정규화", padding=8)
         date_group.pack(fill="x", pady=(8, 0))
@@ -3271,7 +3548,7 @@ class MvpApp(tk.Tk):
             messagebox.showerror("서식 테스트 문서 열기 실패", str(exc))
 
     def on_style_selected(self, _event=None) -> None:
-        if self._refreshing or self._applying_style or not self.apply_on_select.get():
+        if self._refreshing or self._applying_style:
             return
         # Tk listbox selection event can fire before the new selection is fully settled.
         self.after_idle(lambda: self.apply_selected_style(reason="single-click"))
@@ -3441,6 +3718,10 @@ class MvpApp(tk.Tk):
             return
 
         try:
+            path = path.resolve()
+            if not path.exists():
+                messagebox.showwarning("로고 삽입 확인", f"로고 파일을 찾을 수 없습니다.\n\n{path}")
+                return
             pixel_size = read_image_pixel_size(path)
             if pixel_size is None:
                 width_mm = height_mm
@@ -3462,33 +3743,26 @@ class MvpApp(tk.Tk):
             messagebox.showerror("로고 삽입 실패", str(exc))
 
     def insert_picture_at_cursor(self, path: Path, width_mm: float, height_mm: float) -> bool:
-        try:
-            result = self.hwp.InsertPicture(
-                str(path),
-                Embedded=True,
-                sizeoption=1,
-                Width=width_mm,
-                Height=height_mm,
-            )
-            return bool(result)
-        except Exception as method_exc:
-            self.debug(f"[logo-insert] InsertPicture method 실패: {type(method_exc).__name__}: {method_exc}")
+        file_name = str(path.resolve())
 
-        option = self.hwp.HParameterSet.HInsertPicture
-        self.hwp.HAction.GetDefault("InsertPicture", option.HSet)
-        for attr in ("FileName", "Filename", "filename"):
-            self.set_com_attr(option, attr, str(path))
-        for attr, value in {
-            "Width": width_mm,
-            "Height": height_mm,
-            "SizeOption": 1,
-            "sizeoption": 1,
-            "Embedded": 1,
-        }.items():
-            self.set_com_attr(option, attr, value)
-        action, ok = self.execute_first_hwp_action(("InsertPicture",), option.HSet)
-        self.debug(f"[logo-insert] {action}={ok}")
-        return bool(ok)
+        method_attempts = (
+            ("positional-mm", lambda: self.hwp.InsertPicture(file_name, True, 1, False, False, 0, width_mm, height_mm)),
+            ("keyword-mm", lambda: self.hwp.InsertPicture(file_name, Embedded=True, sizeoption=1, Width=width_mm, Height=height_mm)),
+        )
+        for attempt_name, call in method_attempts:
+            try:
+                result = call()
+                self.debug(f"[logo-insert] InsertPicture method {attempt_name} result={result}")
+                if result:
+                    return True
+            except Exception as method_exc:
+                self.debug(
+                    f"[logo-insert] InsertPicture method {attempt_name} 실패: "
+                    f"{type(method_exc).__name__}: {method_exc}"
+                )
+
+        self.debug("[logo-insert] InsertPicture method 모든 경로 실패")
+        return False
 
     def create_cover_from_selected_lines(self) -> None:
         if not self.ensure_hwp():
@@ -4566,6 +4840,7 @@ class MvpApp(tk.Tk):
         strip_wrapping_lines: bool = False,
         reselect_current_cell: bool = False,
         reselect_after_paste: bool = False,
+        preflight=None,
     ) -> None:
         if not self.ensure_hwp():
             return
@@ -4588,6 +4863,35 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(label, "한글에서 변환할 글자 영역을 먼저 선택하세요.")
                 self.log(f"{label}: 선택 텍스트 없음")
                 return
+            if preflight is not None:
+                try:
+                    preflight(text)
+                except SuspiciousDecimalNumberError as exc:
+                    examples = "\n".join(f"- {value}" for value in exc.values[:8])
+                    suffix = ""
+                    if len(exc.values) > 8:
+                        suffix = f"\n- ... 외 {len(exc.values) - 8}개"
+                    messagebox.showwarning(
+                        label,
+                        "콤마 위치가 이상하거나 소숫점을 콤마로 쓴 것으로 의심되는 숫자가 있어 변환을 중단했습니다.\n\n"
+                        f"{examples}{suffix}\n\n"
+                        "해당 값을 먼저 확인한 뒤 다시 실행하세요.",
+                    )
+                    self.log(f"{label}: 의심 숫자 감지로 중단, values={exc.values}")
+                    return
+                except UnsafeUnitConversionNumberError as exc:
+                    examples = "\n".join(f"- {value}" for value in exc.values[:8])
+                    suffix = ""
+                    if len(exc.values) > 8:
+                        suffix = f"\n- ... 외 {len(exc.values) - 8}개"
+                    messagebox.showwarning(
+                        label,
+                        "단위 변환 대상이 아닌 단위이거나 버튼의 출발 단위와 다른 값이 있어 변환을 중단했습니다.\n\n"
+                        f"{examples}{suffix}\n\n"
+                        "셀 안 단위가 맞는지 확인하거나, 해당 단위에 맞는 변환 버튼을 사용하세요.",
+                    )
+                    self.log(f"{label}: 단위 변환 위험 값 감지로 중단, values={exc.values}")
+                    return
             if pre_copy_cell_block and self.transform_selected_cell_matrix(
                 label,
                 text,
@@ -5014,6 +5318,76 @@ class MvpApp(tk.Tk):
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+        )
+
+    def get_decimal_transform_options(
+        self,
+        places_var: tk.StringVar,
+        mode_var: tk.StringVar,
+        use_commas_var: tk.BooleanVar,
+        warning_title: str,
+    ) -> tuple[int, str, bool] | None:
+        try:
+            places = int(places_var.get().strip())
+        except ValueError:
+            messagebox.showwarning(warning_title, "소숫점 자릿수는 0 이상 정수로 입력하세요.")
+            return None
+        if places < 0:
+            messagebox.showwarning(warning_title, "소숫점 자릿수는 0 이상 정수로 입력하세요.")
+            return None
+
+        return places, mode_var.get() or "반올림", bool(use_commas_var.get())
+
+    def apply_decimal_rounding_to_selection(self) -> None:
+        options = self.get_decimal_transform_options(
+            self.decimal_places_var,
+            self.decimal_mode_var,
+            self.decimal_use_commas_var,
+            "소숫점 자릿수 확인",
+        )
+        if options is None:
+            return
+        places, mode, use_commas = options
+        self.transform_selected_text(
+            f"소숫점 처리: {mode} {places}자리",
+            lambda text: normalize_decimal_numbers(text, places, mode, use_commas),
+            block_multiline_number_block=True,
+            allow_cell_iteration=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+            preflight=ensure_no_suspicious_decimal_numbers,
+        )
+
+    def apply_decimal_unit_conversion_to_selection(
+        self,
+        label: str,
+        multiplier: Decimal,
+        unit_transitions: dict[str, str],
+    ) -> None:
+        options = self.get_decimal_transform_options(
+            self.unit_decimal_places_var,
+            self.unit_decimal_mode_var,
+            self.unit_decimal_use_commas_var,
+            "단위 변환 소숫점 자릿수 확인",
+        )
+        if options is None:
+            return
+        places, mode, use_commas = options
+        self.transform_selected_text(
+            f"단위 변환: {label}, {mode} {places}자리",
+            lambda text: scale_decimal_numbers_for_unit_conversion(
+                text,
+                multiplier,
+                unit_transitions,
+                places,
+                mode,
+                use_commas,
+            ),
+            block_multiline_number_block=True,
+            allow_cell_iteration=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+            preflight=lambda text: ensure_safe_decimal_unit_conversion_text(text, set(unit_transitions)),
         )
 
     def normalize_dates_to_korean(self) -> None:
