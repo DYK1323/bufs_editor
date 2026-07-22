@@ -26,7 +26,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_UP, ROUND_UP
 from datetime import datetime
 from html import escape
@@ -105,6 +105,18 @@ class StyleEntry:
     table_style: bool = False
     caption_style: bool = False
     outline_markers: tuple[str, ...] = ()
+    roles: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InlineRule:
+    name: str
+    rule_type: str
+    target: str = "body"
+    style_role: str = "body_bold"
+    include_wrapper: bool = True
+    remove_markers: bool = False
+    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -112,6 +124,7 @@ class StyleSet:
     name: str
     paragraph_styles: list[StyleEntry]
     character_styles: list[StyleEntry]
+    inline_rules: list[InlineRule] = field(default_factory=list)
 
 
 @dataclass
@@ -373,31 +386,149 @@ def apply_saved_style_order(records: list[StyleRecord]) -> list[StyleRecord]:
     return ordered
 
 
+DEFAULT_INLINE_RULES = [
+    InlineRule(
+        name="첫머리 괄호 키워드",
+        rule_type="leading_parenthesized_after_identifier",
+        target="body",
+        style_role="body_bold",
+        include_wrapper=True,
+        remove_markers=False,
+        enabled=True,
+    ),
+    InlineRule(
+        name="마크다운 굵게",
+        rule_type="markdown_bold",
+        target="body",
+        style_role="body_bold",
+        include_wrapper=True,
+        remove_markers=True,
+        enabled=True,
+    ),
+    InlineRule(
+        name="첫머리 콜론 앞",
+        rule_type="leading_text_before_colon_after_identifier",
+        target="body",
+        style_role="body_bold",
+        include_wrapper=False,
+        remove_markers=False,
+        enabled=True,
+    ),
+]
+
+
+def unique_role_names(roles: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for role in roles:
+        text = str(role).strip()
+        if not text or text in seen:
+            continue
+        result.append(text)
+        seen.add(text)
+    return result
+
+
+def parse_role_text(text: str) -> list[str]:
+    return unique_role_names(part for part in text.split(","))
+
+
+def inferred_style_roles(name: str, *, table_style: bool = False) -> tuple[str, ...]:
+    normalized = normalize_style_name(name)
+    roles: list[str] = []
+    if "굵게" in normalized:
+        roles.append("table_bold" if table_style else "body_bold")
+    return tuple(roles)
+
+
 def normalize_style_entry(item: object) -> StyleEntry | None:
     if isinstance(item, StyleEntry):
         name = item.name.strip()
         if not name:
             return None
+        roles = item.roles or inferred_style_roles(name, table_style=item.table_style)
         return StyleEntry(
             name,
             table_style=item.table_style,
             caption_style=item.caption_style,
             outline_markers=tuple(unique_style_marker_names(item.outline_markers)),
+            roles=tuple(unique_role_names(roles)),
         )
     if isinstance(item, dict):
         name = str(item.get("name", "")).strip()
         if not name:
             return None
+        table_style = bool(item.get("table_style", False))
+        roles = unique_role_names(item.get("roles", inferred_style_roles(name, table_style=table_style)))
         return StyleEntry(
             name=name,
-            table_style=bool(item.get("table_style", False)),
+            table_style=table_style,
             caption_style=bool(item.get("caption_style", False)),
             outline_markers=tuple(unique_style_marker_names(item.get("outline_markers", []))),
+            roles=tuple(roles),
         )
     name = str(item).strip()
     if not name:
         return None
-    return StyleEntry(name=name)
+    return StyleEntry(name=name, roles=inferred_style_roles(name))
+
+
+def normalize_inline_rule(item: object) -> InlineRule | None:
+    if isinstance(item, InlineRule):
+        name = item.name.strip()
+        rule_type = item.rule_type.strip()
+        style_role = item.style_role.strip()
+        if not name or not rule_type or not style_role:
+            return None
+        return InlineRule(
+            name=name,
+            rule_type=rule_type,
+            target=normalize_inline_rule_target(item.target),
+            style_role=style_role,
+            include_wrapper=bool(item.include_wrapper),
+            remove_markers=bool(item.remove_markers),
+            enabled=bool(item.enabled),
+        )
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name", "")).strip()
+    rule_type = str(item.get("type", item.get("rule_type", ""))).strip()
+    style_role = str(item.get("style_role", "")).strip()
+    if not name or not rule_type or not style_role:
+        return None
+    return InlineRule(
+        name=name,
+        rule_type=rule_type,
+        target=normalize_inline_rule_target(str(item.get("target", "body"))),
+        style_role=style_role,
+        include_wrapper=bool(item.get("include_wrapper", True)),
+        remove_markers=bool(item.get("remove_markers", False)),
+        enabled=bool(item.get("enabled", True)),
+    )
+
+
+def normalize_inline_rule_target(target: str) -> str:
+    value = target.strip().lower()
+    if value in {"table", "표"}:
+        return "table"
+    if value in {"all", "both", "body_table", "본문+표", "전체"}:
+        return "all"
+    return "body"
+
+
+def unique_inline_rules(items: Iterable[object]) -> list[InlineRule]:
+    result: list[InlineRule] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        rule = normalize_inline_rule(item)
+        if rule is None:
+            continue
+        key = (rule.name, rule.rule_type, rule.style_role)
+        if key in seen:
+            continue
+        result.append(rule)
+        seen.add(key)
+    return result
 
 
 def unique_style_marker_names(markers: Iterable[object]) -> list[str]:
@@ -451,7 +582,7 @@ def style_sets_from_records(records: list[StyleRecord]) -> list[StyleSet]:
         if record.style_type == "CHAR"
     ]
     return [
-        StyleSet("보고서용", unique_style_entries(paragraph_styles), unique_style_entries(character_styles)),
+        StyleSet("보고서용", unique_style_entries(paragraph_styles), unique_style_entries(character_styles), list(DEFAULT_INLINE_RULES)),
         StyleSet("일반보고용", [], []),
         StyleSet("공문용", [], []),
     ]
@@ -463,13 +594,14 @@ def style_entry_from_record(record: StyleRecord) -> StyleEntry:
         record.name,
         table_style=normalized.startswith(normalize_style_name("표내용-")),
         caption_style="캡션" in record.name,
+        roles=inferred_style_roles(record.name, table_style=normalized.startswith(normalize_style_name("표내용-"))),
     )
 
 
 def style_set_from_records(name: str, records: list[StyleRecord]) -> StyleSet:
     paragraph_styles = [style_entry_from_record(record) for record in records if record.style_type == "PARA"]
     character_styles = [style_entry_from_record(record) for record in records if record.style_type == "CHAR"]
-    return StyleSet(name, unique_style_entries(paragraph_styles), unique_style_entries(character_styles))
+    return StyleSet(name, unique_style_entries(paragraph_styles), unique_style_entries(character_styles), list(DEFAULT_INLINE_RULES))
 
 
 def normalize_style_set_item(item: object) -> StyleSet | None:
@@ -480,7 +612,8 @@ def normalize_style_set_item(item: object) -> StyleSet | None:
         return None
     paragraph_styles = unique_style_entries(item.get("paragraph_styles", []))
     character_styles = unique_style_entries(item.get("character_styles", []))
-    return StyleSet(name=name, paragraph_styles=paragraph_styles, character_styles=character_styles)
+    inline_rules = unique_inline_rules(item.get("inline_rules", DEFAULT_INLINE_RULES))
+    return StyleSet(name=name, paragraph_styles=paragraph_styles, character_styles=character_styles, inline_rules=inline_rules)
 
 
 def default_style_sets() -> tuple[str, list[StyleSet]]:
@@ -528,6 +661,7 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
                         "table_style": entry.table_style,
                         "caption_style": entry.caption_style,
                         "outline_markers": list(entry.outline_markers),
+                        "roles": list(entry.roles),
                     }
                     for entry in unique_style_entries(item.paragraph_styles)
                 ],
@@ -537,8 +671,21 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
                         "table_style": entry.table_style,
                         "caption_style": entry.caption_style,
                         "outline_markers": list(entry.outline_markers),
+                        "roles": list(entry.roles),
                     }
                     for entry in unique_style_entries(item.character_styles)
+                ],
+                "inline_rules": [
+                    {
+                        "name": rule.name,
+                        "type": rule.rule_type,
+                        "target": rule.target,
+                        "style_role": rule.style_role,
+                        "include_wrapper": rule.include_wrapper,
+                        "remove_markers": rule.remove_markers,
+                        "enabled": rule.enabled,
+                    }
+                    for rule in unique_inline_rules(item.inline_rules)
                 ],
             }
             for item in style_sets
@@ -1457,6 +1604,84 @@ def find_outline_style_rule(text: str, style_set: StyleSet) -> tuple[StyleEntry,
     return None
 
 
+def find_inline_rule_ranges(text: str, rule: InlineRule) -> list[tuple[int, int, tuple[int, int] | None]]:
+    if not rule.enabled:
+        return []
+    if rule.rule_type == "leading_parenthesized_after_identifier":
+        leading_match = re.match(rf"^{INVISIBLE_PREFIX}{HORIZONTAL_SPACE}*", text)
+        wrapper_start = 0 if leading_match is None else leading_match.end()
+        if wrapper_start >= len(text) or text[wrapper_start] != "(":
+            return []
+        wrapper_end = text.find(")", wrapper_start + 1)
+        if wrapper_end < 0:
+            return []
+        keyword = text[wrapper_start + 1:wrapper_end]
+        if not keyword.strip():
+            return []
+        keyword_start = wrapper_start + 1 + len(keyword) - len(keyword.lstrip())
+        keyword_end = wrapper_start + 1 + len(keyword.rstrip())
+        if rule.include_wrapper:
+            return [(wrapper_start, wrapper_end + 1, None)]
+        return [(keyword_start, keyword_end, None)]
+    if rule.rule_type == "leading_text_before_colon_after_identifier":
+        match = re.match(rf"^{INVISIBLE_PREFIX}{HORIZONTAL_SPACE}*(?P<keyword>[^:：\n]*\S){HORIZONTAL_SPACE}*[:：]", text)
+        if match is None:
+            return []
+        end = match.end() if rule.include_wrapper else match.start("keyword") + len(match.group("keyword").rstrip())
+        return [(match.start("keyword"), end, None)]
+    if rule.rule_type == "markdown_bold":
+        ranges: list[tuple[int, int, tuple[int, int] | None]] = []
+        for match in re.finditer(r"\*\*(?P<keyword>[^*]*\S[^*]*)\*\*", text):
+            if rule.remove_markers:
+                apply_range = (match.start("keyword"), match.end("keyword"))
+            elif rule.include_wrapper:
+                apply_range = (match.start(), match.end())
+            else:
+                apply_range = (match.start("keyword"), match.end("keyword"))
+            marker_range = (match.start(), match.end()) if rule.remove_markers else None
+            ranges.append((apply_range[0], apply_range[1], marker_range))
+        return ranges
+    return []
+
+
+def inline_rule_search_offsets(text: str, rule: InlineRule, style_set: StyleSet) -> list[int]:
+    if rule.rule_type not in {
+        "leading_parenthesized_after_identifier",
+        "leading_text_before_colon_after_identifier",
+    }:
+        return [0]
+    offsets: list[int] = []
+    for entry in style_set.paragraph_styles:
+        for marker in entry.outline_markers:
+            prefix_length = configured_outline_prefix_length(text, marker)
+            if prefix_length and prefix_length not in offsets:
+                offsets.append(prefix_length)
+    manual_prefix_length = manual_outline_prefix_length(text)
+    if manual_prefix_length and manual_prefix_length not in offsets:
+        offsets.append(manual_prefix_length)
+    offsets.append(0)
+    return offsets
+
+
+def find_inline_rule_ranges_for_style_set(
+    text: str,
+    rule: InlineRule,
+    style_set: StyleSet,
+) -> list[tuple[int, int, tuple[int, int] | None]]:
+    for offset in inline_rule_search_offsets(text, rule, style_set):
+        ranges = find_inline_rule_ranges(text[offset:], rule)
+        if ranges:
+            adjusted: list[tuple[int, int, tuple[int, int] | None]] = []
+            for start, end, marker_range in ranges:
+                adjusted_marker_range = None
+                if marker_range is not None:
+                    marker_start, marker_end = marker_range
+                    adjusted_marker_range = (marker_start + offset, marker_end + offset)
+                adjusted.append((start + offset, end + offset, adjusted_marker_range))
+            return adjusted
+    return []
+
+
 def connect_hwp():
     global LAST_HWP_CONNECTION_LOG
     LAST_HWP_CONNECTION_LOG = []
@@ -1776,6 +2001,7 @@ class MvpApp(tk.Tk):
         ttk.Button(row3, text="위로", command=lambda: self.move_selected_style(-1)).pack(side="left")
         ttk.Button(row3, text="아래로", command=lambda: self.move_selected_style(1)).pack(side="left", padx=(8, 0))
         ttk.Button(row3, text="기본순서", command=self.reset_style_order).pack(side="left", padx=(8, 0))
+        ttk.Button(row3, text="글자스타일제거", command=self.clear_selected_character_style).pack(side="left", padx=(8, 0))
 
         cleanup_frame = ttk.Frame(frame)
         cleanup_frame.grid(row=1, column=0, sticky="ew")
@@ -1907,10 +2133,29 @@ class MvpApp(tk.Tk):
                     sticky="ew",
                     ipady=8,
                 )
+            clear_index = len(table_content_styles)
+            row, col = divmod(clear_index, 4)
+            ttk.Button(
+                table_style_buttons,
+                text="글자스타일제거",
+                command=self.clear_selected_character_style,
+            ).grid(
+                row=row,
+                column=col,
+                padx=(0 if col == 0 else 6, 0),
+                pady=(0 if row == 0 else 6, 0),
+                sticky="ew",
+                ipady=8,
+            )
             for col in range(4):
                 table_style_buttons.columnconfigure(col, weight=1)
         else:
             ttk.Label(table_style_buttons, text="표 서식 체크 스타일 없음").pack(anchor="w")
+            ttk.Button(
+                table_style_buttons,
+                text="글자스타일제거",
+                command=self.clear_selected_character_style,
+            ).pack(fill="x", pady=(6, 0), ipady=8)
 
         section_label("표 스타일")
         table_style_icons = ttk.Frame(content)
@@ -2599,6 +2844,7 @@ class MvpApp(tk.Tk):
                 item.name,
                 list(item.paragraph_styles),
                 list(item.character_styles),
+                list(item.inline_rules),
             )
             for item in self.style_sets
         ]
@@ -2608,6 +2854,14 @@ class MvpApp(tk.Tk):
         table_style_var = tk.BooleanVar(value=False)
         caption_style_var = tk.BooleanVar(value=False)
         outline_markers_var = tk.StringVar()
+        roles_var = tk.StringVar()
+        rule_name_var = tk.StringVar()
+        rule_type_var = tk.StringVar(value="leading_parenthesized_after_identifier")
+        rule_target_var = tk.StringVar(value="body")
+        rule_role_var = tk.StringVar(value="body_bold")
+        rule_include_wrapper_var = tk.BooleanVar(value=True)
+        rule_remove_markers_var = tk.BooleanVar(value=False)
+        rule_enabled_var = tk.BooleanVar(value=True)
 
         body = ttk.Frame(window, padding=10)
         body.pack(fill="both", expand=True)
@@ -2617,18 +2871,33 @@ class MvpApp(tk.Tk):
         set_list = tk.Listbox(body, height=6, exportselection=False)
         set_list.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 10))
 
-        style_tree = ttk.Treeview(body, columns=("type", "table", "caption", "outline"), show="tree headings", height=12)
+        style_tree = ttk.Treeview(body, columns=("type", "table", "caption", "outline", "roles"), show="tree headings", height=10)
         style_tree.heading("#0", text="스타일 이름")
         style_tree.heading("type", text="구분")
         style_tree.heading("table", text="표")
         style_tree.heading("caption", text="캡션")
         style_tree.heading("outline", text="식별자")
-        style_tree.column("#0", width=250)
+        style_tree.heading("roles", text="역할")
+        style_tree.column("#0", width=230)
         style_tree.column("type", width=52, stretch=False)
         style_tree.column("table", width=42, stretch=False, anchor="center")
         style_tree.column("caption", width=52, stretch=False, anchor="center")
-        style_tree.column("outline", width=130)
+        style_tree.column("outline", width=120)
+        style_tree.column("roles", width=120)
         style_tree.grid(row=1, column=1, sticky="nsew")
+
+        rule_tree = ttk.Treeview(body, columns=("type", "target", "role", "options"), show="tree headings", height=5)
+        rule_tree.heading("#0", text="규칙 이름")
+        rule_tree.heading("type", text="찾을 형식")
+        rule_tree.heading("target", text="대상")
+        rule_tree.heading("role", text="글자 역할")
+        rule_tree.heading("options", text="옵션")
+        rule_tree.column("#0", width=180)
+        rule_tree.column("type", width=210)
+        rule_tree.column("target", width=70, stretch=False)
+        rule_tree.column("role", width=100)
+        rule_tree.column("options", width=120)
+        rule_tree.grid(row=5, column=1, sticky="nsew", pady=(10, 0))
 
         def selected_set_index() -> int:
             selection = set_list.curselection()
@@ -2665,8 +2934,42 @@ class MvpApp(tk.Tk):
                             "✓" if entry.table_style else "",
                             "✓" if entry.caption_style else "",
                             ", ".join(entry.outline_markers),
+                            ", ".join(entry.roles),
                         ),
                     )
+
+        def rule_target_label(target: str) -> str:
+            return {"body": "본문", "table": "표", "all": "본문+표"}.get(target, target)
+
+        def rule_type_label(rule_type: str) -> str:
+            return {
+                "leading_parenthesized_after_identifier": "첫머리 괄호 키워드",
+                "markdown_bold": "마크다운 굵게",
+                "leading_text_before_colon_after_identifier": "첫머리 콜론 앞",
+            }.get(rule_type, rule_type)
+
+        def refresh_rule_tree() -> None:
+            rule_tree.delete(*rule_tree.get_children())
+            for index, rule in enumerate(selected_set().inline_rules):
+                options = []
+                if rule.include_wrapper:
+                    options.append("괄호포함")
+                if rule.remove_markers:
+                    options.append("표식삭제")
+                if not rule.enabled:
+                    options.append("꺼짐")
+                rule_tree.insert(
+                    "",
+                    "end",
+                    iid=f"rule:{index}",
+                    text=rule.name,
+                    values=(
+                        rule_type_label(rule.rule_type),
+                        rule_target_label(rule.target),
+                        rule.style_role,
+                        ", ".join(options),
+                    ),
+                )
 
         def persist_working_sets() -> None:
             active_name = selected_set().name
@@ -2687,11 +2990,13 @@ class MvpApp(tk.Tk):
                 return
             selected_set_var.set(selected_set().name)
             refresh_style_tree()
+            refresh_rule_tree()
 
         def replace_selected_set(style_set: StyleSet) -> None:
             working_sets[selected_set_index()] = style_set
             refresh_set_list(style_set.name)
             refresh_style_tree()
+            refresh_rule_tree()
 
         def add_set() -> None:
             base = "새 세트"
@@ -2701,9 +3006,10 @@ class MvpApp(tk.Tk):
             while name in existing:
                 name = f"{base} {suffix}"
                 suffix += 1
-            working_sets.append(StyleSet(name, [], []))
+            working_sets.append(StyleSet(name, [], [], list(DEFAULT_INLINE_RULES)))
             refresh_set_list(name)
             refresh_style_tree()
+            refresh_rule_tree()
             persist_working_sets()
 
         def unique_set_name(base: str) -> str:
@@ -2744,6 +3050,7 @@ class MvpApp(tk.Tk):
             working_sets.append(style_set_from_records(name, records))
             refresh_set_list(name)
             refresh_style_tree()
+            refresh_rule_tree()
             persist_working_sets()
             self.log(f"스타일 세트 불러오기: {path.name}, styles={len(records)}, set={name}")
 
@@ -2755,6 +3062,7 @@ class MvpApp(tk.Tk):
             del working_sets[index]
             refresh_set_list(working_sets[min(index, len(working_sets) - 1)].name)
             refresh_style_tree()
+            refresh_rule_tree()
             persist_working_sets()
 
         def rename_set() -> None:
@@ -2767,7 +3075,7 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning("세트 이름 중복", "이미 있는 세트 이름입니다.", parent=window)
                 return
             item = selected_set()
-            working_sets[index] = StyleSet(name, item.paragraph_styles, item.character_styles)
+            working_sets[index] = StyleSet(name, item.paragraph_styles, item.character_styles, item.inline_rules)
             refresh_set_list(name)
             persist_working_sets()
 
@@ -2782,13 +3090,20 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning("스타일 이름 중복", "같은 구분에 이미 있는 스타일 이름입니다.", parent=window)
                 return
             markers = parse_style_marker_text(outline_markers_var.get())
-            entry = StyleEntry(name, table_style_var.get(), caption_style_var.get(), tuple(markers))
+            entry = StyleEntry(
+                name,
+                table_style_var.get(),
+                caption_style_var.get(),
+                tuple(markers),
+                tuple(parse_role_text(roles_var.get())),
+            )
             if style_type_var.get() == "글자":
-                replace_selected_set(StyleSet(item.name, item.paragraph_styles, [*item.character_styles, entry]))
+                replace_selected_set(StyleSet(item.name, item.paragraph_styles, [*item.character_styles, entry], item.inline_rules))
             else:
-                replace_selected_set(StyleSet(item.name, [*item.paragraph_styles, entry], item.character_styles))
+                replace_selected_set(StyleSet(item.name, [*item.paragraph_styles, entry], item.character_styles, item.inline_rules))
             style_name_var.set("")
             outline_markers_var.set("")
+            roles_var.set("")
             persist_working_sets()
 
         def selected_style_ref() -> tuple[str, int] | None:
@@ -2822,8 +3137,9 @@ class MvpApp(tk.Tk):
                     table_style=table_style_var.get() if save_form else entry.table_style,
                     caption_style=caption_style_var.get() if save_form else entry.caption_style,
                     outline_markers=tuple(parse_style_marker_text(outline_markers_var.get())) if save_form else entry.outline_markers,
+                    roles=tuple(parse_role_text(roles_var.get())) if save_form else entry.roles,
                 )
-            replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles))
+            replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles, item.inline_rules))
             persist_working_sets()
 
         def fill_form_from_selected_style(_event=None) -> None:
@@ -2841,6 +3157,84 @@ class MvpApp(tk.Tk):
             table_style_var.set(entry.table_style)
             caption_style_var.set(entry.caption_style)
             outline_markers_var.set(", ".join(entry.outline_markers))
+            roles_var.set(", ".join(entry.roles))
+
+        def selected_rule_index() -> int | None:
+            selection = rule_tree.selection()
+            if not selection:
+                return None
+            _prefix, raw_index = selection[0].split(":", 1)
+            return int(raw_index)
+
+        def fill_form_from_selected_rule(_event=None) -> None:
+            index = selected_rule_index()
+            if index is None:
+                return
+            rules = selected_set().inline_rules
+            if index >= len(rules):
+                return
+            rule = rules[index]
+            rule_name_var.set(rule.name)
+            rule_type_var.set(rule.rule_type)
+            rule_target_var.set(rule.target)
+            rule_role_var.set(rule.style_role)
+            rule_include_wrapper_var.set(rule.include_wrapper)
+            rule_remove_markers_var.set(rule.remove_markers)
+            rule_enabled_var.set(rule.enabled)
+
+        def rule_from_form() -> InlineRule | None:
+            name = rule_name_var.get().strip()
+            rule_type = rule_type_var.get().strip()
+            style_role = rule_role_var.get().strip()
+            if not name:
+                messagebox.showwarning("규칙 이름 필요", "규칙 이름을 입력하세요.", parent=window)
+                return None
+            if not style_role:
+                messagebox.showwarning("글자 역할 필요", "적용할 글자 역할을 입력하세요.", parent=window)
+                return None
+            return InlineRule(
+                name=name,
+                rule_type=rule_type,
+                target=normalize_inline_rule_target(rule_target_var.get()),
+                style_role=style_role,
+                include_wrapper=rule_include_wrapper_var.get(),
+                remove_markers=rule_remove_markers_var.get(),
+                enabled=rule_enabled_var.get(),
+            )
+
+        def replace_inline_rules(rules: list[InlineRule]) -> None:
+            item = selected_set()
+            replace_selected_set(StyleSet(item.name, item.paragraph_styles, item.character_styles, rules))
+            persist_working_sets()
+
+        def add_inline_rule() -> None:
+            rule = rule_from_form()
+            if rule is None:
+                return
+            replace_inline_rules([*selected_set().inline_rules, rule])
+
+        def save_selected_rule() -> None:
+            index = selected_rule_index()
+            if index is None:
+                return
+            rule = rule_from_form()
+            if rule is None:
+                return
+            rules = list(selected_set().inline_rules)
+            if index >= len(rules):
+                return
+            rules[index] = rule
+            replace_inline_rules(rules)
+
+        def remove_selected_rule() -> None:
+            index = selected_rule_index()
+            if index is None:
+                return
+            rules = list(selected_set().inline_rules)
+            if index >= len(rules):
+                return
+            del rules[index]
+            replace_inline_rules(rules)
 
         set_form = ttk.Frame(body)
         set_form.grid(row=0, column=1, sticky="ew", pady=(0, 8))
@@ -2861,21 +3255,57 @@ class MvpApp(tk.Tk):
         marker_form = ttk.Frame(body)
         marker_form.grid(row=3, column=1, sticky="ew", pady=(8, 0))
         ttk.Label(marker_form, text="식별자").pack(side="left")
-        ttk.Entry(marker_form, textvariable=outline_markers_var, width=32).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ttk.Entry(marker_form, textvariable=outline_markers_var, width=24).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ttk.Label(marker_form, text="역할").pack(side="left", padx=(8, 0))
+        ttk.Entry(marker_form, textvariable=roles_var, width=22).pack(side="left", fill="x", expand=True, padx=(6, 0))
         ttk.Button(marker_form, text="선택 항목 저장", command=lambda: update_selected_style(save_form=True)).pack(side="left", padx=(6, 0))
 
         item_buttons = ttk.Frame(body)
         item_buttons.grid(row=4, column=1, sticky="ew", pady=(8, 0))
         ttk.Button(item_buttons, text="선택 삭제", command=lambda: update_selected_style(remove=True)).pack(side="left")
 
+        rule_form = ttk.Frame(body)
+        rule_form.grid(row=6, column=1, sticky="ew", pady=(8, 0))
+        ttk.Entry(rule_form, textvariable=rule_name_var, width=18).pack(side="left", fill="x", expand=True)
+        ttk.Combobox(
+            rule_form,
+            textvariable=rule_type_var,
+            values=[
+                "leading_parenthesized_after_identifier",
+                "leading_text_before_colon_after_identifier",
+                "markdown_bold",
+            ],
+            state="readonly",
+            width=34,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Combobox(
+            rule_form,
+            textvariable=rule_target_var,
+            values=["body", "table", "all"],
+            state="readonly",
+            width=8,
+        ).pack(side="left", padx=(6, 0))
+        ttk.Entry(rule_form, textvariable=rule_role_var, width=14).pack(side="left", padx=(6, 0))
+
+        rule_options = ttk.Frame(body)
+        rule_options.grid(row=7, column=1, sticky="ew", pady=(8, 0))
+        ttk.Checkbutton(rule_options, text="경계 포함", variable=rule_include_wrapper_var).pack(side="left")
+        ttk.Checkbutton(rule_options, text="표식 삭제", variable=rule_remove_markers_var).pack(side="left", padx=(6, 0))
+        ttk.Checkbutton(rule_options, text="사용", variable=rule_enabled_var).pack(side="left", padx=(6, 0))
+        ttk.Button(rule_options, text="규칙 추가", command=add_inline_rule).pack(side="left", padx=(12, 0))
+        ttk.Button(rule_options, text="선택 규칙 저장", command=save_selected_rule).pack(side="left", padx=(6, 0))
+        ttk.Button(rule_options, text="선택 규칙 삭제", command=remove_selected_rule).pack(side="left", padx=(6, 0))
+
         buttons = ttk.Frame(body)
-        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        buttons.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(buttons, text="닫기", command=window.destroy).pack(side="left")
 
         set_list.bind("<<ListboxSelect>>", select_set)
         style_tree.bind("<<TreeviewSelect>>", fill_form_from_selected_style)
+        rule_tree.bind("<<TreeviewSelect>>", fill_form_from_selected_rule)
         refresh_set_list()
         refresh_style_tree()
+        refresh_rule_tree()
 
     def populate_logo_chips(self, logos: list[Path]) -> None:
         for child in self.logo_chip_frame.winfo_children():
@@ -2978,11 +3408,25 @@ class MvpApp(tk.Tk):
         self.build_table_tab_content()
         self.debug(f"[style-sets] 기본순서로 복원: {self.active_style_set_name}")
 
+    def clear_selected_character_style(self) -> None:
+        label = "글자스타일제거"
+        if not self.ensure_hwp():
+            return
+        try:
+            ok = self.run_hwp_command("StyleClearCharStyle")
+            self.log(f"{label}: StyleClearCharStyle result={ok}")
+            if not ok:
+                messagebox.showwarning(label, "한글이 글자 스타일 제거를 실패로 반환했습니다. 텍스트를 선택한 상태인지 확인하세요.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
     def replace_style_set(self, target_name: str, replacement: StyleSet) -> None:
         updated = StyleSet(
             name=target_name,
             paragraph_styles=replacement.paragraph_styles,
             character_styles=replacement.character_styles,
+            inline_rules=replacement.inline_rules,
         )
         self.style_sets = [updated if item.name == target_name else item for item in self.style_sets]
 
@@ -3003,12 +3447,19 @@ class MvpApp(tk.Tk):
                 record.name,
                 table_style=old.table_style if old is not None else False,
                 caption_style=old.caption_style if old is not None else False,
+                roles=old.roles if old is not None else inferred_style_roles(
+                    record.name,
+                    table_style=normalize_style_name(record.name).startswith(normalize_style_name("표내용-")),
+                ),
             )
             if record.style_type == "CHAR":
                 character_styles.append(entry)
             else:
                 paragraph_styles.append(entry)
-        self.replace_style_set(self.active_style_set_name, StyleSet(self.active_style_set_name, paragraph_styles, character_styles))
+        self.replace_style_set(
+            self.active_style_set_name,
+            StyleSet(self.active_style_set_name, paragraph_styles, character_styles, old_set.inline_rules),
+        )
 
     def ensure_hwp(self) -> bool:
         if self.hwp is not None:
@@ -5014,11 +5465,19 @@ class MvpApp(tk.Tk):
     def select_hwp_text_range(self, list_id: int, para: int, start_pos: int, end_pos: int) -> bool:
         if end_pos <= start_pos:
             return self.set_hwp_pos((list_id, para, start_pos))
+        self.clear_hwp_selection()
         try:
             if not self.set_hwp_pos((list_id, para, start_pos)):
                 return False
             if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(para, start_pos, para, end_pos):
-                return True
+                matches = self.selected_hwp_text_range_matches(list_id, para, start_pos, end_pos)
+                if matches is not False:
+                    return True
+                self.debug(
+                    f"[paragraph-select] SelectText 범위 불일치, fallback 사용 "
+                    f"para={para}, expected={start_pos}-{end_pos}"
+                )
+                self.clear_hwp_selection()
         except Exception as exc:
             self.debug(f"[paragraph-select] SelectText 실패 para={para}: {type(exc).__name__}: {exc}")
         if not self.set_hwp_pos((list_id, para, start_pos)):
@@ -5026,7 +5485,26 @@ class MvpApp(tk.Tk):
         for _ in range(end_pos - start_pos):
             if not self.run_hwp_command("MoveSelRight"):
                 return False
-        return True
+        return self.selected_hwp_text_range_matches(list_id, para, start_pos, end_pos) is not False
+
+    def selected_hwp_text_range_matches(self, list_id: int, para: int, start_pos: int, end_pos: int) -> bool | None:
+        try:
+            result = self.hwp.GetSelectedPos()
+        except Exception as exc:
+            self.debug(f"[paragraph-select] GetSelectedPos 확인 생략: {type(exc).__name__}: {exc}")
+            return None
+        if not isinstance(result, tuple) or len(result) < 7 or not result[0]:
+            self.debug(f"[paragraph-select] GetSelectedPos 확인 생략: invalid={result}")
+            return None
+        start = (int(result[1]), int(result[2]), int(result[3]))
+        end = (int(result[4]), int(result[5]), int(result[6]))
+        start, end = sorted((start, end))
+        expected_start = (list_id, para, start_pos)
+        expected_end = (list_id, para, end_pos)
+        matches = start == expected_start and end == expected_end
+        if not matches:
+            self.debug(f"[paragraph-select] 선택 범위 확인 실패: actual={start}-{end}, expected={expected_start}-{expected_end}")
+        return matches
 
     def apply_style_to_paragraph_text(self, list_id: int, para: int, record: StyleRecord) -> bool:
         paragraph_text = self.read_current_paragraph_text(list_id, para)
@@ -5035,6 +5513,72 @@ class MvpApp(tk.Tk):
         if not self.select_hwp_text_range(list_id, para, 0, len(paragraph_text)):
             return False
         return self.execute_style_record(record)
+
+    def is_hwp_paragraph_in_table(self, list_id: int, para: int) -> bool:
+        original_pos = self.get_hwp_pos_by_set()
+        try:
+            if not self.set_hwp_pos((list_id, para, 0)):
+                return False
+            return self.get_current_cell_address() is not None
+        finally:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+
+    def inline_rule_applies_to_context(self, rule: InlineRule, *, in_table: bool) -> bool:
+        target = normalize_inline_rule_target(rule.target)
+        if target == "all":
+            return True
+        if target == "table":
+            return in_table
+        return not in_table
+
+    def character_style_record_for_role(self, style_set: StyleSet, role: str) -> StyleRecord | None:
+        for entry in style_set.character_styles:
+            if role in entry.roles:
+                return self.find_current_doc_style_record(entry.name)
+        return None
+
+    def apply_inline_rules_to_paragraph(
+        self,
+        list_id: int,
+        para: int,
+        style_set: StyleSet,
+        *,
+        missing_roles: set[str],
+    ) -> int:
+        enabled_rules = [rule for rule in style_set.inline_rules if rule.enabled]
+        if not enabled_rules:
+            return 0
+        in_table = self.is_hwp_paragraph_in_table(list_id, para)
+        applied = 0
+        for rule in enabled_rules:
+            if not self.inline_rule_applies_to_context(rule, in_table=in_table):
+                continue
+            record = self.character_style_record_for_role(style_set, rule.style_role)
+            if record is None:
+                missing_roles.add(rule.style_role)
+                self.debug(f"[inline-style] 현재 문서 글자 스타일 역할 없음: role={rule.style_role}")
+                continue
+            paragraph_text = self.read_current_paragraph_text(list_id, para)
+            if paragraph_text is None:
+                continue
+            ranges = find_inline_rule_ranges_for_style_set(paragraph_text, rule, style_set)
+            for start_pos, end_pos, marker_range in reversed(ranges):
+                apply_start = start_pos
+                apply_end = end_pos
+                if marker_range is not None and rule.rule_type == "markdown_bold":
+                    marker_start, marker_end = marker_range
+                    close_start = marker_end - 2
+                    if not self.delete_hwp_text_range(list_id, para, close_start, marker_end):
+                        continue
+                    if not self.delete_hwp_text_range(list_id, para, marker_start, marker_start + 2):
+                        continue
+                    apply_start = max(marker_start, start_pos - 2)
+                    apply_end = max(apply_start, end_pos - 2)
+                if self.select_hwp_text_range(list_id, para, apply_start, apply_end) and self.execute_style_record(record):
+                    applied += 1
+                self.clear_hwp_selection()
+        return applied
 
     def reselect_hwp_text(self, start: tuple[int, int, int], text: str) -> bool:
         if not text or not self.set_hwp_pos(start):
@@ -5958,14 +6502,15 @@ class MvpApp(tk.Tk):
             messagebox.showerror(f"{label} 실패", str(exc))
 
     def apply_configured_outline_styles_to_selection(self) -> None:
-        label = "개요 스타일 일괄변환"
+        label = "일괄처리"
         if not self.ensure_hwp():
             return
         try:
             active_set = self.active_style_set()
             rule_count = sum(1 for entry in active_set.paragraph_styles if entry.outline_markers)
-            if rule_count == 0:
-                messagebox.showinfo(label, "현재 스타일 세트에 개요기호가 지정된 문단 스타일이 없습니다.")
+            inline_rule_count = sum(1 for rule in active_set.inline_rules if rule.enabled)
+            if rule_count == 0 and inline_rule_count == 0:
+                messagebox.showinfo(label, "현재 스타일 세트에 일괄처리 규칙이 없습니다.")
                 self.log(f"{label}: 규칙 없음, set={active_set.name}")
                 return
 
@@ -5982,7 +6527,9 @@ class MvpApp(tk.Tk):
             visited = 0
             matched = 0
             changed = 0
+            inline_applied = 0
             missing_styles: set[str] = set()
+            missing_roles: set[str] = set()
 
             for para in range(first_para, last_para + 1):
                 self.clear_hwp_selection()
@@ -5992,25 +6539,29 @@ class MvpApp(tk.Tk):
                     continue
                 visited += 1
                 rule = find_outline_style_rule(paragraph_text, active_set)
-                if rule is None:
-                    continue
-                entry, prefix_length = rule
-                matched += 1
-                current_record = self.find_current_doc_style_record(entry.name)
-                if current_record is None:
-                    missing_styles.add(entry.name)
-                    self.debug(f"[outline-style] 현재 문서 스타일 없음: {entry.name}")
-                    continue
-
-                delete_ok = True
-                if prefix_length > 0:
-                    delete_ok = self.delete_hwp_text_range(list_id, para, 0, prefix_length)
-                style_ok = self.apply_style_to_paragraph_text(list_id, para, current_record)
-                if delete_ok and style_ok:
-                    changed += 1
-                self.debug(
-                    f"[outline-style] para={para}, marker={paragraph_text[:prefix_length]!r}, "
-                    f"style={entry.name}, delete={delete_ok}, style_ok={style_ok}"
+                if rule is not None:
+                    entry, prefix_length = rule
+                    matched += 1
+                    current_record = self.find_current_doc_style_record(entry.name)
+                    if current_record is None:
+                        missing_styles.add(entry.name)
+                        self.debug(f"[outline-style] 현재 문서 스타일 없음: {entry.name}")
+                    else:
+                        delete_ok = True
+                        if prefix_length > 0:
+                            delete_ok = self.delete_hwp_text_range(list_id, para, 0, prefix_length)
+                        style_ok = self.apply_style_to_paragraph_text(list_id, para, current_record)
+                        if delete_ok and style_ok:
+                            changed += 1
+                        self.debug(
+                            f"[outline-style] para={para}, marker={paragraph_text[:prefix_length]!r}, "
+                            f"style={entry.name}, delete={delete_ok}, style_ok={style_ok}"
+                        )
+                inline_applied += self.apply_inline_rules_to_paragraph(
+                    list_id,
+                    para,
+                    active_set,
+                    missing_roles=missing_roles,
                 )
                 self.clear_hwp_selection()
 
@@ -6019,16 +6570,21 @@ class MvpApp(tk.Tk):
             self.activate_hwp_window()
             self.log(
                 f"{label}: 문단 순회 완료, set={active_set.name}, "
-                f"rules={rule_count}, visited={visited}, matched={matched}, changed={changed}"
+                f"outline_rules={rule_count}, inline_rules={inline_rule_count}, "
+                f"visited={visited}, matched={matched}, changed={changed}, inline_applied={inline_applied}"
             )
-            if missing_styles:
+            if missing_styles or missing_roles:
+                parts = []
+                if missing_styles:
+                    parts.append("현재 문서에 같은 이름의 문단 스타일이 없어 건너뜀:\n" + "\n".join(sorted(missing_styles)))
+                if missing_roles:
+                    parts.append("현재 세트/문서에서 글자 역할을 찾지 못해 건너뜀:\n" + "\n".join(sorted(missing_roles)))
                 messagebox.showwarning(
                     label,
-                    "일부 규칙은 현재 문서에 같은 이름의 스타일이 없어 건너뛰었습니다.\n\n"
-                    + "\n".join(sorted(missing_styles)),
+                    "일부 규칙을 건너뛰었습니다.\n\n" + "\n\n".join(parts),
                 )
-            elif changed == 0:
-                messagebox.showinfo(label, "선택한 문단에서 개요기호 규칙과 일치하는 줄을 찾지 못했습니다.")
+            elif changed == 0 and inline_applied == 0:
+                messagebox.showinfo(label, "선택한 문단에서 일괄처리 규칙과 일치하는 텍스트를 찾지 못했습니다.")
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))

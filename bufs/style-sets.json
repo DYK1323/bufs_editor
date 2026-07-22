@@ -8,25 +8,29 @@
           "name": "바탕글",
           "table_style": false,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": "표내용-왼쪽",
           "table_style": true,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": "1. 본문-큰번호",
           "table_style": false,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": ">> 본문-개요1",
           "table_style": false,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": "◦ 본문-개요2",
@@ -38,7 +42,8 @@
             "○",
             "원기호",
             "원"
-          ]
+          ],
+          "roles": []
         },
         {
           "name": "- 본문-개요3",
@@ -50,7 +55,8 @@
             "선",
             "대시",
             "하이픈"
-          ]
+          ],
+          "roles": []
         },
         {
           "name": "∙본문-개요4",
@@ -59,50 +65,67 @@
           "outline_markers": [
             "·",
             "점",
-            "쩜"
-          ]
+            "쩜",
+            "•"
+          ],
+          "roles": []
         },
         {
           "name": "표내용-중간",
           "table_style": true,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": "표내용-오른쪽",
           "table_style": true,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": "표내용-개요번호-레벨1",
           "table_style": true,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [
+            "표삼각",
+            "▸",
+            "표1"
+          ],
+          "roles": []
         },
         {
           "name": "표내용-개요번호-레벨2",
           "table_style": true,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [
+            "표점",
+            "∙",
+            "표2"
+          ],
+          "roles": []
         },
         {
           "name": "[표/그림] 캡션",
           "table_style": false,
           "caption_style": true,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": "[표/그림] (단위: ㅇㅇ)",
           "table_style": false,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         },
         {
           "name": "<표 아래: 주>",
           "table_style": false,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": []
         }
       ],
       "character_styles": [
@@ -110,25 +133,136 @@
           "name": "본문-굵게",
           "table_style": false,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": [
+            "body_bold"
+          ]
         },
         {
           "name": "표내용-굵게",
           "table_style": true,
           "caption_style": false,
-          "outline_markers": []
+          "outline_markers": [],
+          "roles": [
+            "table_bold"
+          ]
+        }
+      ],
+      "inline_rules": [
+        {
+          "name": "첫머리 괄호 키워드",
+          "type": "leading_parenthesized_after_identifier",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
+          "name": "마크다운 굵게",
+          "type": "markdown_bold",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": true,
+          "enabled": true
+        },
+        {
+          "name": "첫머리 콜론 앞",
+          "type": "leading_text_before_colon_after_identifier",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": false,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
+          "name": "첫머리 콜론 앞",
+          "type": "leading_text_before_colon_after_identifier",
+          "target": "table",
+          "style_role": "table_bold",
+          "include_wrapper": false,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
+          "name": "마크다운 굵게",
+          "type": "markdown_bold",
+          "target": "table",
+          "style_role": "table_bold",
+          "include_wrapper": true,
+          "remove_markers": true,
+          "enabled": true
         }
       ]
     },
     {
       "name": "일반보고용",
       "paragraph_styles": [],
-      "character_styles": []
+      "character_styles": [],
+      "inline_rules": [
+        {
+          "name": "첫머리 괄호 키워드",
+          "type": "leading_parenthesized_after_identifier",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
+          "name": "마크다운 굵게",
+          "type": "markdown_bold",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": true,
+          "enabled": true
+        },
+        {
+          "name": "첫머리 콜론 앞",
+          "type": "leading_text_before_colon_after_identifier",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": false,
+          "remove_markers": false,
+          "enabled": true
+        }
+      ]
     },
     {
       "name": "공문용",
       "paragraph_styles": [],
-      "character_styles": []
+      "character_styles": [],
+      "inline_rules": [
+        {
+          "name": "첫머리 괄호 키워드",
+          "type": "leading_parenthesized_after_identifier",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": false,
+          "enabled": true
+        },
+        {
+          "name": "마크다운 굵게",
+          "type": "markdown_bold",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": true,
+          "remove_markers": true,
+          "enabled": true
+        },
+        {
+          "name": "첫머리 콜론 앞",
+          "type": "leading_text_before_colon_after_identifier",
+          "target": "body",
+          "style_role": "body_bold",
+          "include_wrapper": false,
+          "remove_markers": false,
+          "enabled": true
+        }
+      ]
     }
   ]
 }

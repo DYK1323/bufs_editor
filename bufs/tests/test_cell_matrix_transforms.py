@@ -46,9 +46,12 @@ from hwp_style_mvp import (  # noqa: E402
     TABLE_ICON_BUTTON_GAP,
     TABLE_STYLE_ICON_BUTTON_SIZE,
     TABLE_STYLE_ICON_PRESETS,
+    InlineRule,
     StyleEntry,
     StyleRecord,
     StyleSet,
+    find_inline_rule_ranges,
+    find_inline_rule_ranges_for_style_set,
     load_style_sets,
     read_style_records,
     read_style_records_from_hwp_file,
@@ -62,6 +65,44 @@ from hwp_style_mvp import (  # noqa: E402
 
 
 class CellMatrixTransformTests(unittest.TestCase):
+    def test_inline_rule_ranges_match_parenthesized_keyword_with_spaces(self) -> None:
+        rule = InlineRule("keyword", "leading_parenthesized_after_identifier", include_wrapper=True)
+
+        self.assertEqual(find_inline_rule_ranges("  (project plan keyword) body", rule), [(2, 24, None)])
+
+    def test_inline_rule_ranges_match_markdown_bold_inner_text_when_removing_markers(self) -> None:
+        rule = InlineRule("markdown", "markdown_bold", remove_markers=True)
+
+        self.assertEqual(find_inline_rule_ranges("pre **bold text** post", rule), [(6, 15, (4, 17))])
+
+    def test_inline_rule_ranges_match_leading_text_before_colon(self) -> None:
+        rule = InlineRule("colon", "leading_text_before_colon_after_identifier", include_wrapper=False)
+
+        self.assertEqual(find_inline_rule_ranges("project plan: body", rule), [(0, 12, None)])
+
+    def test_inline_rule_ranges_match_after_outline_marker_removed_examples(self) -> None:
+        keyword_rule = InlineRule("keyword", "leading_parenthesized_after_identifier", include_wrapper=True)
+        colon_rule = InlineRule("colon", "leading_text_before_colon_after_identifier", include_wrapper=False)
+
+        self.assertEqual(find_inline_rule_ranges("(background) text", keyword_rule), [(0, 12, None)])
+        self.assertEqual(find_inline_rule_ranges("purpose : text", colon_rule), [(0, 7, None)])
+
+    def test_inline_rule_ranges_skip_configured_outline_marker_without_deleting_it(self) -> None:
+        style_set = StyleSet("set", [StyleEntry("body", outline_markers=("w",))], [])
+        keyword_rule = InlineRule("keyword", "leading_parenthesized_after_identifier", include_wrapper=True)
+        colon_rule = InlineRule("colon", "leading_text_before_colon_after_identifier", include_wrapper=False)
+
+        self.assertEqual(find_inline_rule_ranges_for_style_set("w (background) text", keyword_rule, style_set), [(2, 14, None)])
+        self.assertEqual(find_inline_rule_ranges_for_style_set("w purpose : text", colon_rule, style_set), [(2, 9, None)])
+
+    def test_inline_rule_ranges_only_match_first_leading_parentheses(self) -> None:
+        style_set = StyleSet("set", [StyleEntry("body", outline_markers=("o",))], [])
+        rule = InlineRule("keyword", "leading_parenthesized_after_identifier", include_wrapper=True)
+
+        text = "o (airfare) text with later (exchange professor) parentheses"
+
+        self.assertEqual(find_inline_rule_ranges_for_style_set(text, rule, style_set), [(2, 11, None)])
+
     def test_table_icon_presets_match_expected_grid_sizes_and_files(self) -> None:
         self.assertEqual(len(TABLE_STYLE_ICON_PRESETS), 4)
         self.assertEqual(len(TABLE_BORDER_ICON_PRESETS), 6)
@@ -71,6 +112,17 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(TABLE_ICON_BUTTON_BG, "#FFFFFF")
         for icon_name, _preset_name, _tooltip in TABLE_STYLE_ICON_PRESETS + TABLE_BORDER_ICON_PRESETS:
             self.assertTrue((ROOT / "icons" / "2x" / f"{icon_name}@2x.png").exists())
+
+    def test_clear_selected_character_style_runs_char_shape_normal_action(self) -> None:
+        app = object.__new__(MvpApp)
+        commands: list[str] = []
+        app.ensure_hwp = lambda: True
+        app.run_hwp_command = lambda command: commands.append(command) or True
+        app.log = lambda _message: None
+
+        app.clear_selected_character_style()
+
+        self.assertEqual(commands, ["StyleClearCharStyle"])
 
     def test_style_records_keep_document_order_index_separate_from_xml_id(self) -> None:
         header = """<?xml version="1.0" encoding="UTF-8"?>
