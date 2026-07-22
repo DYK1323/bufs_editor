@@ -81,6 +81,7 @@ class PaletteColor:
 @dataclass(frozen=True)
 class StyleRecord:
     style_id: int
+    style_index: int
     style_type: str
     name: str
 
@@ -152,6 +153,27 @@ DEFAULT_TABLE_SETTINGS = {
     },
 }
 
+TABLE_STYLE_ICON_PRESETS = (
+    ("얇은전체", "thin_all", "얇은 전체 테두리"),
+    ("굵은외곽", "thick_outer", "굵은 외곽선"),
+    ("얇은상하", "thin_top_bottom", "얇은 상하선"),
+    ("굵은상하", "thick_top_bottom", "굵은 상하선"),
+)
+
+TABLE_BORDER_ICON_PRESETS = (
+    ("이중아래", "double_bottom", "아래 이중선"),
+    ("좌우없음", "no_left_right", "좌우선 없음"),
+    ("점선가로", "dotted_inside_horz", "안쪽 가로 점선"),
+    ("점선세로", "dotted_inside_vert", "안쪽 세로 점선"),
+    ("실선가로", "thin_inside_horz", "안쪽 가로 실선"),
+    ("실선세로", "thin_inside_vert", "안쪽 세로 실선"),
+)
+
+TABLE_STYLE_ICON_BUTTON_SIZE = 48
+TABLE_BORDER_ICON_BUTTON_SIZE = 48
+TABLE_ICON_BUTTON_GAP = 6
+TABLE_ICON_BUTTON_BG = "#FFFFFF"
+
 
 def read_zip_text(path: Path, entry_name: str) -> str:
     with zipfile.ZipFile(path) as zf:
@@ -168,18 +190,48 @@ def read_style_records(path: Path = STYLE_FILE) -> list[StyleRecord]:
         return []
     records: list[StyleRecord] = []
     pattern = re.compile(r'<hh:style\b([^>]*)/>')
-    for match in pattern.finditer(header):
+    for style_index, match in enumerate(pattern.finditer(header)):
         attrs = dict(re.findall(r'(\w+)="([^"]*)"', match.group(1)))
         if "id" not in attrs or "name" not in attrs:
             continue
         records.append(
             StyleRecord(
                 style_id=int(attrs["id"]),
+                style_index=style_index,
                 style_type=attrs.get("type", ""),
                 name=unescape(attrs["name"]),
             )
         )
     return sorted(records, key=lambda item: (item.style_type != "PARA", item.style_id, item.name))
+
+
+def read_style_records_from_hwpml(style_xml: str) -> list[StyleRecord]:
+    if not style_xml.strip():
+        return []
+    try:
+        root = ET.fromstring(style_xml)
+    except ET.ParseError:
+        return []
+
+    records: list[StyleRecord] = []
+    for style_index, element in enumerate(root.findall(".//STYLE")):
+        raw_id = element.get("Id")
+        name = element.get("Name")
+        if raw_id is None or not name:
+            continue
+        try:
+            style_id = int(raw_id)
+        except ValueError:
+            continue
+        records.append(
+            StyleRecord(
+                style_id=style_id,
+                style_index=style_index,
+                style_type="PARA",
+                name=unescape(name),
+            )
+        )
+    return records
 
 
 def load_style_order() -> list[str]:
@@ -652,6 +704,13 @@ def cell_matrix_to_tsv(matrix: list[list[str]]) -> str:
     return "\r\n".join("\t".join(row) for row in matrix)
 
 
+def looks_like_single_copied_cell(text: str) -> bool:
+    if "\t" in text:
+        return False
+    lines = [line.strip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return sum(1 for line in lines if line) <= 1
+
+
 def flatten_cell_matrix(matrix: list[list[str]], *, strip_wrapping_lines: bool = False) -> list[str]:
     values: list[str] = []
     for row in matrix:
@@ -880,6 +939,11 @@ def remove_manual_outline_prefixes(text: str) -> str:
     return OUTLINE_PREFIX_RE.sub("", text)
 
 
+def manual_outline_prefix_length(text: str) -> int:
+    match = OUTLINE_PREFIX_RE.match(text)
+    return 0 if match is None else match.end()
+
+
 def connect_hwp():
     global LAST_HWP_CONNECTION_LOG
     LAST_HWP_CONNECTION_LOG = []
@@ -1067,6 +1131,38 @@ def describe_hwp(hwp) -> list[str]:
     return lines
 
 
+class ToolTip:
+    def __init__(self, widget, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self.window = None
+        widget.bind("<Enter>", self.show, add="+")
+        widget.bind("<Leave>", self.hide, add="+")
+        widget.bind("<ButtonPress>", self.hide, add="+")
+
+    def show(self, _event=None) -> None:
+        if self.window is not None or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 16
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.wm_geometry(f"+{x}+{y}")
+        label = ttk.Label(
+            self.window,
+            text=self.text,
+            padding=(6, 3),
+            relief="solid",
+            borderwidth=1,
+        )
+        label.pack()
+
+    def hide(self, _event=None) -> None:
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
+
+
 class MvpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -1084,6 +1180,7 @@ class MvpApp(tk.Tk):
         self.cover_confidential = tk.BooleanVar(value=False)
         self.logo_height_var = tk.StringVar(value="12")
         self.logo_chip_images: list[tk.PhotoImage] = []
+        self.icon_images: dict[str, tk.PhotoImage] = {}
         self.pending_caption_title = ""
         self.pending_caption_parts = CaptionParts(prefix="", suffix="")
         self._refreshing = False
@@ -1163,6 +1260,53 @@ class MvpApp(tk.Tk):
         self.notebook.add(frame, text="표 편집")
         self.build_table_tab_content()
 
+    def load_icon_image(self, icon_name: str) -> tk.PhotoImage | None:
+        if icon_name in self.icon_images:
+            return self.icon_images[icon_name]
+        icon_path = ROOT / "icons" / "2x" / f"{icon_name}@2x.png"
+        if not icon_path.exists():
+            self.debug(f"[icon] 아이콘 없음: {icon_path}")
+            return None
+        image = tk.PhotoImage(file=str(icon_path))
+        self.icon_images[icon_name] = image
+        return image
+
+    def create_icon_preset_grid(
+        self,
+        parent: ttk.Frame,
+        presets: tuple[tuple[str, str, str], ...],
+        columns: int,
+        button_size: int | None = None,
+    ) -> None:
+        for index, (icon_name, preset_name, tooltip) in enumerate(presets):
+            row, col = divmod(index, columns)
+            image = self.load_icon_image(icon_name)
+            command = lambda name=preset_name: self.apply_table_border_preset(name)
+            size = button_size or TABLE_STYLE_ICON_BUTTON_SIZE
+            button = tk.Button(
+                parent,
+                image=image,
+                command=command,
+                width=size,
+                height=size,
+                padx=0,
+                pady=0,
+                relief="raised",
+                bd=1,
+                bg=TABLE_ICON_BUTTON_BG,
+                activebackground=TABLE_ICON_BUTTON_BG,
+                highlightbackground=TABLE_ICON_BUTTON_BG,
+                takefocus=True,
+            )
+            button.grid(
+                row=row,
+                column=col,
+                padx=(0 if col == 0 else TABLE_ICON_BUTTON_GAP, 0),
+                pady=(0 if row == 0 else TABLE_ICON_BUTTON_GAP, 0),
+                sticky="w",
+            )
+            ToolTip(button, tooltip)
+
     def build_table_tab_content(self) -> None:
         frame = self.table_frame
         for child in frame.winfo_children():
@@ -1208,50 +1352,23 @@ class MvpApp(tk.Tk):
         self.create_color_chips(text_row, self.apply_text_color)
 
         ttk.Label(frame, text="표 스타일").pack(anchor="w")
-        table_style_row1 = ttk.Frame(frame)
-        table_style_row1.pack(fill="x", pady=(6, 0))
-        ttk.Button(table_style_row1, text="얇은전체", command=lambda: self.apply_table_border_preset("thin_all")).pack(
-            side="left", fill="x", expand=True
-        )
-        ttk.Button(table_style_row1, text="굵은외곽", command=lambda: self.apply_table_border_preset("thick_outer")).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
-
-        table_style_row2 = ttk.Frame(frame)
-        table_style_row2.pack(fill="x", pady=(6, 12))
-        ttk.Button(table_style_row2, text="얇은상하", command=lambda: self.apply_table_border_preset("thin_top_bottom")).pack(
-            side="left", fill="x", expand=True
-        )
-        ttk.Button(table_style_row2, text="굵은상하", command=lambda: self.apply_table_border_preset("thick_top_bottom")).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
+        table_style_icons = ttk.Frame(frame)
+        table_style_icons.pack(fill="x", pady=(6, 12))
+        self.create_icon_preset_grid(
+            table_style_icons,
+            TABLE_STYLE_ICON_PRESETS,
+            columns=4,
+            button_size=TABLE_STYLE_ICON_BUTTON_SIZE,
         )
 
         ttk.Label(frame, text="테두리").pack(anchor="w")
-        border_row1 = ttk.Frame(frame)
-        border_row1.pack(fill="x", pady=(6, 0))
-        ttk.Button(border_row1, text="이중 아래", command=lambda: self.apply_table_border_preset("double_bottom")).pack(
-            side="left", fill="x", expand=True
-        )
-        ttk.Button(border_row1, text="좌우 없음", command=lambda: self.apply_table_border_preset("no_left_right")).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
-
-        border_row3 = ttk.Frame(frame)
-        border_row3.pack(fill="x", pady=(0, 0))
-        ttk.Button(border_row3, text="점선 가로", command=lambda: self.apply_table_border_preset("dotted_inside_horz")).pack(
-            side="left", fill="x", expand=True
-        )
-        ttk.Button(border_row3, text="점선 세로", command=lambda: self.apply_table_border_preset("dotted_inside_vert")).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
-
-        border_row4 = ttk.Frame(frame)
-        border_row4.pack(fill="x", pady=(6, 12))
-        ttk.Button(border_row4, text="얇은실선 가로", command=lambda: self.apply_table_border_preset("thin_inside_horz")).pack(
-            side="left", fill="x", expand=True
-        )
-        ttk.Button(border_row4, text="얇은실선 세로", command=lambda: self.apply_table_border_preset("thin_inside_vert")).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
+        border_icons = ttk.Frame(frame)
+        border_icons.pack(fill="x", pady=(6, 12))
+        self.create_icon_preset_grid(
+            border_icons,
+            TABLE_BORDER_ICON_PRESETS,
+            columns=6,
+            button_size=TABLE_BORDER_ICON_BUTTON_SIZE,
         )
 
         ttk.Button(frame, text="제목셀 자동화", command=self.apply_title_cell_preset).pack(fill="x", pady=(0, 12))
@@ -2000,29 +2117,40 @@ class MvpApp(tk.Tk):
         default_ok = self.hwp.HAction.GetDefault("Style", pset.HSet)
         before_apply = pset.Apply
         self.debug(f"[style] GetDefault result={default_ok}, before Apply={before_apply}")
+        self.debug(
+            f"[style] Execute target name={record.name}, id={record.style_id}, "
+            f"index={record.style_index}, type={record.style_type}"
+        )
         self.configure_style_apply_set(pset, record.style_id)
         return bool(self.hwp.HAction.Execute("Style", pset.HSet))
 
     def apply_style_by_name(self, style_name: str) -> bool:
-        self.refresh_current_doc_style_map()
+        self.refresh_current_doc_style_map(force=True)
         record = self.find_current_doc_style_record(style_name)
         if record is None:
-            record = next((item for item in self.style_records if normalize_style_name(item.name) == normalize_style_name(style_name)), None)
-            if record is None:
-                self.debug(f"[title-cell] 스타일 이름 없음: {style_name}")
-                return False
-            self.debug(f"[title-cell] 현재 문서 스타일 맵 없음, 기준 스타일 ID fallback: {style_name}, id={record.style_id}")
+            self.debug(f"[title-cell] 현재 문서에서 스타일 이름 매칭 실패, 적용 중단: {style_name}")
+            messagebox.showwarning(
+                "스타일 이름 매칭 실패",
+                f"현재 문서에서 같은 이름의 스타일을 찾지 못해 적용을 중단했습니다.\n\n"
+                f"찾는 스타일: {style_name}\n\n"
+                "스타일 번호로 대신 적용하면 다른 스타일이 적용될 수 있습니다.",
+            )
+            return False
         ok = self.execute_style_record(record)
         self.debug(
-            f"[title-cell] 스타일 적용 {style_name}, id={record.style_id}, type={record.style_type}, "
+            f"[title-cell] 스타일 적용 {style_name}, id={record.style_id}, "
+            f"index={record.style_index}, type={record.style_type}, "
             f"result={ok}"
         )
         return ok
 
     def apply_first_style_containing(self, text: str) -> bool:
         needle = normalize_style_name(text)
-        self.refresh_current_doc_style_map()
-        candidates = list(self.current_doc_style_map.values()) or self.style_records
+        self.refresh_current_doc_style_map(force=True)
+        candidates = list(self.current_doc_style_map.values())
+        if not candidates:
+            self.debug(f"[style] 현재 문서 스타일 맵이 비어 있어 포함 이름 적용 중단: {text}")
+            return False
         record = next(
             (
                 item
@@ -2035,7 +2163,7 @@ class MvpApp(tk.Tk):
             self.debug(f"[style] 포함 이름 없음: {text}")
             return False
         ok = self.execute_style_record(record)
-        self.debug(f"[style] 포함 이름 적용: {record.name}, id={record.style_id}, result={ok}")
+        self.debug(f"[style] 포함 이름 적용: {record.name}, id={record.style_id}, index={record.style_index}, result={ok}")
         return ok
 
     def line_type_value(self, kind: str) -> int:
@@ -2114,7 +2242,29 @@ class MvpApp(tk.Tk):
             return True
         except Exception as exc:
             self.debug(f"[{log_prefix}] {item} 속성 설정 실패: {type(exc).__name__}: {exc}")
-        return False
+            return False
+
+    def get_parameter_child(self, target, child_name: str, log_prefix: str = "param"):
+        for candidate in (target, getattr(target, "HSet", None)):
+            if candidate is None:
+                continue
+            try:
+                return getattr(candidate, child_name)
+            except Exception:
+                pass
+            try:
+                return candidate.Item(child_name)
+            except Exception as exc:
+                self.debug(f"[{log_prefix}] {child_name} Item 실패: {type(exc).__name__}: {exc}")
+        return None
+
+    def commit_cell_shape(self, cell_shape) -> bool:
+        try:
+            setattr(self.hwp, "CellShape", cell_shape)
+            return True
+        except Exception as exc:
+            self.debug(f"[title-cell-header] CellShape 커밋 실패: {type(exc).__name__}: {exc}")
+            return False
 
     def line_values_for_preset(self, preset_key: str) -> tuple[int, int, int] | None:
         preset = self.table_settings["line_presets"].get(preset_key)
@@ -2614,11 +2764,60 @@ class MvpApp(tk.Tk):
 
         return self.execute_first_hwp_action(("CellBorder",), pset.HSet)
 
+    def set_selected_cells_as_header(self) -> tuple[str, bool, bool]:
+        set_ok = False
+        commit_ok = False
+        action_name = "CellShape"
+
+        try:
+            cell_shape = self.hwp.CellShape
+        except Exception as exc:
+            cell_shape = None
+            self.debug(f"[title-cell-header] CellShape 읽기 실패: {type(exc).__name__}: {exc}")
+
+        if cell_shape is not None:
+            if self.set_parameter_item(cell_shape, "RepeatHeader", 1, "title-cell-header"):
+                self.debug("[title-cell-header] CellShape.RepeatHeader=1")
+                set_ok = True
+            cell_param = self.get_parameter_child(cell_shape, "Cell", "title-cell-header")
+            if cell_param is not None and self.set_parameter_item(cell_param, "Header", 1, "title-cell-header"):
+                self.debug("[title-cell-header] CellShape.Cell.Header=1")
+                set_ok = True
+                self.set_parameter_item(cell_shape, "Cell", cell_param, "title-cell-header")
+            if set_ok:
+                commit_ok = self.commit_cell_shape(cell_shape)
+                self.debug(f"[title-cell-header] CellShape 커밋={commit_ok}")
+
+        if not commit_ok:
+            try:
+                pset = self.hwp.HParameterSet.HShapeObject
+                default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", pset.HSet))
+                self.debug(f"[title-cell-header] TablePropertyDialog GetDefault={default_ok}")
+                for item, value in (("ShapeType", 3), ("ShapeCellSize", 0)):
+                    if self.set_parameter_item(pset, item, value, "title-cell-header"):
+                        self.debug(f"[title-cell-header] HShapeObject.{item}={value}")
+                shape_cell = self.get_parameter_child(pset, "ShapeTableCell", "title-cell-header")
+                if shape_cell is not None and self.set_parameter_item(shape_cell, "Header", 1, "title-cell-header"):
+                    self.debug("[title-cell-header] HShapeObject.ShapeTableCell.Header=1")
+                    set_ok = True
+                if default_ok:
+                    action_name, commit_ok = self.execute_first_hwp_action(("TablePropertyDialog", "ShapeObjDialog"), pset.HSet)
+            except Exception as exc:
+                self.debug(f"[title-cell-header] TablePropertyDialog fallback 실패: {type(exc).__name__}: {exc}")
+        return action_name, set_ok, commit_ok
+
     def apply_title_cell_preset(self) -> None:
         if not self.ensure_hwp():
             return
         title = self.table_settings["title_cell"]
         results: list[str] = []
+
+        try:
+            header_action, header_set_ok, header_action_ok = self.set_selected_cells_as_header()
+            results.append(f"제목셀속성=set:{header_set_ok}, action:{header_action_ok}({header_action})")
+        except Exception as exc:
+            results.append(f"제목셀속성 실패:{type(exc).__name__}")
+            self.debug(f"[title-cell] 제목셀속성 실패: {exc}")
 
         try:
             para_ok = self.apply_style_by_name(title["paragraph_style"])
@@ -2747,7 +2946,23 @@ class MvpApp(tk.Tk):
             return None
         return Path(raw_path)
 
-    def refresh_current_doc_style_map(self) -> None:
+    def read_current_doc_style_records_from_memory(self) -> list[StyleRecord]:
+        if self.hwp is None:
+            return []
+        for option in ("", "saveblock:true", "saveblock"):
+            try:
+                style_xml = safe_str(self.hwp.GetTextFile("HWPML2X", option))
+            except Exception as exc:
+                self.debug(f"[style-map] HWPML2X 스타일 읽기 실패 option={option!r}: {type(exc).__name__}: {exc}")
+                continue
+            records = read_style_records_from_hwpml(style_xml)
+            if records:
+                self.debug(f"[style-map] HWPML2X 메모리 스타일 {len(records)}개 읽음 option={option!r}")
+                return records
+            self.debug(f"[style-map] HWPML2X 스타일 없음 option={option!r}, bytes={len(style_xml)}")
+        return []
+
+    def refresh_current_doc_style_map(self, *, force: bool = False) -> None:
         path = self.get_current_hwp_path()
         if path is None:
             self.current_doc_style_path = None
@@ -2756,20 +2971,23 @@ class MvpApp(tk.Tk):
             self.debug("[style-map] 현재 문서 경로를 확인하지 못함")
             return
 
-        if path == self.current_doc_style_path and self.current_doc_style_map:
+        if not force and path == self.current_doc_style_path and self.current_doc_style_map:
             return
 
         self.current_doc_style_path = path
         self.current_doc_style_map = {}
         self.current_doc_style_norm_map = {}
-        if path.suffix.lower() != ".hwpx":
-            self.debug(f"[style-map] 현재 문서가 hwpx가 아니어서 이름 매칭 불가: {path}")
-            return
-        if not path.exists():
-            self.debug(f"[style-map] 현재 문서 파일을 디스크에서 찾지 못함: {path}")
-            return
 
-        records = read_style_records(path)
+        records = self.read_current_doc_style_records_from_memory()
+        if not records:
+            if path.suffix.lower() != ".hwpx":
+                self.debug(f"[style-map] 현재 문서가 hwpx가 아니고 메모리 스타일도 없어 이름 매칭 불가: {path}")
+                return
+            if not path.exists():
+                self.debug(f"[style-map] 현재 문서 파일을 디스크에서 찾지 못함: {path}")
+                return
+            records = read_style_records(path)
+            self.debug(f"[style-map] HWPX 파일 fallback 스타일 {len(records)}개 읽음: {path}")
         self.current_doc_style_map = {record.name: record for record in records}
         for record in records:
             key = normalize_style_name(record.name)
@@ -2813,20 +3031,26 @@ class MvpApp(tk.Tk):
                     self.debug(line)
                 for line in describe_hwp(self.hwp):
                     self.debug(f"[hwp] {line}")
-            self.refresh_current_doc_style_map()
+            self.refresh_current_doc_style_map(force=True)
             target_record = self.find_current_doc_style_record(record.name)
             if target_record is None:
                 current_path = self.get_current_hwp_path()
-                target_record = record
                 self.debug(
-                    f"[style] 현재 문서 스타일 이름 매칭 실패, 기준 스타일 ID fallback: "
-                    f"name={record.name}, current_doc={current_path}, id={record.style_id}"
+                    f"[style] 현재 문서 스타일 이름 매칭 실패, 적용 중단: "
+                    f"name={record.name}, current_doc={current_path}, 기준id={record.style_id}"
                 )
+                messagebox.showwarning(
+                    "스타일 이름 매칭 실패",
+                    "현재 문서에서 같은 이름의 스타일을 찾지 못해 적용을 중단했습니다.\n\n"
+                    "스타일 번호로 대신 적용하면 다른 스타일이 적용될 수 있습니다.",
+                )
+                return
 
             ok = self.execute_style_record(target_record)
             self.log(
                 "스타일 적용 요청: "
                 f"name={record.name}, 기준id={record.style_id}, 현재문서id={target_record.style_id}, "
+                f"현재문서index={target_record.style_index}, "
                 f"type={target_record.style_type}, result={ok}"
             )
             for line in describe_hwp(self.hwp):
@@ -3344,6 +3568,110 @@ class MvpApp(tk.Tk):
         end = (int(result[4]), int(result[5]), int(result[6]))
         return start, end
 
+    def selected_paragraph_range(self) -> tuple[int, int, int] | None:
+        positions = self.get_selected_text_positions()
+        if positions is None:
+            return None
+        start, end = positions
+        if start[0] != end[0]:
+            return None
+        first_para = start[1]
+        last_para = end[1]
+        if end[2] == 0 and last_para > first_para:
+            last_para -= 1
+        if last_para < first_para:
+            return None
+        return start[0], first_para, last_para
+
+    def parse_hwp_get_text_result(self, result) -> tuple[int | None, str]:
+        if isinstance(result, str):
+            return None, result
+        if isinstance(result, (tuple, list)):
+            status = next((int(value) for value in result if isinstance(value, int)), None)
+            text = next((value for value in result if isinstance(value, str)), "")
+            return status, text
+        if isinstance(result, int):
+            return result, ""
+        return None, ""
+
+    def read_current_paragraph_text(self, list_id: int, para: int) -> str | None:
+        original_pos = self.get_hwp_pos_by_set()
+        parts: list[str] = []
+        try:
+            if not self.set_hwp_pos((list_id, para, 0)):
+                return None
+            try:
+                init_ok = self.hwp.InitScan(0, 0x0010 | 0x0003, para, 0, para, 0)
+            except TypeError:
+                init_ok = self.hwp.InitScan(0, 0x0010 | 0x0003)
+            if not init_ok:
+                return None
+            try:
+                for _ in range(200):
+                    status, text = self.parse_hwp_get_text_result(self.hwp.GetText())
+                    if text:
+                        parts.append(text)
+                    if status in (0, 1, 101, 102):
+                        break
+                    if status == 3 and not text:
+                        break
+            finally:
+                try:
+                    self.hwp.ReleaseScan()
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.debug(f"[paragraph-text] 문단 읽기 실패 para={para}: {type(exc).__name__}: {exc}")
+            return None
+        finally:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+        text = "".join(parts).replace("\r\n", "\n").replace("\r", "\n")
+        return text.split("\n", 1)[0]
+
+    def get_current_heading_string(self) -> str:
+        try:
+            return safe_str(self.hwp.GetHeadingString())
+        except Exception as exc:
+            self.debug(f"[paragraph-heading] GetHeadingString 실패: {type(exc).__name__}: {exc}")
+            return ""
+
+    def clear_current_paragraph_heading(self) -> bool:
+        try:
+            heading = self.get_current_heading_string()
+            pset = self.hwp.HParameterSet.HParaShape
+            default_ok = self.hwp.HAction.GetDefault("ParagraphShape", pset.HSet)
+            current_heading_type = int(getattr(pset, "HeadingType", 0))
+            if not heading and current_heading_type == 0:
+                return False
+            pset.HeadingType = 0
+            ok = bool(self.hwp.HAction.Execute("ParagraphShape", pset.HSet))
+            self.debug(
+                f"[paragraph-heading] 제거 default={default_ok}, "
+                f"heading={heading!r}, type={current_heading_type}, result={ok}"
+            )
+            return ok
+        except Exception as exc:
+            self.debug(f"[paragraph-heading] 제거 실패: {type(exc).__name__}: {exc}")
+            return False
+
+    def delete_hwp_text_range(self, list_id: int, para: int, start_pos: int, end_pos: int) -> bool:
+        if end_pos <= start_pos:
+            return False
+        try:
+            if not self.set_hwp_pos((list_id, para, start_pos)):
+                return False
+            if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(para, start_pos, para, end_pos):
+                return self.run_hwp_command("Delete")
+        except Exception as exc:
+            self.debug(f"[paragraph-delete] SelectText 실패 para={para}: {type(exc).__name__}: {exc}")
+        if not self.set_hwp_pos((list_id, para, start_pos)):
+            return False
+        for _ in range(end_pos - start_pos):
+            if not self.run_hwp_command("MoveSelRight"):
+                return False
+        return self.run_hwp_command("Delete")
+
     def reselect_hwp_text(self, start: tuple[int, int, int], text: str) -> bool:
         if not text or not self.set_hwp_pos(start):
             return False
@@ -3575,22 +3903,20 @@ class MvpApp(tk.Tk):
     ) -> tuple[int, int] | None:
         if len(addresses) < 2:
             return None
-        current_address = self.get_current_cell_address()
-        if current_address is None:
-            return None
-        if not self.move_between_table_addresses(current_address, addresses[0]):
+        address_positions = self.snapshot_formula_address_positions(addresses)
+        if address_positions is None:
             return None
 
-        current_address = addresses[0]
         visited = 0
         changed = 0
-        for address in addresses:
-            if address != current_address:
-                if not self.move_between_table_addresses(current_address, address):
-                    return None
-                current_address = address
+        for address, cell_pos in address_positions:
+            if not self.set_hwp_pos_by_set(cell_pos):
+                self.debug(f"[cell-address-iterate] 셀 위치 복원 실패: address={address}")
+                return None
             current_text = self.read_current_cell_text()
             if current_text is None:
+                return None
+            if not self.set_hwp_pos_by_set(cell_pos):
                 return None
             source_text = strip_wrapping_blank_lines(current_text) if strip_wrapping_lines else current_text
             transformed = transform(source_text) if source_text else source_text
@@ -3605,6 +3931,49 @@ class MvpApp(tk.Tk):
             self.clear_hwp_selection()
         self.log(f"{label}: TableFormula 주소 순회 완료, visited={visited}, changed={changed}")
         return visited, changed
+
+    def snapshot_formula_address_positions(
+        self,
+        addresses: list[tuple[int, int]],
+    ) -> list[tuple[tuple[int, int], object]] | None:
+        self.clear_hwp_selection()
+        time.sleep(0.03)
+        current_address = self.get_current_cell_address()
+        if current_address is None:
+            return None
+        if current_address != addresses[0]:
+            if not self.move_between_table_addresses(current_address, addresses[0]):
+                return None
+            current_address = self.get_current_cell_address()
+            if current_address != addresses[0]:
+                self.debug(
+                    f"[cell-address-snapshot] 첫 셀 이동 검증 실패: "
+                    f"expected={addresses[0]}, actual={current_address}"
+                )
+                return None
+
+        address_positions: list[tuple[tuple[int, int], object]] = []
+        current_address = addresses[0]
+        for address in addresses:
+            if address != current_address:
+                if not self.move_between_table_addresses(current_address, address):
+                    return None
+                actual_address = self.get_current_cell_address()
+                if actual_address != address:
+                    self.debug(
+                        f"[cell-address-snapshot] 셀 이동 검증 실패: "
+                        f"from={current_address}, expected={address}, actual={actual_address}"
+                    )
+                    return None
+                current_address = actual_address
+            cell_pos = self.get_hwp_pos_by_set()
+            if cell_pos is None:
+                self.debug(f"[cell-address-snapshot] 셀 위치 저장 실패: address={address}")
+                return None
+            address_positions.append((address, cell_pos))
+            current_address = address
+        self.debug(f"[cell-address-snapshot] positions={len(address_positions)}, addresses={addresses}")
+        return address_positions
 
     def transform_selected_cells_by_iteration(
         self,
@@ -3764,173 +4133,48 @@ class MvpApp(tk.Tk):
         if range_info is None:
             range_info = self.get_selected_cell_range_by_formula()
 
-        if range_info is not None:
-            formula_addresses = list(range_info.get("addresses", []))
-            if len(formula_addresses) >= 2:
-                result = self.transform_formula_address_cells(
-                    label,
-                    formula_addresses,
-                    transform,
-                    strip_wrapping_lines=strip_wrapping_lines,
-                )
-                if result is not None:
-                    visited, iter_changed = result
-                    self.activate_hwp_window()
-                    self.log(
-                        f"{label}: TableFormula 주소 기반 셀 변환 완료, "
-                        f"rows={range_info['rows']}, cols={range_info['cols']}, "
-                        f"visited={visited}, changed={iter_changed}"
-                    )
-                    return True
-                messagebox.showwarning(
-                    label,
-                    "선택한 셀 주소 범위를 순회하지 못해 중단했습니다.\n\n"
-                    "TableFormula가 선택 셀 주소를 반환했으므로 다른 셀을 추측해서 훑지 않습니다.",
-                )
-                self.log(
-                    f"{label}: TableFormula 주소 기반 순회 실패, 감지 스캔 없이 중단, "
-                    f"addresses={formula_addresses}"
-                )
-                return True
-
         matrix = parse_cell_clipboard_matrix(text)
-        if not matrix:
+        if matrix and len(matrix) == 1 and len(matrix[0]) == 1:
             return False
 
-        if len(matrix) == 1 and len(matrix[0]) == 1:
+        formula_addresses = list(range_info.get("addresses", [])) if range_info is not None else []
+        if len(formula_addresses) < 2 and looks_like_single_copied_cell(text):
+            self.debug(f"[cell-matrix] {label}: 단일 셀 블록으로 보고 일반 텍스트 경로 사용")
             return False
-
-        if not is_rectangular_cell_matrix(matrix):
-            messagebox.showwarning(
+        if len(formula_addresses) >= 2:
+            result = self.transform_formula_address_cells(
                 label,
-                "선택한 셀 범위가 직사각형 표 데이터로 확인되지 않았습니다.\n\n"
-                "병합 셀이 포함된 범위이거나 일부 행의 열 수가 달라 중단했습니다.",
-            )
-            self.log(f"{label}: 행렬 셀 변환 중단, 비직사각형 matrix={cell_matrix_size(matrix)}")
-            return True
-
-        rows, cols = cell_matrix_size(matrix)
-        if range_info is not None and (range_info["rows"] != rows or range_info["cols"] != cols):
-            self.log(
-                f"{label}: 행렬 크기 참고값 불일치, "
-                f"selected={range_info['rows']}x{range_info['cols']}, clipboard={rows}x{cols}; "
-                "클립보드 행렬 기준으로 진행"
-            )
-        expected_values = flatten_cell_matrix(matrix, strip_wrapping_lines=strip_wrapping_lines)
-        target_rows, target_cols = rows, cols
-        if range_info is not None and range_info["rows"] * range_info["cols"] == len(expected_values):
-            target_rows, target_cols = int(range_info["rows"]), int(range_info["cols"])
-            if (target_rows, target_cols) != (rows, cols):
-                self.log(
-                    f"{label}: 클립보드가 {rows}x{cols}로 복사됐지만 "
-                    f"선택 범위 {target_rows}x{target_cols} 기준으로 셀 순회 시도"
-                )
-        try:
-            endpoint = self.hwp.GetPos()
-        except Exception as exc:
-            endpoint = None
-            self.debug(f"[cell-matrix] {label}: 선택 끝 위치 확인 실패: {type(exc).__name__}: {exc}")
-        endpoint_candidates: list[tuple[int, int, int]] = []
-        raw_endpoints = self.get_selected_pos_endpoints()
-        raw_candidates: list[tuple[int, int, int] | None] = [endpoint]
-        if raw_endpoints is not None:
-            raw_candidates.extend(raw_endpoints)
-        for candidate in raw_candidates:
-            if candidate is not None and candidate not in endpoint_candidates:
-                endpoint_candidates.append(candidate)
-
-        detected_endpoint: tuple[int, int, int] | None = None
-        detected_rect: dict | None = None
-        if endpoint_candidates:
-            preferred_shape = (target_rows, target_cols) if target_cols > 1 else None
-            only_preferred_shape = bool(range_info is not None and target_cols > 1)
-            for candidate in endpoint_candidates:
-                rect = self.detect_selected_cell_rect(
-                    candidate,
-                    expected_values,
-                    preferred_shape,
-                    only_preferred_shape=only_preferred_shape,
-                )
-                if rect is not None and int(rect["cols"]) > 1:
-                    detected_endpoint = candidate
-                    detected_rect = rect
-                    break
-                if detected_rect is None:
-                    detected_endpoint = candidate
-                    detected_rect = rect
-            rect = detected_rect
-            endpoint_for_rect = detected_endpoint
-        else:
-            rect = None
-            endpoint_for_rect = None
-
-        if endpoint_for_rect is not None and rect is not None and int(rect["cols"]) > 1:
-            target_rows, target_cols = int(rect["rows"]), int(rect["cols"])
-            if rect is not None and int(rect["rows"]) == target_rows and int(rect["cols"]) == target_cols:
-                result = self.transform_detected_cell_rect(
-                    label,
-                    endpoint_for_rect,
-                    rect,
-                    transform,
-                    strip_wrapping_lines=strip_wrapping_lines,
-                )
-                if result is not None:
-                    visited, iter_changed = result
-                    self.activate_hwp_window()
-                    self.log(
-                        f"{label}: 다열 셀 순회 완료, rows={target_rows}, cols={target_cols}, "
-                        f"visited={visited}, changed={iter_changed}"
-                    )
-                    return True
-                self.log(f"{label}: 다열 셀 순회 실패, TSV 행렬 붙여넣기 경로 시도")
-            if endpoint is not None:
-                self.set_hwp_pos(endpoint)
-        elif target_cols > 1:
-            self.log(f"{label}: 다열 셀 범위 감지 실패, TSV 행렬 붙여넣기 경로 시도")
-            if endpoint is not None:
-                self.set_hwp_pos(endpoint)
-        elif endpoint_candidates:
-            if endpoint is not None:
-                self.set_hwp_pos(endpoint)
-        if target_cols > 1 and cols == 1:
-            messagebox.showwarning(
-                label,
-                "선택한 여러 열 셀 범위를 실제 셀 위치로 확인하지 못했습니다.\n\n"
-                "병합 셀이 포함되었거나 선택 끝 위치가 불안정해 문서 변경을 중단했습니다.",
-            )
-            self.log(
-                f"{label}: 줄 단위 클립보드의 다열 셀 순회 중단, "
-                f"selected={target_rows}x{target_cols}, clipboard={rows}x{cols}"
-            )
-            return True
-        if cols == 1:
-            self.debug(f"[cell-matrix] {label}: 단일 열 선택은 셀별 순회 경로 사용, rows={rows}")
-            return self.transform_selected_cells_by_iteration(
-                label,
-                text,
+                formula_addresses,
                 transform,
                 strip_wrapping_lines=strip_wrapping_lines,
             )
+            if result is not None:
+                visited, iter_changed = result
+                self.activate_hwp_window()
+                self.log(
+                    f"{label}: TableFormula 주소 기반 셀 변환 완료, "
+                    f"rows={range_info['rows'] if range_info else '?'}, "
+                    f"cols={range_info['cols'] if range_info else '?'}, "
+                    f"visited={visited}, changed={iter_changed}"
+                )
+                return True
+            messagebox.showwarning(
+                label,
+                "선택한 셀 주소 범위를 순회하지 못해 중단했습니다.\n\n"
+                "TableFormula가 선택 셀 주소를 반환했으므로 다른 셀을 추측해서 훑지 않습니다.",
+            )
+            self.log(
+                f"{label}: TableFormula 주소 기반 순회 실패, 감지 스캔 없이 중단, "
+                f"addresses={formula_addresses}"
+            )
+            return True
 
-        transformed_matrix, changed = transform_cell_matrix(
-            matrix,
-            transform,
-            strip_wrapping_lines=strip_wrapping_lines,
+        messagebox.showwarning(
+            label,
+            "선택한 셀 주소 범위를 확인하지 못해 중단했습니다.\n\n"
+            "테이블 전체를 추측해서 훑지 않습니다. 셀 범위를 다시 블록 선택한 뒤 실행하세요.",
         )
-        if changed == 0:
-            self.activate_hwp_window()
-            self.log(f"{label}: 행렬 셀 변환 변경 없음, rows={rows}, cols={cols}")
-            return True
-
-        self.set_clipboard_text(cell_matrix_to_tsv(transformed_matrix))
-        paste_ok = self.run_hwp_command("Paste")
-        if paste_ok:
-            self.activate_hwp_window()
-            self.log(f"{label}: 행렬 셀 변환 완료, rows={rows}, cols={cols}, changed={changed}")
-            return True
-
-        messagebox.showwarning(label, "변환한 표 데이터를 클립보드에 넣었지만 한글 붙여넣기가 실패했습니다.")
-        self.log(f"{label}: 행렬 셀 변환 붙여넣기 실패, rows={rows}, cols={cols}, changed={changed}")
+        self.log(f"{label}: 셀 주소 스냅샷 없음, 테이블 추측 순회 중단")
         return True
 
     def transform_selected_text(
@@ -3950,7 +4194,8 @@ class MvpApp(tk.Tk):
         try:
             selected_positions = self.get_selected_text_positions() if reselect_after_paste else None
             pre_copy_cell_range = None
-            if allow_cell_iteration and self.is_selected_cell_block():
+            pre_copy_cell_block = allow_cell_iteration and self.is_selected_cell_block()
+            if pre_copy_cell_block:
                 pre_copy_cell_range = self.get_selected_cell_range_by_formula()
                 if pre_copy_cell_range is not None:
                     self.log(
@@ -3965,7 +4210,7 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(label, "한글에서 변환할 글자 영역을 먼저 선택하세요.")
                 self.log(f"{label}: 선택 텍스트 없음")
                 return
-            if allow_cell_iteration and self.transform_selected_cell_matrix(
+            if pre_copy_cell_block and self.transform_selected_cell_matrix(
                 label,
                 text,
                 transform,
@@ -4070,6 +4315,11 @@ class MvpApp(tk.Tk):
         )
 
     def clean_selected_outline_prefixes(self) -> None:
+        if not self.ensure_hwp():
+            return
+        if not self.is_selected_cell_block():
+            self.clean_selected_paragraph_outline_prefixes()
+            return
         self.transform_selected_text(
             "개요 기호 제거",
             remove_manual_outline_prefixes,
@@ -4079,6 +4329,53 @@ class MvpApp(tk.Tk):
             reselect_current_cell=True,
             reselect_after_paste=True,
         )
+
+    def clean_selected_paragraph_outline_prefixes(self) -> None:
+        label = "개요 기호 제거"
+        try:
+            paragraph_range = self.selected_paragraph_range()
+            if paragraph_range is None:
+                messagebox.showwarning(label, "한글에서 개요 기호를 제거할 문단 영역을 먼저 선택하세요.")
+                self.log(f"{label}: 문단 선택 범위 확인 실패")
+                return
+
+            list_id, first_para, last_para = paragraph_range
+            original_pos = self.get_hwp_pos_by_set()
+            self.clear_hwp_selection()
+            changed = 0
+            visited = 0
+            for para in range(first_para, last_para + 1):
+                if not self.set_hwp_pos((list_id, para, 0)):
+                    self.log(f"{label}: 문단 이동 실패 para={para}")
+                    continue
+                visited += 1
+                if self.clear_current_paragraph_heading():
+                    changed += 1
+
+                paragraph_text = self.read_current_paragraph_text(list_id, para)
+                if paragraph_text is None:
+                    self.log(f"{label}: 문단 텍스트 읽기 실패 para={para}")
+                    continue
+                prefix_length = manual_outline_prefix_length(paragraph_text)
+                if prefix_length == 0:
+                    continue
+                if self.delete_hwp_text_range(list_id, para, 0, prefix_length):
+                    changed += 1
+                else:
+                    self.log(f"{label}: 수동 기호 삭제 실패 para={para}, prefix={paragraph_text[:prefix_length]!r}")
+
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+            self.activate_hwp_window()
+            self.log(
+                f"{label}: 문단 순회 완료, paras={visited}, changed={changed}, "
+                f"range={first_para}-{last_para}"
+            )
+            if changed == 0:
+                messagebox.showinfo(label, "선택한 문단에서 제거할 개요 기호를 찾지 못했습니다.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
 
     def wrap_regulation_names_in_selection(self) -> None:
         label = "｢규정명｣"
