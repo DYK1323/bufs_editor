@@ -43,6 +43,7 @@ if Path.cwd().resolve() != ROOT:
 
 try:
     import tkinter as tk
+    import tkinter.font as tkfont
     from tkinter import ttk, messagebox
 except Exception as exc:  # pragma: no cover
     raise SystemExit(f"Tkinter를 불러오지 못했습니다: {exc}")
@@ -140,10 +141,17 @@ DEFAULT_TABLE_SETTINGS = {
         },
     },
     "table_margins": {
+        "cell_left": "2.0",
+        "cell_right": "2.0",
+        "cell_top": "2.0",
+        "cell_bottom": "2.0",
         "outside_left": "0.0",
         "outside_right": "0.0",
         "outside_top": "0.0",
         "outside_bottom": "0.0",
+    },
+    "markdown_table": {
+        "paragraph_style": "(적용 안 함)",
     },
     "caption_parser": {
         "pattern": DEFAULT_CAPTION_PATTERN,
@@ -1204,6 +1212,7 @@ class MvpApp(tk.Tk):
         self.bind_all("<Control-z>", self.on_global_undo)
         self.bind_all("<Control-Z>", self.on_global_undo)
         self.refresh_all()
+        self.after(700, self.warm_current_doc_style_cache)
 
     def _build_status_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
@@ -1214,7 +1223,7 @@ class MvpApp(tk.Tk):
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(8, 0))
-        ttk.Button(buttons, text="한글 연결 확인", command=self.check_hwp).pack(side="left")
+        ttk.Button(buttons, text="한글 다시 연결", command=self.check_hwp).pack(side="left")
         ttk.Button(buttons, text="대상 확인", command=self.show_current_target).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="테스트 문서 열기", command=self.open_style_test_copy).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="자산 다시 읽기", command=self.refresh_all).pack(side="left", padx=(8, 0))
@@ -1312,47 +1321,81 @@ class MvpApp(tk.Tk):
         for child in frame.winfo_children():
             child.destroy()
 
-        ttk.Button(frame, text="표 설정", command=self.open_table_settings_window).pack(fill="x", pady=(0, 6))
-        ttk.Button(frame, text="markdown 표 → 한글 표", command=self.convert_selected_markdown_table).pack(
-            fill="x", pady=(0, 12)
-        )
+        default_font = tkfont.nametofont("TkDefaultFont")
+        section_label_font = default_font.copy()
+        section_label_font.configure(size=max(1, int(round(default_font.cget("size") * 1.5))))
+        title_button_font = default_font.copy()
+        title_button_font.configure(weight="bold")
+        self.table_section_label_font = section_label_font
+        self.table_title_button_font = title_button_font
 
-        table_action_row = ttk.Frame(frame)
-        table_action_row.pack(fill="x", pady=(0, 6))
-        ttk.Button(table_action_row, text="셀 속성 복사/적용", command=self.apply_cell_shape_copy_paste).pack(
-            side="left", fill="x", expand=True
+        bottom_frame = ttk.Frame(frame)
+        bottom_frame.pack(side="bottom", fill="x")
+        ttk.Button(bottom_frame, text="markdown 표 → 한글 표", command=self.convert_selected_markdown_table).pack(
+            fill="x", pady=(0, 6), ipady=8
         )
-        ttk.Button(table_action_row, text="표 바깥 여백 적용", command=self.apply_table_outside_margins).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
-        ttk.Button(table_action_row, text="쪽 너비 맞춤", command=self.apply_table_page_width).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
+        ttk.Button(bottom_frame, text="표 설정", command=self.open_table_settings_window).pack(fill="x", ipady=8)
 
-        caption_row = ttk.Frame(frame)
-        caption_row.pack(fill="x", pady=(0, 12))
-        ttk.Button(caption_row, text="캡션원클릭", command=self.cut_title_and_apply_to_next_table_caption).pack(
-            side="left", fill="x", expand=True
-        )
-        ttk.Button(caption_row, text="표 제목 Cut", command=self.cut_selected_table_caption_title).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
-        ttk.Button(caption_row, text="캡션 조립", command=self.apply_pending_table_caption_to_next_table).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
-        )
+        content = ttk.Frame(frame)
+        content.pack(side="top", fill="both", expand=True)
 
-        ttk.Label(frame, text="셀 배경색").pack(anchor="w")
-        bg_row = ttk.Frame(frame)
+        def section_label(text: str) -> None:
+            ttk.Label(content, text=text, font=section_label_font).pack(anchor="w")
+
+        section_label("셀 배경색")
+        bg_row = ttk.Frame(content)
         bg_row.pack(fill="x", pady=(6, 12))
         self.create_cell_fill_chips(bg_row)
 
-        ttk.Label(frame, text="글자색").pack(anchor="w")
-        text_row = ttk.Frame(frame)
+        section_label("글자색")
+        text_row = ttk.Frame(content)
         text_row.pack(fill="x", pady=(6, 12))
         self.create_color_chips(text_row, self.apply_text_color)
 
-        ttk.Label(frame, text="표 스타일").pack(anchor="w")
-        table_style_icons = ttk.Frame(frame)
+        section_label("여백/캡션")
+        table_action_row = ttk.Frame(content)
+        table_action_row.pack(fill="x", pady=(6, 12))
+        ttk.Button(table_action_row, text="셀여백", command=self.apply_table_cell_margins).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(table_action_row, text="표여백", command=self.apply_table_outside_margins).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        ttk.Button(table_action_row, text="너비맞추기", command=self.apply_table_page_width).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        ttk.Button(table_action_row, text="캡션원클릭", command=self.cut_title_and_apply_to_next_table_caption).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        for button in table_action_row.winfo_children():
+            button.pack_configure(ipady=8)
+
+        section_label("표내용 스타일")
+        table_style_buttons = ttk.Frame(content)
+        table_style_buttons.pack(fill="x", pady=(6, 12))
+        table_content_styles = self.table_content_style_records()
+        if table_content_styles:
+            for index, record in enumerate(table_content_styles):
+                row, col = divmod(index, 4)
+                ttk.Button(
+                    table_style_buttons,
+                    text=self.table_content_style_button_label(record),
+                    command=lambda name=record.name: self.apply_table_content_style(name),
+                ).grid(
+                    row=row,
+                    column=col,
+                    padx=(0 if col == 0 else 6, 0),
+                    pady=(0 if row == 0 else 6, 0),
+                    sticky="ew",
+                    ipady=8,
+                )
+            for col in range(4):
+                table_style_buttons.columnconfigure(col, weight=1)
+        else:
+            ttk.Label(table_style_buttons, text="표내용- 스타일 없음").pack(anchor="w")
+
+        section_label("표 스타일")
+        table_style_icons = ttk.Frame(content)
         table_style_icons.pack(fill="x", pady=(6, 12))
         self.create_icon_preset_grid(
             table_style_icons,
@@ -1361,8 +1404,8 @@ class MvpApp(tk.Tk):
             button_size=TABLE_STYLE_ICON_BUTTON_SIZE,
         )
 
-        ttk.Label(frame, text="테두리").pack(anchor="w")
-        border_icons = ttk.Frame(frame)
+        section_label("테두리")
+        border_icons = ttk.Frame(content)
         border_icons.pack(fill="x", pady=(6, 12))
         self.create_icon_preset_grid(
             border_icons,
@@ -1371,7 +1414,40 @@ class MvpApp(tk.Tk):
             button_size=TABLE_BORDER_ICON_BUTTON_SIZE,
         )
 
-        ttk.Button(frame, text="제목셀 자동화", command=self.apply_title_cell_preset).pack(fill="x", pady=(0, 12))
+        title_bg = self.palette_color_or_rgb("셀배경", (220, 221, 221)).hex_value
+        title_button = tk.Button(
+            content,
+            text="제목셀 자동화",
+            command=self.apply_title_cell_preset,
+            bg=title_bg,
+            activebackground=title_bg,
+            fg="#000000",
+            font=title_button_font,
+            relief="raised",
+            bd=1,
+        )
+        title_button.pack(fill="x", pady=(0, 12), ipady=8)
+
+    def table_content_style_records(self) -> list[StyleRecord]:
+        prefix = normalize_style_name("표내용-")
+        return [
+            record
+            for record in self.style_records
+            if record.style_type in {"PARA", "CHAR"} and normalize_style_name(record.name).startswith(prefix)
+        ]
+
+    def table_content_style_button_label(self, record: StyleRecord) -> str:
+        name = normalize_style_name(record.name)
+        prefix = normalize_style_name("표내용-")
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+        return name
+
+    def apply_table_content_style(self, style_name: str) -> None:
+        if not self.ensure_hwp():
+            return
+        ok = self.apply_style_by_name(style_name)
+        self.log(f"표내용 스타일 적용: {style_name}, result={ok}")
 
     def create_cell_fill_chips(self, parent: ttk.Frame) -> None:
         none_button = tk.Button(
@@ -1602,18 +1678,46 @@ class MvpApp(tk.Tk):
             combo(row, ("title_cell", "borders", key), current, preset_choices)
 
         ttk.Separator(body).pack(fill="x", pady=12)
-        ttk.Label(body, text="표 바깥 여백(mm)").pack(anchor="w")
+        ttk.Label(body, text="Markdown 표").pack(anchor="w")
+        markdown_table = settings["markdown_table"]
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="기본 문단 스타일", width=14).pack(side="left")
+        combo(
+            row,
+            ("markdown_table", "paragraph_style"),
+            markdown_table.get("paragraph_style", "(적용 안 함)"),
+            ["(적용 안 함)", *para_styles],
+            width=22,
+        )
+
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="셀 안 여백(mm)").pack(anchor="w")
         margins = settings["table_margins"]
-        margin_labels = [
+        cell_margin_labels = [
+            ("cell_left", "셀 안 좌"),
+            ("cell_right", "셀 안 우"),
+            ("cell_top", "셀 안 상"),
+            ("cell_bottom", "셀 안 하"),
+        ]
+        for index in range(0, len(cell_margin_labels), 2):
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=(6, 0))
+            for key, label in cell_margin_labels[index : index + 2]:
+                ttk.Label(row, text=label, width=12).pack(side="left")
+                entry(row, ("table_margins", key), str(margins.get(key, "0.0")), width=7)
+
+        ttk.Label(body, text="표 바깥 여백(mm)").pack(anchor="w", pady=(10, 0))
+        outside_margin_labels = [
             ("outside_left", "표 바깥 좌"),
             ("outside_right", "표 바깥 우"),
             ("outside_top", "표 바깥 상"),
             ("outside_bottom", "표 바깥 하"),
         ]
-        for index in range(0, len(margin_labels), 2):
+        for index in range(0, len(outside_margin_labels), 2):
             row = ttk.Frame(body)
             row.pack(fill="x", pady=(6, 0))
-            for key, label in margin_labels[index : index + 2]:
+            for key, label in outside_margin_labels[index : index + 2]:
                 ttk.Label(row, text=label, width=12).pack(side="left")
                 entry(row, ("table_margins", key), str(margins.get(key, "0.0")), width=7)
 
@@ -1686,10 +1790,10 @@ class MvpApp(tk.Tk):
                     try:
                         number = float(value)
                     except ValueError:
-                        messagebox.showwarning("여백 값 확인", "표 바깥 여백은 mm 단위 숫자로 입력하세요.", parent=window)
+                        messagebox.showwarning("여백 값 확인", "셀/표 여백은 mm 단위 숫자로 입력하세요.", parent=window)
                         return
                     if number < 0:
-                        messagebox.showwarning("여백 값 확인", "표 바깥 여백은 0 이상으로 입력하세요.", parent=window)
+                        messagebox.showwarning("여백 값 확인", "셀/표 여백은 0 이상으로 입력하세요.", parent=window)
                         return
                     value = f"{number:g}"
                 if path[:1] == ("caption_parser",) and path[-1] == "pattern":
@@ -1830,7 +1934,10 @@ class MvpApp(tk.Tk):
 
         self.style_records = apply_saved_style_order(read_style_records())
         self.populate_style_list()
+        self.build_table_tab_content()
         self.log(f"스타일 이름 수: {len(self.style_records)}")
+        if self.hwp is not None:
+            self.refresh_current_doc_style_map(force=True)
 
         logos = list_logos()
         self.populate_logo_chips(logos)
@@ -1947,6 +2054,9 @@ class MvpApp(tk.Tk):
         try:
             self.debug("[hwp] COM 연결 시작")
             self.hwp = connect_hwp()
+            self.current_doc_style_path = None
+            self.current_doc_style_map = {}
+            self.current_doc_style_norm_map = {}
             self.debug("[hwp] COM 연결 성공")
             for line in LAST_HWP_CONNECTION_LOG:
                 self.debug(line)
@@ -1955,6 +2065,27 @@ class MvpApp(tk.Tk):
             self.log(f"한글 COM 연결 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror("한글 연결 실패", str(exc))
             return False
+
+    def ensure_current_doc_style_cache(self) -> None:
+        if self.__dict__.get("current_doc_style_map"):
+            return
+        self.refresh_current_doc_style_map(force=True)
+
+    def warm_current_doc_style_cache(self) -> None:
+        if self.current_doc_style_map:
+            return
+        try:
+            if self.hwp is None:
+                self.debug("[style-map] 시작 캐시 예열: 한글 연결")
+                self.hwp = connect_hwp()
+                self.current_doc_style_path = None
+                self.current_doc_style_map = {}
+                self.current_doc_style_norm_map = {}
+            self.refresh_current_doc_style_map(force=True)
+            if self.current_doc_style_map:
+                self.debug(f"[style-map] 시작 캐시 예열 완료: {len(self.current_doc_style_map)}개")
+        except Exception as exc:
+            self.debug(f"[style-map] 시작 캐시 예열 생략: {type(exc).__name__}: {exc}")
 
     def hwp_rgb(self, color: PaletteColor) -> int:
         red, green, blue = color.rgb
@@ -1986,6 +2117,8 @@ class MvpApp(tk.Tk):
         for action in action_names:
             last_action = action
             try:
+                self.activate_hwp_window()
+                time.sleep(0.03)
                 ok = bool(self.hwp.HAction.Execute(action, hset))
             except Exception as exc:
                 self.debug(f"[hwp-action] {action} 실패: {type(exc).__name__}: {exc}")
@@ -2114,18 +2247,12 @@ class MvpApp(tk.Tk):
 
     def execute_style_record(self, record: StyleRecord) -> bool:
         pset = self.hwp.HParameterSet.HStyle
-        default_ok = self.hwp.HAction.GetDefault("Style", pset.HSet)
-        before_apply = pset.Apply
-        self.debug(f"[style] GetDefault result={default_ok}, before Apply={before_apply}")
-        self.debug(
-            f"[style] Execute target name={record.name}, id={record.style_id}, "
-            f"index={record.style_index}, type={record.style_type}"
-        )
+        self.hwp.HAction.GetDefault("Style", pset.HSet)
         self.configure_style_apply_set(pset, record.style_id)
         return bool(self.hwp.HAction.Execute("Style", pset.HSet))
 
     def apply_style_by_name(self, style_name: str) -> bool:
-        self.refresh_current_doc_style_map(force=True)
+        self.ensure_current_doc_style_cache()
         record = self.find_current_doc_style_record(style_name)
         if record is None:
             self.debug(f"[title-cell] 현재 문서에서 스타일 이름 매칭 실패, 적용 중단: {style_name}")
@@ -2146,7 +2273,7 @@ class MvpApp(tk.Tk):
 
     def apply_first_style_containing(self, text: str) -> bool:
         needle = normalize_style_name(text)
-        self.refresh_current_doc_style_map(force=True)
+        self.ensure_current_doc_style_cache()
         candidates = list(self.current_doc_style_map.values())
         if not candidates:
             self.debug(f"[style] 현재 문서 스타일 맵이 비어 있어 포함 이름 적용 중단: {text}")
@@ -2304,7 +2431,7 @@ class MvpApp(tk.Tk):
             self.set_com_attr(target, "ColorVert", color)
 
     def border_action_for_preset(self, preset_name: str) -> tuple[str, ...]:
-        return ("CellBorderFill", "CellBorder")
+        return ("CellZoneBorderFill", "CellZoneBorder", "CellBorderFill", "CellBorder")
 
     def apply_table_border_preset(self, preset_name: str) -> None:
         if not self.ensure_hwp():
@@ -2504,6 +2631,24 @@ class MvpApp(tk.Tk):
             self.log(f"표 바깥 여백 적용 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror("표 바깥 여백 적용 실패", str(exc))
 
+    def apply_table_cell_margins(self) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            action, ok = self.set_table_cell_margins()
+            margins = self.table_settings["table_margins"]
+            self.log(
+                "셀 안 여백 적용: "
+                f"좌{margins['cell_left']} 우{margins['cell_right']} "
+                f"상{margins['cell_top']} 하{margins['cell_bottom']}mm, "
+                f"action={action}, result={ok}"
+            )
+            if not ok:
+                messagebox.showwarning("셀 안 여백 적용 확인", "표 셀 안에 커서를 두거나 셀 범위를 선택한 상태인지 확인하세요.")
+        except Exception as exc:
+            self.log(f"셀 안 여백 적용 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("셀 안 여백 적용 실패", str(exc))
+
     def current_page_text_width(self) -> int:
         sec = self.hwp.HParameterSet.HSecDef
         default_ok = bool(self.hwp.HAction.GetDefault("PageSetup", sec.HSet))
@@ -2615,8 +2760,91 @@ class MvpApp(tk.Tk):
             messagebox.showerror("표 쪽 너비 맞춤 실패", str(exc))
 
     def select_current_table_object(self) -> bool:
+        self.activate_hwp_window()
+        time.sleep(0.03)
         if self.run_hwp_command("SelectCtrlReverse"):
             time.sleep(0.03)
+            return True
+        return False
+
+    def select_selected_table_first_cell(self) -> bool:
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        if self.run_hwp_command("ShapeObjTableSelCell"):
+            time.sleep(0.03)
+            return True
+        return False
+
+    def is_in_table_cell(self) -> bool:
+        return self.get_current_cell_address() is not None
+
+    def move_to_nearby_table_cell(self) -> bool:
+        if self.is_in_table_cell():
+            return True
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        for command in ("MoveLeft", "MoveUp", "MoveRight"):
+            for _ in range(3):
+                if not self.run_hwp_command(command):
+                    break
+                time.sleep(0.03)
+                if self.is_in_table_cell():
+                    self.debug(f"[table-cell-select] nearby cell entered by {command}")
+                    return True
+        return False
+
+    def select_current_table_all_cells(self, row_count: int | None = None, col_count: int | None = None) -> bool:
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        if not self.has_selected_object():
+            self.select_current_table_object()
+        self.select_selected_table_first_cell()
+        if not self.is_in_table_cell():
+            self.move_to_nearby_table_cell()
+
+        if row_count is not None and col_count is not None and row_count > 0 and col_count > 0:
+            self.activate_hwp_window()
+            time.sleep(0.03)
+            block_ok = self.run_hwp_command("TableCellBlock")
+            time.sleep(0.03)
+            if not block_ok and not self.is_selected_cell_block():
+                self.debug("[table-cell-select] TableCellBlock 실패 및 셀 블록 상태 아님")
+                return False
+            if not self.run_hwp_command("TableCellBlockExtend"):
+                return False
+            time.sleep(0.03)
+            for _ in range(max(0, col_count - 1)):
+                if not self.run_hwp_command("TableRightCell"):
+                    return False
+                time.sleep(0.03)
+            for _ in range(max(0, row_count - 1)):
+                if not self.run_hwp_command("TableLowerCell"):
+                    return False
+                time.sleep(0.03)
+            if not self.is_selected_cell_block():
+                self.debug(
+                    "[table-cell-select] SelectionMode 확인 실패, "
+                    f"rows={row_count}, cols={col_count}, 명령 성공 기준으로 계속 진행"
+                )
+            return True
+
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        block_ok = self.run_hwp_command("TableCellBlock")
+        time.sleep(0.03)
+        if not block_ok and not self.is_selected_cell_block():
+            self.debug("[table-cell-select] TableCellBlock fallback 실패 및 셀 블록 상태 아님")
+            return False
+        if not self.run_hwp_command("TableCellBlockExtend"):
+            return False
+        time.sleep(0.03)
+        col_ok = self.run_hwp_command("TableCellBlockCol")
+        time.sleep(0.03)
+        row_ok = self.run_hwp_command("TableCellBlockRow")
+        time.sleep(0.03)
+        if col_ok and row_ok:
+            if not self.is_selected_cell_block():
+                self.debug("[table-cell-select] SelectionMode 확인 실패, 전체 행/열 명령 성공 기준으로 계속 진행")
             return True
         return False
 
@@ -2670,6 +2898,115 @@ class MvpApp(tk.Tk):
             applied = self.set_com_attr(pset, attr, value)
             self.debug(f"[table-outside-margin] {attr}={value}, set={applied}")
         return self.execute_first_hwp_action(("TablePropertyDialog", "ShapeObjDialog"), pset.HSet)
+
+    def table_cell_margin_values(self) -> dict[str, int]:
+        margins = self.table_settings["table_margins"]
+        return {
+            "MarginLeft": self.mm_to_hwpunit(margins["cell_left"]),
+            "MarginRight": self.mm_to_hwpunit(margins["cell_right"]),
+            "MarginTop": self.mm_to_hwpunit(margins["cell_top"]),
+            "MarginBottom": self.mm_to_hwpunit(margins["cell_bottom"]),
+        }
+
+    def table_default_cell_margin_values(self) -> dict[str, int]:
+        margins = self.table_settings["table_margins"]
+        return {
+            "CellMarginLeft": self.mm_to_hwpunit(margins["cell_left"]),
+            "CellMarginRight": self.mm_to_hwpunit(margins["cell_right"]),
+            "CellMarginTop": self.mm_to_hwpunit(margins["cell_top"]),
+            "CellMarginBottom": self.mm_to_hwpunit(margins["cell_bottom"]),
+        }
+
+    def set_shape_table_cell_margins(self, shape_cell, log_prefix: str) -> bool:
+        ok = self.set_parameter_item(shape_cell, "HasMargin", 1, log_prefix)
+        for item, value in self.table_cell_margin_values().items():
+            applied = self.set_parameter_item(shape_cell, item, value, log_prefix)
+            self.debug(f"[{log_prefix}] ShapeTableCell.{item}={value}, set={applied}")
+            ok = applied and ok
+        return ok
+
+    def set_table_default_cell_margins(self, target, log_prefix: str) -> bool:
+        ok = True
+        for item, value in self.table_default_cell_margin_values().items():
+            applied = self.set_parameter_item(target, item, value, log_prefix)
+            self.debug(f"[{log_prefix}] {item}={value}, set={applied}")
+            ok = applied and ok
+        return ok
+
+    def set_table_cell_margins_by_cell_shape(self) -> tuple[str, bool]:
+        try:
+            cell_shape = self.hwp.CellShape
+        except Exception as exc:
+            self.debug(f"[cell-margin-cell-shape] CellShape 읽기 실패: {type(exc).__name__}: {exc}")
+            return "CellShape", False
+
+        targets = []
+        cell = self.get_parameter_child(cell_shape, "Cell", "cell-margin-cell-shape")
+        if cell is not None:
+            targets.append(cell)
+
+        set_ok = False
+        for target in targets:
+            set_ok = self.set_shape_table_cell_margins(target, "cell-margin-cell-shape") or set_ok
+        set_ok = self.set_table_default_cell_margins(cell_shape, "cell-margin-cell-shape") or set_ok
+        if cell is not None:
+            self.set_parameter_item(cell_shape, "Cell", cell, "cell-margin-cell-shape")
+        commit_ok = self.commit_cell_shape(cell_shape)
+        self.debug(f"[cell-margin-cell-shape] set={set_ok}, commit={commit_ok}")
+        return "CellShape", set_ok and commit_ok
+
+    def set_table_cell_margins_by_create_action(self) -> tuple[str, bool]:
+        action = self.hwp.CreateAction("TablePropertyDialog")
+        pset = action.CreateSet()
+        default_ok = bool(action.GetDefault(pset))
+        self.set_parameter_item(pset, "ShapeType", 3, "cell-margin-create-action")
+        self.set_parameter_item(pset, "ShapeCellSize", 0, "cell-margin-create-action")
+        self.set_table_default_cell_margins(pset, "cell-margin-create-action")
+        shape_cell = pset.Item("ShapeTableCell")
+        set_ok = self.set_shape_table_cell_margins(shape_cell, "cell-margin-create-action")
+        executed = bool(action.Execute(pset))
+        self.debug(
+            f"[cell-margin-create-action] GetDefault={default_ok}, "
+            f"set={set_ok}, Execute={executed}"
+        )
+        return "CreateAction(TablePropertyDialog)", default_ok and set_ok and executed
+
+    def set_table_cell_margins_by_parameter_set(self) -> tuple[str, bool]:
+        pset = self.hwp.HParameterSet.HShapeObject
+        default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", pset.HSet))
+        self.set_parameter_item(pset.HSet, "ShapeType", 3, "cell-margin-parameter-set")
+        self.set_parameter_item(pset.HSet, "ShapeCellSize", 0, "cell-margin-parameter-set")
+        self.set_table_default_cell_margins(pset, "cell-margin-parameter-set")
+        shape_cell = self.get_parameter_child(pset, "ShapeTableCell", "cell-margin-parameter-set")
+        if shape_cell is None:
+            return "TablePropertyDialog", False
+        set_ok = self.set_shape_table_cell_margins(shape_cell, "cell-margin-parameter-set")
+        action_name, executed = self.execute_first_hwp_action(("TablePropertyDialog", "ShapeObjDialog"), pset.HSet)
+        self.debug(
+            f"[cell-margin-parameter-set] GetDefault={default_ok}, "
+            f"set={set_ok}, action={action_name}, Execute={executed}"
+        )
+        return action_name, default_ok and set_ok and executed
+
+    def set_table_cell_margins(self) -> tuple[str, bool]:
+        results: list[tuple[str, bool]] = []
+        action_name, ok = self.set_table_cell_margins_by_cell_shape()
+        results.append((action_name, ok))
+        try:
+            action_name, ok = self.set_table_cell_margins_by_create_action()
+            results.append((action_name, ok))
+        except Exception as exc:
+            self.debug(f"[cell-margin-create-action] 실패: {type(exc).__name__}: {exc}")
+        try:
+            action_name, ok = self.set_table_cell_margins_by_parameter_set()
+            results.append((action_name, ok))
+        except Exception as exc:
+            self.debug(f"[cell-margin-parameter-set] 실패: {type(exc).__name__}: {exc}")
+        self.debug(f"[cell-margin] results={results}")
+        if any(ok for _action_name, ok in results):
+            return "+".join(action_name for action_name, _ok in results), True
+        return (results[-1][0] if results else "TablePropertyDialog"), False
+
 
     def set_table_border_preset(self, preset_name: str) -> tuple[str, bool]:
         pset = self.hwp.HParameterSet.HCellBorderFill
@@ -2861,6 +3198,10 @@ class MvpApp(tk.Tk):
     def check_hwp(self) -> None:
         try:
             self.hwp = connect_hwp()
+            self.current_doc_style_path = None
+            self.current_doc_style_map = {}
+            self.current_doc_style_norm_map = {}
+            self.refresh_current_doc_style_map(force=True)
             self.log(["한글 COM 연결 성공", *LAST_HWP_CONNECTION_LOG, *describe_hwp(self.hwp)])
         except Exception as exc:
             messagebox.showerror("한글 연결 실패", str(exc))
@@ -2885,7 +3226,7 @@ class MvpApp(tk.Tk):
         try:
             if self.hwp is None:
                 self.hwp = connect_hwp()
-            self.refresh_current_doc_style_map()
+            self.refresh_current_doc_style_map(force=True)
             self.log(["현재 한글 적용 대상", *LAST_HWP_CONNECTION_LOG, *describe_hwp(self.hwp)])
         except Exception as exc:
             self.log(f"현재 대상 확인 실패: {type(exc).__name__}: {exc}")
@@ -2919,7 +3260,7 @@ class MvpApp(tk.Tk):
             self.current_doc_style_path = None
             self.current_doc_style_map = {}
             self.current_doc_style_norm_map = {}
-            self.refresh_current_doc_style_map()
+            self.refresh_current_doc_style_map(force=True)
             if ok:
                 messagebox.showinfo(
                     "테스트 문서 열림",
@@ -3026,12 +3367,13 @@ class MvpApp(tk.Tk):
             if self.hwp is None:
                 self.debug("[hwp] COM 연결 시작")
                 self.hwp = connect_hwp()
+                self.current_doc_style_path = None
+                self.current_doc_style_map = {}
+                self.current_doc_style_norm_map = {}
                 self.debug("[hwp] COM 연결 성공")
                 for line in LAST_HWP_CONNECTION_LOG:
                     self.debug(line)
-                for line in describe_hwp(self.hwp):
-                    self.debug(f"[hwp] {line}")
-            self.refresh_current_doc_style_map(force=True)
+            self.ensure_current_doc_style_cache()
             target_record = self.find_current_doc_style_record(record.name)
             if target_record is None:
                 current_path = self.get_current_hwp_path()
@@ -3053,8 +3395,6 @@ class MvpApp(tk.Tk):
                 f"현재문서index={target_record.style_index}, "
                 f"type={target_record.style_type}, result={ok}"
             )
-            for line in describe_hwp(self.hwp):
-                self.debug(f"[hwp-after] {line}")
             if not ok:
                 messagebox.showwarning(
                     "스타일 적용 결과 확인 필요",
@@ -3285,7 +3625,12 @@ class MvpApp(tk.Tk):
             self.debug(f"[hwp-focus] 한글 창 활성화 실패: {type(exc).__name__}: {exc}")
             return False
 
-    def auto_confirm_dialog(self, title_part: str, timeout_sec: float = 2.0) -> None:
+    def auto_confirm_dialog(
+        self,
+        title_part: str,
+        timeout_sec: float = 2.0,
+        preferred_texts: tuple[str, ...] = (),
+    ) -> None:
         if win32gui is None or win32con is None:
             return
 
@@ -3307,6 +3652,24 @@ class MvpApp(tk.Tk):
                     if matches:
                         hwnd = matches[0]
                         clicked = False
+                        preferred_clicked = False
+
+                        def click_preferred(child, _extra):
+                            nonlocal preferred_clicked
+                            try:
+                                text = win32gui.GetWindowText(child) or ""
+                                if any(preferred in text for preferred in preferred_texts):
+                                    win32gui.PostMessage(child, win32con.BM_CLICK, 0, 0)
+                                    preferred_clicked = True
+                            except Exception:
+                                pass
+
+                        if preferred_texts:
+                            try:
+                                win32gui.EnumChildWindows(hwnd, click_preferred, None)
+                                time.sleep(0.05)
+                            except Exception:
+                                pass
 
                         def click_ok(child, _extra):
                             nonlocal clicked
@@ -3324,7 +3687,10 @@ class MvpApp(tk.Tk):
                             pass
                         if not clicked:
                             win32gui.PostMessage(hwnd, win32con.WM_COMMAND, 1, 0)
-                        self.debug(f"[dialog-auto-confirm] {title_part} 확인 처리")
+                        self.debug(
+                            f"[dialog-auto-confirm] {title_part} 확인 처리, "
+                            f"preferred={preferred_texts}, preferred_clicked={preferred_clicked}"
+                        )
                         return
                 except Exception as exc:
                     self.debug(f"[dialog-auto-confirm] {title_part} 확인 실패: {type(exc).__name__}: {exc}")
@@ -3717,26 +4083,38 @@ class MvpApp(tk.Tk):
 
     def paste_html_original_format(self) -> bool:
         try:
+            option = self.hwp.HParameterSet.HSelectionOpt
+            paste_default = self.hwp.HAction.GetDefault("Paste", option.HSet)
+            for option_value in (5, 0):
+                try:
+                    option.Option = option_value
+                except Exception:
+                    pass
+                self.auto_confirm_dialog("HTML 문서 붙이기", preferred_texts=("원본", "원본 형식"))
+                paste_ok = bool(self.hwp.HAction.Execute("Paste", option.HSet))
+                self.debug(
+                    f"[markdown-table] Paste Option={option_value}, "
+                    f"default={paste_default}, result={paste_ok}"
+                )
+                if paste_ok:
+                    return True
+        except Exception as exc:
+            self.debug(f"[markdown-table] Paste option 우선 경로 실패: {type(exc).__name__}: {exc}")
+
+        try:
             html_set = self.hwp.HParameterSet.HPasteHtml
             html_default = self.hwp.HAction.GetDefault("PasteHtmlDialog", html_set.HSet)
             html_set.Format = 0
-            self.auto_confirm_dialog("HTML 문서 붙이기")
+            self.auto_confirm_dialog("HTML 문서 붙이기", preferred_texts=("원본", "원본 형식"))
             html_ok = bool(self.hwp.HAction.Execute("PasteHtmlDialog", html_set.HSet))
             self.debug(f"[markdown-table] PasteHtmlDialog Format=0, default={html_default}, result={html_ok}")
+            if html_ok:
+                return True
         except Exception as exc:
             self.debug(f"[markdown-table] PasteHtmlDialog 실패: {type(exc).__name__}: {exc}")
             html_ok = False
 
-        try:
-            option = self.hwp.HParameterSet.HSelectionOpt
-            paste_default = self.hwp.HAction.GetDefault("Paste", option.HSet)
-            paste_ok = bool(self.hwp.HAction.Execute("Paste", option.HSet))
-            self.debug(f"[markdown-table] Paste after PasteHtmlDialog, default={paste_default}, result={paste_ok}")
-            if paste_ok:
-                return True
-        except Exception as exc:
-            self.debug(f"[markdown-table] Paste after PasteHtmlDialog 실패: {type(exc).__name__}: {exc}")
-
+        self.auto_confirm_dialog("HTML 문서 붙이기", preferred_texts=("원본", "원본 형식"))
         fallback_ok = self.run_hwp_command("Paste")
         self.debug(f"[markdown-table] Paste fallback after html_ok={html_ok}: {fallback_ok}")
         return fallback_ok
@@ -4272,6 +4650,124 @@ class MvpApp(tk.Tk):
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
 
+    def log_hwp_table_probe_state(
+        self,
+        step: str,
+        command: str | None = None,
+        result: bool | tuple | None = None,
+    ) -> None:
+        if not self.ensure_hwp():
+            return
+
+        lines = [f"[probe] step={step}"]
+        if command is not None:
+            lines.append(f"command={command}")
+        if result is not None:
+            lines.append(f"result={result}")
+
+        try:
+            ctrl = self.hwp.CurSelectedCtrl
+            ctrl_id = safe_str(getattr(ctrl, "CtrlID", ""))
+            user_desc = safe_str(getattr(ctrl, "UserDesc", ""))
+            lines.append(f"CurSelectedCtrl={ctrl is not None} CtrlID={ctrl_id!r} UserDesc={user_desc!r}")
+        except Exception as exc:
+            lines.append(f"CurSelectedCtrl 확인 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            raw = int(getattr(self.hwp, "SelectionMode"))
+            lines.append(f"SelectionMode raw={raw} base={raw & 0x0F}")
+        except Exception as exc:
+            lines.append(f"SelectionMode 확인 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            indicator = safe_str(self.hwp.KeyIndicator())
+            address = parse_cell_address_from_keyindicator(indicator)
+            lines.append(f"KeyIndicator={indicator!r}")
+            lines.append(f"CellAddress={address}")
+        except Exception as exc:
+            lines.append(f"KeyIndicator 확인 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            getattr(self.hwp, "CellShape")
+            lines.append("CellShape=True")
+        except Exception as exc:
+            lines.append(f"CellShape=False ({type(exc).__name__}: {exc})")
+
+        try:
+            block_xml = safe_str(self.hwp.GetTextFile("HWPML2X", "saveblock"))
+            upper_xml = block_xml.upper()
+            lines.append(f"SaveBlockLen={len(block_xml)} SaveBlockHasTable={'<TABLE' in upper_xml or '<HP:TBL' in upper_xml}")
+        except Exception as exc:
+            lines.append(f"SaveBlock 확인 실패: {type(exc).__name__}: {exc}")
+
+        self.log(lines)
+
+    def probe_run_hwp_command(self, command: str, label: str) -> None:
+        if not self.ensure_hwp():
+            return
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        ok = self.run_hwp_command(command)
+        time.sleep(0.05)
+        self.log_hwp_table_probe_state(label, command, ok)
+
+    def probe_select_current_table_object(self) -> None:
+        if not self.ensure_hwp():
+            return
+        ok = self.select_current_table_object()
+        self.log_hwp_table_probe_state("표개체", "SelectCtrlReverse", ok)
+
+    def probe_select_selected_table_first_cell(self) -> None:
+        if not self.ensure_hwp():
+            return
+        ok = self.select_selected_table_first_cell()
+        self.log_hwp_table_probe_state("첫셀", "ShapeObjTableSelCell", ok)
+
+    def probe_apply_table_cell_margins(self) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            result = self.set_table_cell_margins()
+        except Exception as exc:
+            result = ("예외", False)
+            self.log(f"[probe] 셀여백만 실패: {type(exc).__name__}: {exc}")
+        self.log_hwp_table_probe_state("셀여백만", "set_table_cell_margins", result)
+
+    def probe_apply_thin_top_bottom_border(self) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            result = self.set_table_border_preset("thin_top_bottom")
+        except Exception as exc:
+            result = ("예외", False)
+            self.log(f"[probe] 얇은상하만 실패: {type(exc).__name__}: {exc}")
+        self.log_hwp_table_probe_state("얇은상하만", "set_table_border_preset(thin_top_bottom)", result)
+
+    def probe_markdown_table_paste_only(self) -> None:
+        label = "Markdown 표 붙여넣기 probe"
+        if not self.ensure_hwp():
+            return
+        try:
+            copy_ok = self.run_hwp_command("Copy")
+            time.sleep(0.08)
+            text = self.get_clipboard_text()
+            if not copy_ok or not text:
+                messagebox.showwarning(label, "변환할 markdown 표 텍스트를 먼저 선택하세요.")
+                self.log_hwp_table_probe_state("MD붙여넣기만-선택없음", "Copy", copy_ok)
+                return
+            rows = parse_markdown_table(text)
+            if rows is None:
+                messagebox.showwarning(label, "markdown 표를 찾지 못했습니다.")
+                self.log_hwp_table_probe_state("MD붙여넣기만-인식실패", "parse_markdown_table", False)
+                return
+            self.set_clipboard_html_table(markdown_rows_to_html_table(rows), rows_to_tsv(rows))
+            paste_ok = self.paste_html_original_format()
+            self.log(f"[probe] {label}: rows={len(rows)}, cols={len(rows[0])}, Paste={paste_ok}")
+            self.log_hwp_table_probe_state("MD붙여넣기만", "paste_html_original_format", paste_ok)
+        except Exception as exc:
+            self.log(f"[probe] {label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
     def convert_selected_markdown_table(self) -> None:
         label = "Markdown 표 → 한글 표"
         if not self.ensure_hwp():
@@ -4298,13 +4794,69 @@ class MvpApp(tk.Tk):
             self.set_clipboard_html_table(html_table, fallback)
             paste_ok = self.paste_html_original_format()
             if paste_ok:
+                format_results = self.apply_markdown_table_post_formatting(label, len(rows), len(rows[0]))
                 self.activate_hwp_window()
-            self.log(f"{label}: rows={len(rows)}, cols={len(rows[0])}, Paste={paste_ok}, PasteHtmlFormat=0")
+            else:
+                format_results = []
+            self.log(
+                f"{label}: rows={len(rows)}, cols={len(rows[0])}, "
+                f"Paste={paste_ok}, PasteHtmlFormat=0, post_format={format_results}"
+            )
             if not paste_ok:
                 messagebox.showwarning(label, "HTML 표를 클립보드에 넣었지만 한글 붙여넣기가 실패했습니다.")
+            elif format_results and not all(ok for _name, ok in format_results):
+                failed = ", ".join(name for name, ok in format_results if not ok)
+                messagebox.showwarning(
+                    label,
+                    "표는 만들었지만 일부 후처리 적용에 실패했습니다.\n\n"
+                    f"실패 항목: {failed}",
+                )
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
+
+    def apply_markdown_table_post_formatting(
+        self,
+        label: str,
+        row_count: int | None = None,
+        col_count: int | None = None,
+    ) -> list[tuple[str, bool]]:
+        results: list[tuple[str, bool]] = []
+
+        cells_selected = self.select_current_table_all_cells(row_count, col_count)
+        if cells_selected:
+            markdown_style_name = self.table_settings.get("markdown_table", {}).get("paragraph_style", "(적용 안 함)")
+            if markdown_style_name and markdown_style_name != "(적용 안 함)":
+                style_ok = self.apply_style_by_name(markdown_style_name)
+            else:
+                style_ok = True
+            cell_margin_action, cell_margin_ok = self.set_table_cell_margins()
+            border_action, border_ok = self.set_table_border_preset("thin_top_bottom")
+        else:
+            markdown_style_name = self.table_settings.get("markdown_table", {}).get("paragraph_style", "(적용 안 함)")
+            style_ok = False if markdown_style_name and markdown_style_name != "(적용 안 함)" else True
+            cell_margin_action, cell_margin_ok = "셀선택", False
+            border_action, border_ok = "셀선택", False
+        if markdown_style_name and markdown_style_name != "(적용 안 함)":
+            results.append((f"문단스타일:{markdown_style_name}", style_ok))
+        results.append(("셀여백", cell_margin_ok))
+        results.append(("얇은상하", border_ok))
+
+        self.clear_hwp_selection()
+        self.select_current_table_object()
+        outside_action, outside_ok = self.set_table_outside_margins()
+        results.append(("표여백", outside_ok))
+
+        width_action, width_ok, _width = self.set_table_page_width()
+        results.append(("너비맞추기", width_ok))
+
+        self.debug(
+            f"[markdown-table-format] {label}: "
+            f"style={markdown_style_name}:{style_ok}, "
+            f"cell_margin={cell_margin_action}:{cell_margin_ok}, border={border_action}:{border_ok}, "
+            f"outside={outside_action}:{outside_ok}, width={width_action}:{width_ok}"
+        )
+        return results
 
     def clean_selected_line_breaks(self) -> None:
         self.transform_selected_text(

@@ -120,6 +120,15 @@
     "outside_top": "0",
     "outside_bottom": "3"
   },
+  "markdown_table": {
+    "paragraph_style": "표내용-중간"
+  },
+  "caption_parser": {
+    "pattern": "^\\[\\s*(?P<kind>표|그림)\\s+(?P<prefix>[^\\]]*-)\\s*(?:\\d+)?\\s*\\]\\s*(?P<title>.*)$",
+    "prefix_template": "[{kind} {prefix}",
+    "suffix_template": "] {title}",
+    "sample": "[그림 2.4-1] 학사관리 체계 개선 실적"
+  },
   "hotkeys": {
     "title_cell": "",
     "cell_shape_copy_paste": "",
