@@ -223,8 +223,9 @@ LINE_PRESETS = {
 
 LEGACY_DEFAULT_CAPTION_PATTERN = r"^\[\s*(?P<kind>표|그림)\s+(?P<prefix>[^\]]*-)\s*(?:\d+)?\s*\]\s*(?P<title>.*)$"
 LEGACY_DEFAULT_CAPTION_PREFIX_TEMPLATE = "[{kind} {prefix}"
+NUMBERED_DEFAULT_CAPTION_PREFIX_TEMPLATE = "[{kind}{gap}{prefix}{number}"
 DEFAULT_CAPTION_PATTERN = r"^\[\s*(?P<kind>표|그림)(?P<gap>\s*)(?P<prefix>(?:\d+(?:\.\d+)*\s*)?-)\s*(?P<number>\d+)?\s*\]\s*(?P<title>.*)$"
-DEFAULT_CAPTION_PREFIX_TEMPLATE = "[{kind}{gap}{prefix}{number}"
+DEFAULT_CAPTION_PREFIX_TEMPLATE = "[{kind}{gap}{prefix}"
 DEFAULT_CAPTION_SUFFIX_TEMPLATE = "] {title}"
 
 DEFAULT_TABLE_SETTINGS = {
@@ -1073,7 +1074,10 @@ def normalize_table_settings(settings: dict) -> dict:
     if isinstance(caption_parser, dict):
         if str(caption_parser.get("pattern") or "") == LEGACY_DEFAULT_CAPTION_PATTERN:
             caption_parser["pattern"] = DEFAULT_CAPTION_PATTERN
-        if str(caption_parser.get("prefix_template") or "") == LEGACY_DEFAULT_CAPTION_PREFIX_TEMPLATE:
+        if str(caption_parser.get("prefix_template") or "") in {
+            LEGACY_DEFAULT_CAPTION_PREFIX_TEMPLATE,
+            NUMBERED_DEFAULT_CAPTION_PREFIX_TEMPLATE,
+        }:
             caption_parser["prefix_template"] = DEFAULT_CAPTION_PREFIX_TEMPLATE
         if not caption_parser.get("suffix_template"):
             caption_parser["suffix_template"] = DEFAULT_CAPTION_SUFFIX_TEMPLATE

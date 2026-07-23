@@ -855,16 +855,16 @@ class CellMatrixTransformTests(unittest.TestCase):
     def test_caption_parser_templates_can_use_custom_named_groups(self) -> None:
         settings = {
             "pattern": r"^\[\s*(?P<kind>표|그림)(?P<gap>\s*)(?P<prefix>(?:\d+(?:\.\d+)*\s*)?-)\s*(?P<number>\d+)?\s*\]\s*(?P<title>.*)$",
-            "prefix_template": "[{kind}{gap}{prefix}{number}",
+            "prefix_template": "[{kind}{gap}{prefix}",
             "suffix_template": "] {title}",
         }
 
         spaced = split_table_caption_parts("[그림 2.4-1] 학사관리 체계 개선 실적", settings)
         compact = split_table_caption_parts("[표-17] 제목", settings)
 
-        self.assertEqual(spaced.prefix, "[그림 2.4-1")
+        self.assertEqual(spaced.prefix, "[그림 2.4-")
         self.assertEqual(spaced.suffix, "] 학사관리 체계 개선 실적")
-        self.assertEqual(compact.prefix, "[표-17")
+        self.assertEqual(compact.prefix, "[표-")
         self.assertEqual(compact.suffix, "] 제목")
 
     def test_table_settings_upgrade_legacy_default_caption_parser(self) -> None:
@@ -881,7 +881,20 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertIn("(?P<gap>", caption_parser["pattern"])
         self.assertIn("(?P<number>", caption_parser["pattern"])
-        self.assertEqual(caption_parser["prefix_template"], "[{kind}{gap}{prefix}{number}")
+        self.assertEqual(caption_parser["prefix_template"], "[{kind}{gap}{prefix}")
+
+    def test_table_settings_upgrade_numbered_default_caption_prefix_template(self) -> None:
+        settings = {
+            "caption_parser": {
+                "pattern": r"^\[\s*(?P<kind>표|그림)(?P<gap>\s*)(?P<prefix>(?:\d+(?:\.\d+)*\s*)?-)\s*(?P<number>\d+)?\s*\]\s*(?P<title>.*)$",
+                "prefix_template": "[{kind}{gap}{prefix}{number}",
+                "suffix_template": "] {title}",
+            }
+        }
+
+        normalized = normalize_table_settings(merge_dict(DEFAULT_TABLE_SETTINGS, settings))
+
+        self.assertEqual(normalized["caption_parser"]["prefix_template"], "[{kind}{gap}{prefix}")
 
     def test_refresh_current_doc_style_map_prefers_hwp_memory_styles(self) -> None:
         class FakeHwp:

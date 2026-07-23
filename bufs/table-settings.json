@@ -125,7 +125,7 @@
   },
   "caption_parser": {
     "pattern": "^\\[\\s*(?P<kind>표|그림)(?P<gap>\\s*)(?P<prefix>(?:\\d+(?:\\.\\d+)*\\s*)?-)\\s*(?P<number>\\d+)?\\s*\\]\\s*(?P<title>.*)$",
-    "prefix_template": "[{kind}{gap}{prefix}{number}",
+    "prefix_template": "[{kind}{gap}{prefix}",
     "suffix_template": "] {title}",
     "sample": "[그림 2.4-1] 학사관리 체계 개선 실적"
   },
