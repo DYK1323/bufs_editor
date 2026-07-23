@@ -40,6 +40,7 @@ from hwp_style_mvp import (  # noqa: E402
     remove_weekdays_from_dates,
     scale_decimal_numbers,
     scale_decimal_numbers_for_unit_conversion,
+    split_table_caption_parts,
     SuspiciousDecimalNumberError,
     UnsafeUnitConversionNumberError,
     ensure_no_suspicious_decimal_numbers,
@@ -847,6 +848,21 @@ class CellMatrixTransformTests(unittest.TestCase):
         ]
 
         self.assertEqual(app.caption_style_record().name, "캡션 스타일")
+
+    def test_caption_parser_templates_can_use_custom_named_groups(self) -> None:
+        settings = {
+            "pattern": r"^\[\s*(?P<kind>표|그림)(?P<gap>\s*)(?P<prefix>(?:\d+(?:\.\d+)*\s*)?-)\s*(?P<number>\d+)?\s*\]\s*(?P<title>.*)$",
+            "prefix_template": "[{kind}{gap}{prefix}{number}",
+            "suffix_template": "] {title}",
+        }
+
+        spaced = split_table_caption_parts("[그림 2.4-1] 학사관리 체계 개선 실적", settings)
+        compact = split_table_caption_parts("[표-17] 제목", settings)
+
+        self.assertEqual(spaced.prefix, "[그림 2.4-1")
+        self.assertEqual(spaced.suffix, "] 학사관리 체계 개선 실적")
+        self.assertEqual(compact.prefix, "[표-17")
+        self.assertEqual(compact.suffix, "] 제목")
 
     def test_refresh_current_doc_style_map_prefers_hwp_memory_styles(self) -> None:
         class FakeHwp:

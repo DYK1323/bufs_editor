@@ -2120,13 +2120,16 @@ def split_table_caption_parts(text: str, parser_settings: dict | None = None) ->
         title = groupdict.get("title", match.group(2) if len(match.groups()) >= 2 else "")
     except IndexError as exc:
         raise ValueError("캡션 제목 인식 정규식에는 prefix/title 또는 1번/2번 그룹이 필요합니다.") from exc
-    values = {
-        "kind": groupdict.get("kind", "표"),
-        "prefix": number_prefix,
-        "title": title,
-        "g1": match.group(1) if len(match.groups()) >= 1 else "",
-        "g2": match.group(2) if len(match.groups()) >= 2 else "",
-    }
+    values = {name: (value or "") for name, value in groupdict.items()}
+    values.update(
+        {
+            "kind": values.get("kind") or "표",
+            "prefix": number_prefix,
+            "title": title,
+            "g1": match.group(1) if len(match.groups()) >= 1 else "",
+            "g2": match.group(2) if len(match.groups()) >= 2 else "",
+        }
+    )
     try:
         prefix = str(settings.get("prefix_template", "[표 {prefix}")).format_map(values)
         suffix = str(settings.get("suffix_template", "] {title}")).format_map(values)
