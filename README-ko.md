@@ -26,7 +26,25 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 - `스타일/정리`: 문단 스타일, 문장 정리, 숫자/소숫점/단위/날짜 정리
 - `표 편집`: 셀 배경색, 글자색, 표 스타일, 제목셀, 마크다운 표 변환
 - `표지/로고`: 표지 만들기, 로고 삽입
-- `상태`: 한글 연결 상태와 대상 문서 확인
+- `상태`: 한글 연결 상태, 대상 문서 확인, 업데이트 확인
+
+## 업데이트 확인
+
+앱은 시작할 때 한 번, 그리고 `상태` 탭의 `업데이트 확인` 버튼을 누를 때 새 버전을 확인합니다.
+
+구글 드라이브로 배포할 때는 작은 `version.json` 파일을 공유하고, 배포 ZIP 또는 폴더 링크를 `download_url`에 넣으면 됩니다.
+
+예시:
+
+```json
+{
+  "latest_version": "0.1.1",
+  "download_url": "https://drive.google.com/file/d/배포파일ID/view?usp=sharing",
+  "notes": "표 편집 안정화 및 업데이트 확인 추가"
+}
+```
+
+배포자가 `update-settings.json`의 `version_url`에 위 `version.json` 공유 링크를 넣어 빌드하면, 사용자는 새 버전 안내를 받을 수 있습니다.
 
 ## 문제 해결
 

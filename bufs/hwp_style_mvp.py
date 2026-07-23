@@ -24,6 +24,8 @@ import sys
 import threading
 import time
 import unicodedata
+import urllib.request
+import webbrowser
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
@@ -89,10 +91,21 @@ CONFIG_ROOT = user_config_root()
 BUNDLED_STYLE_ORDER_FILE = ROOT / "style-order.json"
 BUNDLED_STYLE_SETS_FILE = ROOT / "style-sets.json"
 BUNDLED_TABLE_SETTINGS_FILE = ROOT / "table-settings.json"
+BUNDLED_UPDATE_SETTINGS_FILE = ROOT / "update-settings.json"
 STYLE_ORDER_FILE = CONFIG_ROOT / "style-order.json"
 STYLE_SETS_FILE = CONFIG_ROOT / "style-sets.json"
 TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
+UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
+APP_VERSION = "0.1.0"
+APP_NAME = "BUFS-HWP-Editor"
+DEFAULT_UPDATE_SETTINGS = {
+    "enabled": True,
+    "check_on_start": True,
+    "version_url": "",
+    "download_url": "",
+    "timeout_seconds": 5,
+}
 NUMBERING_GROUP_OPTIONS: tuple[tuple[str, str], ...] = (
     ("", ""),
     ("body", "본문"),
@@ -180,6 +193,13 @@ class HwpCandidate:
     path: str
     documents: str
     windows: str
+
+
+@dataclass(frozen=True)
+class UpdateInfo:
+    latest_version: str
+    download_url: str
+    notes: str = ""
 
 
 DEFAULT_PALETTE = [
@@ -949,6 +969,83 @@ def merge_dict(default: dict, loaded: dict) -> dict:
         else:
             merged[key] = value
     return merged
+
+
+def load_update_settings() -> dict:
+    ensure_user_config_file(UPDATE_SETTINGS_FILE, BUNDLED_UPDATE_SETTINGS_FILE)
+    if not UPDATE_SETTINGS_FILE.exists():
+        return merge_dict(DEFAULT_UPDATE_SETTINGS, {})
+    try:
+        data = json.loads(UPDATE_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return merge_dict(DEFAULT_UPDATE_SETTINGS, {})
+    if not isinstance(data, dict):
+        return merge_dict(DEFAULT_UPDATE_SETTINGS, {})
+    return merge_dict(DEFAULT_UPDATE_SETTINGS, data)
+
+
+def version_parts(version: str) -> tuple[int, ...]:
+    text = str(version).strip().lstrip("vV")
+    parts = re.findall(r"\d+", text)
+    if not parts:
+        return (0,)
+    return tuple(int(part) for part in parts)
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+    left = list(version_parts(latest))
+    right = list(version_parts(current))
+    length = max(len(left), len(right))
+    left.extend([0] * (length - len(left)))
+    right.extend([0] * (length - len(right)))
+    return tuple(left) > tuple(right)
+
+
+def google_drive_file_id(url: str) -> str:
+    text = str(url).strip()
+    patterns = (
+        r"drive\.google\.com/file/d/([^/?#]+)",
+        r"drive\.google\.com/open\?id=([^&#]+)",
+        r"drive\.google\.com/uc\?[^#]*\bid=([^&#]+)",
+        r"[?&]id=([^&#]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def google_drive_direct_download_url(url: str) -> str:
+    file_id = google_drive_file_id(url)
+    if not file_id:
+        return str(url).strip()
+    return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+
+def parse_update_info(data: dict, fallback_download_url: str = "") -> UpdateInfo:
+    latest_version = str(data.get("latest_version") or data.get("version") or "").strip()
+    download_url = str(data.get("download_url") or fallback_download_url or "").strip()
+    notes = str(data.get("notes") or data.get("release_notes") or "").strip()
+    if not latest_version:
+        raise ValueError("latest_version 값이 없습니다.")
+    if not download_url:
+        raise ValueError("download_url 값이 없습니다.")
+    return UpdateInfo(latest_version=latest_version, download_url=download_url, notes=notes)
+
+
+def fetch_update_info(settings: dict) -> UpdateInfo:
+    version_url = str(settings.get("version_url") or "").strip()
+    if not version_url:
+        raise ValueError("update-settings.json에 version_url이 비어 있습니다.")
+    timeout = float(settings.get("timeout_seconds") or DEFAULT_UPDATE_SETTINGS["timeout_seconds"])
+    request_url = google_drive_direct_download_url(version_url)
+    with urllib.request.urlopen(request_url, timeout=timeout) as response:
+        payload = response.read().decode("utf-8-sig")
+    data = json.loads(payload)
+    if not isinstance(data, dict):
+        raise ValueError("버전 정보 JSON은 객체 형태여야 합니다.")
+    return parse_update_info(data, str(settings.get("download_url") or ""))
 
 
 def normalize_table_settings(settings: dict) -> dict:
@@ -2394,6 +2491,7 @@ class MvpApp(tk.Tk):
         self.current_doc_style_map: dict[str, StyleRecord] = {}
         self.current_doc_style_norm_map: dict[str, StyleRecord] = {}
         self.table_settings = load_table_settings()
+        self.update_settings = load_update_settings()
         self.palette = palette_from_settings(self.table_settings)
         self.style_set_var = tk.StringVar(value=self.active_style_set_name)
         self.apply_on_select = tk.BooleanVar(value=True)
@@ -2426,6 +2524,8 @@ class MvpApp(tk.Tk):
         self.bind_all("<Control-Z>", self.on_global_undo)
         self.refresh_all()
         self.after(700, self.warm_current_doc_style_cache)
+        if self.update_settings.get("enabled") and self.update_settings.get("check_on_start"):
+            self.after(1500, lambda: self.check_for_updates(silent=True))
 
     def _build_status_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
@@ -2440,6 +2540,9 @@ class MvpApp(tk.Tk):
         ttk.Button(buttons, text="대상 확인", command=self.show_current_target).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="테스트 문서 열기", command=self.open_style_test_copy).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="자산 다시 읽기", command=self.refresh_all).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="업데이트 확인", command=lambda: self.check_for_updates(silent=False)).pack(
+            side="left", padx=(8, 0)
+        )
         ttk.Button(buttons, text="실행취소", command=self.undo_hwp).pack(side="left", padx=(8, 0))
 
     def _build_styles_tab(self) -> None:
@@ -3291,12 +3394,60 @@ class MvpApp(tk.Tk):
         self.debug_text.insert("end", line + "\n")
         self.debug_text.see("end")
 
+    def check_for_updates(self, silent: bool = False) -> None:
+        settings = load_update_settings()
+        self.update_settings = settings
+        if not settings.get("enabled"):
+            if not silent:
+                messagebox.showinfo("업데이트 확인", "업데이트 확인이 꺼져 있습니다.")
+            return
+        if not str(settings.get("version_url") or "").strip():
+            message = f"업데이트 확인 URL이 설정되지 않았습니다.\n\n설정 파일: {UPDATE_SETTINGS_FILE}"
+            self.log("업데이트 확인: version_url 미설정")
+            if not silent:
+                messagebox.showinfo("업데이트 확인", message)
+            return
+
+        def worker() -> None:
+            try:
+                info = fetch_update_info(settings)
+                self.after(0, lambda: self.handle_update_result(info, silent))
+            except Exception as exc:
+                self.after(0, lambda error=exc: self.handle_update_error(error, silent))
+
+        self.log("업데이트 확인 중...")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def handle_update_result(self, info: UpdateInfo, silent: bool) -> None:
+        if not is_newer_version(info.latest_version, APP_VERSION):
+            self.log(f"업데이트 확인: 최신 버전입니다. current={APP_VERSION}, latest={info.latest_version}")
+            if not silent:
+                messagebox.showinfo("업데이트 확인", f"현재 최신 버전입니다.\n\n현재 버전: {APP_VERSION}")
+            return
+
+        self.log(f"업데이트 확인: 새 버전 발견 current={APP_VERSION}, latest={info.latest_version}")
+        notes = f"\n\n변경 내용:\n{info.notes}" if info.notes else ""
+        open_download = messagebox.askyesno(
+            "새 버전 있음",
+            f"새 버전이 있습니다.\n\n현재 버전: {APP_VERSION}\n최신 버전: {info.latest_version}{notes}\n\n다운로드 페이지를 열까요?",
+        )
+        if open_download:
+            webbrowser.open(info.download_url)
+
+    def handle_update_error(self, exc: Exception, silent: bool) -> None:
+        self.log(f"업데이트 확인 실패: {type(exc).__name__}: {exc}")
+        if not silent:
+            messagebox.showwarning("업데이트 확인 실패", str(exc))
+
     def refresh_all(self) -> None:
         self._refreshing = True
         self.status_text.delete("1.0", "end")
         self.debug_text.delete("1.0", "end")
+        self.update_settings = load_update_settings()
+        self.log(f"{APP_NAME} 버전: {APP_VERSION}")
         self.log(f"작업 폴더: {ROOT}")
         self.log(f"사용자 설정 폴더: {CONFIG_ROOT}")
+        self.log(f"업데이트 설정 파일: {UPDATE_SETTINGS_FILE.exists()} / {UPDATE_SETTINGS_FILE}")
         self.log(f"스타일 세트 파일: {STYLE_SETS_FILE.exists()} / {STYLE_SETS_FILE}")
         self.log(f"기본 스타일 세트 파일: {BUNDLED_STYLE_SETS_FILE.exists()} / {BUNDLED_STYLE_SETS_FILE.name}")
         self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.relative_to(ROOT)}")
@@ -8414,6 +8565,7 @@ class MvpApp(tk.Tk):
 
 def smoke_test() -> int:
     print(f"ROOT={ROOT}")
+    print(f"version={APP_VERSION}")
     print(f"styles={len(read_style_records())}")
     print(f"cover={read_cover_placeholders()}")
     print(f"logos={len(list_logos())}")

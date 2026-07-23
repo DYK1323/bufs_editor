@@ -20,7 +20,10 @@ from hwp_style_mvp import (  # noqa: E402
     consume_numbering_entry,
     flatten_cell_matrix,
     find_suspicious_decimal_numbers,
+    google_drive_direct_download_url,
+    google_drive_file_id,
     is_rectangular_cell_matrix,
+    is_newer_version,
     looks_like_cell_clipboard_matrix,
     manual_outline_prefix_length,
     normalize_decimal_numbers,
@@ -28,6 +31,7 @@ from hwp_style_mvp import (  # noqa: E402
     normalize_clipboard_newlines,
     parse_cell_clipboard_matrix,
     parse_cover_input,
+    parse_update_info,
     remove_manual_outline_prefixes,
     remove_number_commas,
     remove_weekdays_from_dates,
@@ -465,6 +469,31 @@ class CellMatrixTransformTests(unittest.TestCase):
     def test_regulation_wrapper_conversion_detects_nonstandard_corner_brackets(self) -> None:
         self.assertTrue(needs_regulation_wrapper_conversion("「규정명」"))
         self.assertFalse(needs_regulation_wrapper_conversion("｢규정명｣"))
+
+    def test_version_comparison_detects_newer_release(self) -> None:
+        self.assertTrue(is_newer_version("0.1.1", "0.1.0"))
+        self.assertTrue(is_newer_version("v0.2.0", "0.1.9"))
+        self.assertFalse(is_newer_version("0.1.0", "0.1.0"))
+        self.assertFalse(is_newer_version("0.1", "0.1.0"))
+
+    def test_google_drive_file_url_can_be_converted_to_download_url(self) -> None:
+        url = "https://drive.google.com/file/d/abc123XYZ/view?usp=sharing"
+        self.assertEqual(google_drive_file_id(url), "abc123XYZ")
+        self.assertEqual(
+            google_drive_direct_download_url(url),
+            "https://drive.google.com/uc?export=download&id=abc123XYZ",
+        )
+
+    def test_parse_update_info_accepts_release_notes_alias(self) -> None:
+        info = parse_update_info(
+            {
+                "version": "0.1.2",
+                "download_url": "https://drive.google.com/file/d/app/view",
+                "release_notes": "업데이트 확인 추가",
+            }
+        )
+        self.assertEqual(info.latest_version, "0.1.2")
+        self.assertEqual(info.notes, "업데이트 확인 추가")
         self.assertTrue(is_standard_regulation_wrapper("｢규정명｣"))
 
     def test_find_outline_style_rule_prefers_longer_marker(self) -> None:

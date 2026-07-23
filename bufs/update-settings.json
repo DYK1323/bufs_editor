@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "check_on_start": true,
+  "version_url": "",
+  "download_url": "",
+  "timeout_seconds": 5
+}
