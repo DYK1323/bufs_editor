@@ -311,7 +311,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(table_prefix, len("ㅇ "))
 
     def test_table_icon_presets_match_expected_grid_sizes_and_files(self) -> None:
-        self.assertEqual(len(TABLE_STYLE_ICON_PRESETS), 4)
+        self.assertEqual(len(TABLE_STYLE_ICON_PRESETS), 6)
         self.assertEqual(len(TABLE_BORDER_ICON_PRESETS), 6)
         self.assertEqual(TABLE_STYLE_ICON_BUTTON_SIZE, 48)
         self.assertEqual(TABLE_BORDER_ICON_BUTTON_SIZE, 48)
@@ -330,6 +330,145 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.clear_selected_character_style()
 
         self.assertEqual(commands, ["StyleClearCharStyle"])
+
+    def test_select_current_table_first_row_selects_table_object_then_row(self) -> None:
+        app = object.__new__(MvpApp)
+        commands: list[str] = []
+        app.run_hwp_command = lambda command: commands.append(command) or True
+        app.select_current_table_object = lambda: commands.append("SelectCtrlReverse") or True
+        app.select_selected_table_first_cell = lambda: commands.append("ShapeObjTableSelCell") or True
+        app.move_to_nearby_table_cell = lambda: self.fail("첫 셀 진입 성공 시 nearby fallback을 쓰지 않아야 합니다")
+
+        ok, steps = app.select_current_table_first_row()
+
+        self.assertTrue(ok)
+        self.assertEqual(commands, ["Cancel", "SelectCtrlReverse", "ShapeObjTableSelCell", "TableCellBlock", "TableCellBlockRow"])
+        self.assertIn("TableCellBlockRow=True", steps)
+
+    def test_select_current_table_first_row_accepts_existing_cell_block_after_false_block_command(self) -> None:
+        app = object.__new__(MvpApp)
+        commands: list[str] = []
+        app.select_current_table_object = lambda: commands.append("SelectCtrlReverse") or True
+        app.select_selected_table_first_cell = lambda: commands.append("ShapeObjTableSelCell") or True
+        app.move_to_nearby_table_cell = lambda: self.fail("첫 셀 진입 성공 시 nearby fallback을 쓰지 않아야 합니다")
+        app.is_selected_cell_block = lambda: True
+
+        def run_command(command: str) -> bool:
+            commands.append(command)
+            return command != "TableCellBlock"
+
+        app.run_hwp_command = run_command
+
+        ok, steps = app.select_current_table_first_row()
+
+        self.assertTrue(ok)
+        self.assertEqual(commands, ["Cancel", "SelectCtrlReverse", "ShapeObjTableSelCell", "TableCellBlock", "TableCellBlockRow"])
+        self.assertIn("TableCellBlock=False, ready=True", steps)
+
+    def test_default_table_and_title_row_button_runs_one_click_sequence(self) -> None:
+        app = object.__new__(MvpApp)
+        calls: list[tuple[str, object | None]] = []
+        app.ensure_hwp = lambda: True
+        app.select_current_table_all_cells = lambda: calls.append(("all_cells", None)) or True
+        app.set_table_border_preset = lambda preset: calls.append(("border", preset)) or ("CellZoneBorderFill", True)
+        app.select_current_table_first_row = lambda: calls.append(("first_row", None)) or (True, ["TableCellBlockRow=True"])
+        app.apply_title_cell_preset = lambda: calls.append(("title_cell", None))
+        app.log = lambda _message: None
+
+        app.apply_default_table_and_title_row_preset()
+
+        self.assertEqual(
+            calls,
+            [
+                ("all_cells", None),
+                ("border", hwp_style_mvp.DEFAULT_TABLE_ONE_CLICK_BORDER_PRESET),
+                ("first_row", None),
+                ("title_cell", None),
+            ],
+        )
+
+    def test_table_style_preset_applies_header_background_after_border(self) -> None:
+        app = object.__new__(MvpApp)
+        calls: list[tuple[str, object | None]] = []
+        app.ensure_hwp = lambda: True
+        app.select_current_table_all_cells = lambda: calls.append(("all_cells", None)) or True
+        app.set_table_border_preset = lambda preset: calls.append(("border", preset)) or ("CellZoneBorderFill", True)
+        app.select_current_table_first_row = lambda: calls.append(("header", None)) or (True, ["TableCellBlockRow=True"])
+        app.table_settings = {
+            "title_cell": {
+                "background_color": "셀배경",
+                "paragraph_style": "표내용-중간",
+                "character_style": "표내용-굵게",
+            }
+        }
+        app.set_selected_cells_as_header = lambda: calls.append(("header_attr", None)) or ("CellShape", True, True)
+        app.apply_style_by_name = lambda name: calls.append(("style", name)) or True
+        app.palette_color = lambda name: calls.append(("palette", name)) or hwp_style_mvp.PaletteColor(
+            name,
+            (220, 221, 221),
+            "#DCDDDE",
+            "",
+        )
+        app.set_cell_fill_color = lambda color: calls.append(("fill", color.name)) or ("CellBorderFill", True, True)
+        app.log = lambda _message: None
+
+        app.apply_table_style_preset("thin_top_bottom")
+
+        self.assertEqual(
+            calls,
+            [
+                ("all_cells", None),
+                ("border", "thin_top_bottom"),
+                ("header", None),
+                ("header_attr", None),
+                ("style", "표내용-중간"),
+                ("style", "표내용-굵게"),
+                ("palette", "셀배경"),
+                ("fill", "셀배경"),
+            ],
+        )
+
+    def test_table_style_preset_can_add_header_double_bottom_border(self) -> None:
+        app = object.__new__(MvpApp)
+        calls: list[tuple[str, object | None]] = []
+        app.ensure_hwp = lambda: True
+        app.select_current_table_all_cells = lambda: calls.append(("all_cells", None)) or True
+        app.set_table_border_preset = lambda preset: calls.append(("border", preset)) or ("CellZoneBorderFill", True)
+        app.select_current_table_first_row = lambda: calls.append(("header", None)) or (True, ["TableCellBlockRow=True"])
+        app.table_settings = {
+            "title_cell": {
+                "background_color": "셀배경",
+                "paragraph_style": "표내용-중간",
+                "character_style": "표내용-굵게",
+            }
+        }
+        app.set_selected_cells_as_header = lambda: calls.append(("header_attr", None)) or ("CellShape", True, True)
+        app.apply_style_by_name = lambda name: calls.append(("style", name)) or True
+        app.palette_color = lambda name: calls.append(("palette", name)) or hwp_style_mvp.PaletteColor(
+            name,
+            (220, 221, 221),
+            "#DCDDDE",
+            "",
+        )
+        app.set_cell_fill_color = lambda color: calls.append(("fill", color.name)) or ("CellBorderFill", True, True)
+        app.log = lambda _message: None
+
+        app.apply_table_style_preset("thick_top_bottom_header_double")
+
+        self.assertEqual(
+            calls,
+            [
+                ("all_cells", None),
+                ("border", "thick_top_bottom"),
+                ("header", None),
+                ("header_attr", None),
+                ("style", "표내용-중간"),
+                ("style", "표내용-굵게"),
+                ("border", "double_bottom"),
+                ("palette", "셀배경"),
+                ("fill", "셀배경"),
+            ],
+        )
 
     def test_style_records_keep_document_order_index_separate_from_xml_id(self) -> None:
         header = """<?xml version="1.0" encoding="UTF-8"?>
@@ -949,9 +1088,9 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.set_table_outside_margins = lambda: calls.append("outside") or ("TablePropertyDialog", True)
         app.select_current_table_all_cells = lambda rows=None, cols=None: calls.append(f"select_cells:{rows}x{cols}") or True
         app.set_table_cell_margins = lambda: calls.append("cell_margin") or ("CellShape", True)
-        app.set_table_border_preset = lambda preset: calls.append(f"border:{preset}") or ("CellBorderFill", True)
+        app.apply_table_style_preset_steps = lambda preset: calls.append(f"table_style:{preset}") or (["ok"], True, None)
         app.clear_hwp_selection = lambda: calls.append("clear") or True
-        app.table_settings = {"markdown_table": {"paragraph_style": "(적용 안 함)"}}
+        app.table_settings = {"markdown_table": {"paragraph_style": "(적용 안 함)", "table_style_preset": "thin_top_bottom"}}
         app.debug = lambda _message: None
 
         results = app.apply_markdown_table_post_formatting("Markdown 표 → 한글 표", 3, 2)
@@ -961,26 +1100,31 @@ class CellMatrixTransformTests(unittest.TestCase):
             [
                 "select_cells:3x2",
                 "cell_margin",
-                "border:thin_top_bottom",
+                "table_style:thin_top_bottom",
                 "clear",
                 "select_object",
                 "outside",
                 "width",
             ],
         )
-        self.assertEqual(results, [("셀여백", True), ("얇은상하", True), ("표여백", True), ("너비맞추기", True)])
+        self.assertEqual(results, [("셀여백", True), ("표스타일:얇은상하", True), ("표여백", True), ("너비맞추기", True)])
 
     def test_markdown_table_post_formatting_applies_configured_paragraph_style(self) -> None:
         app = object.__new__(MvpApp)
         calls: list[str] = []
-        app.table_settings = {"markdown_table": {"paragraph_style": "표내용-중간"}}
+        app.table_settings = {
+            "markdown_table": {
+                "paragraph_style": "표내용-중간",
+                "table_style_preset": "thick_top_bottom_header_double",
+            }
+        }
         app.set_table_page_width = lambda: calls.append("width") or ("HWPML2X", True, 1000)
         app.select_current_table_object = lambda: calls.append("select_object") or True
         app.set_table_outside_margins = lambda: calls.append("outside") or ("TablePropertyDialog", True)
         app.select_current_table_all_cells = lambda rows=None, cols=None: calls.append(f"select_cells:{rows}x{cols}") or True
         app.apply_style_by_name = lambda style_name: calls.append(f"style:{style_name}") or True
         app.set_table_cell_margins = lambda: calls.append("cell_margin") or ("CellShape", True)
-        app.set_table_border_preset = lambda preset: calls.append(f"border:{preset}") or ("CellBorderFill", True)
+        app.apply_table_style_preset_steps = lambda preset: calls.append(f"table_style:{preset}") or (["ok"], True, None)
         app.clear_hwp_selection = lambda: calls.append("clear") or True
         app.debug = lambda _message: None
 
@@ -992,7 +1136,7 @@ class CellMatrixTransformTests(unittest.TestCase):
                 "select_cells:3x2",
                 "style:표내용-중간",
                 "cell_margin",
-                "border:thin_top_bottom",
+                "table_style:thick_top_bottom_header_double",
                 "clear",
                 "select_object",
                 "outside",
@@ -1004,7 +1148,7 @@ class CellMatrixTransformTests(unittest.TestCase):
             [
                 ("문단스타일:표내용-중간", True),
                 ("셀여백", True),
-                ("얇은상하", True),
+                ("표스타일:굵은상하이중선", True),
                 ("표여백", True),
                 ("너비맞추기", True),
             ],
@@ -1036,7 +1180,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertTrue(app.select_current_table_all_cells())
         self.assertEqual(
             calls,
-            ["ShapeObjTableSelCell", "TableCellBlock", "TableCellBlockExtend", "TableCellBlockCol", "TableCellBlockRow"],
+            ["ShapeObjTableSelCell", "TableCellBlock", "TableCellBlockRow", "TableCellBlockCol", "TableCellBlockExtend"],
         )
 
     def test_selected_table_object_can_select_markdown_dimensions(self) -> None:
@@ -1068,9 +1212,9 @@ class CellMatrixTransformTests(unittest.TestCase):
                 "ShapeObjTableSelCell",
                 "TableCellBlock",
                 "TableCellBlockExtend",
-                "TableRightCell",
-                "TableRightCell",
                 "TableLowerCell",
+                "TableRightCell",
+                "TableRightCell",
             ],
         )
 
@@ -1104,8 +1248,89 @@ class CellMatrixTransformTests(unittest.TestCase):
                 "ShapeObjTableSelCell",
                 "TableCellBlock",
                 "TableCellBlockExtend",
-                "TableRightCell",
                 "TableLowerCell",
+                "TableRightCell",
+            ],
+        )
+
+    def test_current_selected_table_dimensions_counts_colspan_cells(self) -> None:
+        app = object.__new__(MvpApp)
+        app.debug = lambda _message: None
+
+        class FakeHwp:
+            def GetTextFile(self, _format, _option):
+                return """
+<HWPML>
+  <BODY>
+    <TABLE>
+      <ROW>
+        <CELL RowSpan="2"/>
+        <CELL ColSpan="4"/>
+      </ROW>
+      <ROW>
+        <CELL/><CELL/><CELL/><CELL/>
+      </ROW>
+      <ROW>
+        <CELL/><CELL/><CELL/><CELL/><CELL/>
+      </ROW>
+    </TABLE>
+  </BODY>
+</HWPML>
+"""
+
+        app.hwp = FakeHwp()
+
+        self.assertEqual(app.current_selected_table_dimensions(), (3, 5))
+
+    def test_select_current_table_all_cells_variant_uses_hwpml_dimensions_when_available(self) -> None:
+        app = object.__new__(MvpApp)
+        app.has_selected_object = lambda: True
+        app.is_in_table_cell = lambda: True
+        app.is_selected_cell_block = lambda: True
+        app.activate_hwp_window = lambda: True
+        app.debug = lambda _message: None
+        calls: list[str] = []
+
+        class FakeHwp:
+            def GetTextFile(self, _format, _option):
+                return """
+<HWPML><BODY><TABLE>
+  <ROW><CELL RowSpan="2"/><CELL ColSpan="4"/></ROW>
+  <ROW><CELL/><CELL/><CELL/><CELL/></ROW>
+  <ROW><CELL/><CELL/><CELL/><CELL/><CELL/></ROW>
+</TABLE></BODY></HWPML>
+"""
+
+        app.hwp = FakeHwp()
+
+        def fake_run(command):
+            calls.append(command)
+            return command in {
+                "ShapeObjTableSelCell",
+                "TableCellBlock",
+                "TableCellBlockExtend",
+                "TableLowerCell",
+                "TableRightCell",
+            }
+
+        app.run_hwp_command = fake_run
+
+        ok, steps = app.select_current_table_all_cells_by_variant(horizontal_first=False)
+
+        self.assertTrue(ok)
+        self.assertIn("dimensions=(3, 5)", steps)
+        self.assertEqual(
+            calls,
+            [
+                "ShapeObjTableSelCell",
+                "TableCellBlock",
+                "TableCellBlockExtend",
+                "TableLowerCell",
+                "TableLowerCell",
+                "TableRightCell",
+                "TableRightCell",
+                "TableRightCell",
+                "TableRightCell",
             ],
         )
 
@@ -2001,6 +2226,40 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(processed, [(1799, 0), (1802, 0), (1802, 1)])
         self.assertEqual(force_values, [True, True, True])
         self.assertEqual(restored, ["cell-a1", "cell-b1", "original"])
+
+    def test_init_hwp_scan_retries_with_full_argument_list_for_com_wrappers(self) -> None:
+        app = object.__new__(MvpApp)
+        app.debug = lambda _message: None
+        calls: list[tuple[int, ...]] = []
+
+        class FakeHwp:
+            def InitScan(self, *args):
+                calls.append(args)
+                if len(args) == 2:
+                    raise RuntimeError("매개 변수의 개수가 잘못되었습니다.")
+                return True
+
+        app.hwp = FakeHwp()
+
+        self.assertTrue(app.init_hwp_scan(0, 0x0055))
+        self.assertEqual(calls, [(0, 0x0055), (0, 0x0055, 0, 0, 0, 0)])
+
+    def test_move_hwp_pos_retries_with_full_argument_list_for_com_wrappers(self) -> None:
+        app = object.__new__(MvpApp)
+        app.debug = lambda _message: None
+        calls: list[tuple[int, ...]] = []
+
+        class FakeHwp:
+            def MovePos(self, *args):
+                calls.append(args)
+                if len(args) == 1:
+                    raise RuntimeError("매개 변수의 개수가 잘못되었습니다.")
+                return True
+
+        app.hwp = FakeHwp()
+
+        self.assertTrue(app.move_hwp_pos(201))
+        self.assertEqual(calls, [(201,), (201, 0, 0)])
 
     def test_configured_outline_style_bulk_cell_selection_uses_table_marker_style_when_duplicate(self) -> None:
         app = object.__new__(MvpApp)

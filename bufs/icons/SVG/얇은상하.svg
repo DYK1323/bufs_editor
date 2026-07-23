@@ -3,6 +3,10 @@
   <defs>
     <style>
       .cls-1 {
+        fill: #c2c1c1;
+      }
+
+      .cls-2 {
         fill: #fff;
         stroke: #231815;
         stroke-linecap: round;
@@ -12,12 +16,13 @@
     </style>
   </defs>
   <g id="_레이어_1-2" data-name="레이어 1">
-    <line class="cls-1" x1=".12" y1=".12" x2="18.72" y2=".12"/>
-    <line class="cls-1" x1=".12" y1="4.84" x2="18.72" y2="4.84"/>
-    <line class="cls-1" x1=".12" y1="9.55" x2="18.72" y2="9.55"/>
-    <line class="cls-1" x1=".12" y1="14.27" x2="18.72" y2="14.27"/>
-    <line class="cls-1" x1="18.72" y1="18.98" x2=".12" y2="18.98"/>
-    <line class="cls-1" x1="6.32" y1="18.72" x2="6.32" y2=".12"/>
-    <line class="cls-1" x1="12.52" y1="18.72" x2="12.52" y2=".12"/>
+    <rect class="cls-1" x=".12" y=".12" width="18.59" height="4.71"/>
+    <line class="cls-2" x1=".12" y1=".12" x2="18.72" y2=".12"/>
+    <line class="cls-2" x1=".12" y1="4.84" x2="18.72" y2="4.84"/>
+    <line class="cls-2" x1=".12" y1="9.55" x2="18.72" y2="9.55"/>
+    <line class="cls-2" x1=".12" y1="14.27" x2="18.72" y2="14.27"/>
+    <line class="cls-2" x1="18.72" y1="18.98" x2=".12" y2="18.98"/>
+    <line class="cls-2" x1="6.32" y1="18.72" x2="6.32" y2=".12"/>
+    <line class="cls-2" x1="12.52" y1="18.72" x2="12.52" y2=".12"/>
   </g>
 </svg>
