@@ -97,6 +97,7 @@ STYLE_ORDER_FILE = CONFIG_ROOT / "style-order.json"
 STYLE_SETS_FILE = CONFIG_ROOT / "style-sets.json"
 TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
+SPECIAL_CHARS_FILE = CONFIG_ROOT / "special-chars.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
 APP_VERSION = "1.0.1"
 APP_NAME = "BUFS-HWP-Editor"
@@ -107,6 +108,53 @@ DEFAULT_UPDATE_SETTINGS = {
     "version_url": "",
     "download_url": "",
     "timeout_seconds": 5,
+}
+DEFAULT_SPECIAL_CHARS: list[dict[str, str]] = []
+DEFAULT_SPECIAL_CHAR_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("원숫자", tuple(chr(codepoint) for codepoint in range(0x2460, 0x2474))),
+    ("로마숫자", tuple(chr(codepoint) for codepoint in range(0x2160, 0x216C))),
+    (
+        "화살표/기호",
+        (
+            "※",
+            *tuple(chr(codepoint) for codepoint in range(0x2190, 0x2194)),
+            chr(0x279C),
+            *tuple(chr(codepoint) for codepoint in range(0xF0E7, 0xF0EB)),
+        ),
+    ),
+    ("수학 연산자", ("±", "÷", "×")),
+    (
+        "도형",
+        (
+            chr(0x25B3),
+            chr(0x25B7),
+            chr(0x25BD),
+            chr(0x25C1),
+            chr(0x25B2),
+            chr(0x25B6),
+            chr(0x25BC),
+            chr(0x25C0),
+            chr(0x2606),
+            chr(0x2605),
+            chr(0x25CB),
+            chr(0x25CF),
+            chr(0x25C7),
+            chr(0x25C6),
+            chr(0x25A1),
+            chr(0x25A0),
+            chr(0x25A3),
+            chr(0xF06D),
+            chr(0xF071),
+        ),
+    ),
+)
+SPECIAL_CHAR_BUTTON_DRAWINGS = {
+    chr(0xF0E7): "arrow-left",
+    chr(0xF0E8): "arrow-right",
+    chr(0xF0E9): "arrow-up",
+    chr(0xF0EA): "arrow-down",
+    chr(0xF06D): "shadow-circle",
+    chr(0xF071): "shadow-square",
 }
 NUMBERING_GROUP_OPTIONS: tuple[tuple[str, str], ...] = (
     ("", ""),
@@ -1105,6 +1153,42 @@ def save_table_settings(settings: dict) -> None:
     TABLE_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     TABLE_SETTINGS_FILE.write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def normalize_special_chars(raw_entries) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    if not isinstance(raw_entries, list):
+        return entries
+    for raw_entry in raw_entries:
+        if isinstance(raw_entry, str):
+            text = raw_entry.strip()
+            label = text
+        elif isinstance(raw_entry, dict):
+            text = str(raw_entry.get("text") or "").strip()
+            label = str(raw_entry.get("label") or text).strip()
+        else:
+            continue
+        if text:
+            entries.append({"label": label or text, "text": text})
+    return entries
+
+
+def load_special_chars() -> list[dict[str, str]]:
+    if not SPECIAL_CHARS_FILE.exists():
+        return normalize_special_chars(DEFAULT_SPECIAL_CHARS)
+    try:
+        data = json.loads(SPECIAL_CHARS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return normalize_special_chars(DEFAULT_SPECIAL_CHARS)
+    return normalize_special_chars(data)
+
+
+def save_special_chars(entries: list[dict[str, str]]) -> None:
+    SPECIAL_CHARS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SPECIAL_CHARS_FILE.write_text(
+        json.dumps(normalize_special_chars(entries), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
@@ -2593,6 +2677,7 @@ class MvpApp(tk.Tk):
         self.current_doc_style_norm_map: dict[str, StyleRecord] = {}
         self.table_settings = load_table_settings()
         self.update_settings = load_update_settings()
+        self.special_chars = load_special_chars()
         self.palette = palette_from_settings(self.table_settings)
         self.style_set_var = tk.StringVar(value=self.active_style_set_name)
         self.apply_on_select = tk.BooleanVar(value=True)
@@ -2604,6 +2689,7 @@ class MvpApp(tk.Tk):
         self.unit_decimal_places_var = tk.StringVar(value="0")
         self.unit_decimal_mode_var = tk.StringVar(value="반올림")
         self.unit_decimal_use_commas_var = tk.BooleanVar(value=True)
+        self.compose_number_var = tk.StringVar(value="")
         self.logo_chip_images: list[tk.PhotoImage] = []
         self.icon_images: dict[str, tk.PhotoImage] = {}
         self.pending_caption_title = ""
@@ -2617,6 +2703,7 @@ class MvpApp(tk.Tk):
         self._build_styles_tab()
         self._build_table_tab()
         self._build_page_tab()
+        self._build_special_chars_tab()
         self._build_cover_logo_tab()
         self._build_status_tab()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -2727,6 +2814,492 @@ class MvpApp(tk.Tk):
                 text=text,
                 command=lambda value=num_type, label=text: self.insert_new_number_object(value, label),
             ).pack(fill="x", pady=(0, 6))
+
+    def _build_special_chars_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(frame, text="특수문자")
+        frame.grid_columnconfigure(0, weight=1)
+
+        compose_group = ttk.LabelFrame(frame, text="겹치기글자", padding=8)
+        compose_group.grid(row=0, column=0, sticky="ew")
+        compose_group.grid_columnconfigure(0, weight=1)
+
+        compose_buttons_frame = ttk.Frame(compose_group)
+        compose_buttons_frame.grid(row=0, column=0, sticky="ew")
+        compose_buttons: list[tk.Canvas] = []
+        for number in range(1, 11):
+            compose_buttons.append(self.create_square_compose_button(
+                compose_buttons_frame,
+                chars=str(number),
+                command=lambda value=number: self.insert_square_composed_number(value),
+                row=0,
+                column=number - 1,
+                padx=(0 if number == 1 else 6, 0),
+            ))
+
+        self.bind_dynamic_square_button_grid(compose_buttons_frame, compose_buttons)
+
+        custom_row = ttk.Frame(compose_group)
+        custom_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        custom_row.grid_columnconfigure(0, weight=1)
+        custom_entry = ttk.Entry(custom_row, textvariable=self.compose_number_var, width=12)
+        custom_entry.grid(row=0, column=0, sticky="ew")
+        custom_entry.bind("<Return>", lambda _event: self.insert_custom_square_composed_number())
+        ttk.Button(
+            custom_row,
+            text="넣기",
+            command=self.insert_custom_square_composed_number,
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        checkbox_group = ttk.LabelFrame(frame, text="체크박스", padding=8)
+        checkbox_group.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        self.create_square_compose_button(
+            checkbox_group,
+            chars="☑",
+            command=self.insert_checked_box_symbol,
+            row=0,
+            column=0,
+            draw_box=False,
+        )
+        self.create_square_compose_button(
+            checkbox_group,
+            chars="✓",
+            command=self.insert_square_composed_standard_check_mark,
+            row=0,
+            column=1,
+            padx=(6, 0),
+        )
+        self.create_square_compose_button(
+            checkbox_group,
+            chars="✔",
+            command=self.insert_square_composed_check_mark,
+            row=0,
+            column=2,
+            padx=(6, 0),
+        )
+
+        next_row = 2
+        for title, chars in DEFAULT_SPECIAL_CHAR_GROUPS:
+            self.create_default_special_char_group(frame, title, chars, next_row)
+            next_row += 1
+
+        favorite_group = ttk.LabelFrame(frame, text="자주 쓰는 특수문자", padding=8)
+        favorite_group.grid(row=next_row, column=0, sticky="ew", pady=(12, 0))
+        favorite_group.grid_columnconfigure(0, weight=1)
+        self.favorite_special_chars_frame = ttk.Frame(favorite_group)
+        self.favorite_special_chars_frame.grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            favorite_group,
+            text="관리",
+            command=self.open_special_chars_window,
+        ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.refresh_favorite_special_chars_buttons()
+
+    def create_square_compose_button(
+        self,
+        parent: ttk.Frame,
+        chars: str,
+        command,
+        row: int,
+        column: int,
+        padx=0,
+        pady=0,
+        draw_box: bool = True,
+        font_family: str | None = None,
+        font_weight: str | None = None,
+        button_size: int = 24,
+        font_size: int | None = None,
+    ) -> tk.Canvas:
+        canvas = tk.Canvas(
+            parent,
+            width=button_size,
+            height=button_size,
+            highlightthickness=1,
+            highlightbackground="#9a9a9a",
+            background="#ffffff",
+            cursor="hand2",
+        )
+        canvas.grid(row=row, column=column, padx=padx, pady=pady)
+        canvas.configure(takefocus=True)
+
+        def draw(pressed: bool = False) -> None:
+            canvas.delete("all")
+            width = max(canvas.winfo_width(), button_size)
+            height = max(canvas.winfo_height(), button_size)
+            offset = 1 if pressed else 0
+            if draw_box:
+                box_size = min(width - 8, height - 8, 16)
+                left = (width - box_size) / 2 + offset
+                top = (height - box_size) / 2 + offset
+                canvas.create_rectangle(
+                    left,
+                    top,
+                    left + box_size,
+                    top + box_size,
+                    outline="#202020",
+                    width=1,
+                )
+            effective_font_size = font_size if font_size is not None else (8 if len(chars) >= 2 else 12)
+            text_options = {
+                "text": chars,
+                "fill": "#111111",
+            }
+            if font_family is not None:
+                text_options["font"] = (font_family, effective_font_size, font_weight or "normal")
+            canvas.create_text(width / 2 + offset, height / 2 + offset, **text_options)
+
+        def release(event) -> None:
+            draw(False)
+            if 0 <= event.x <= canvas.winfo_width() and 0 <= event.y <= canvas.winfo_height():
+                command()
+
+        canvas.bind("<Configure>", lambda _event: draw(False))
+        canvas.bind("<ButtonPress-1>", lambda _event: draw(True))
+        canvas.bind("<ButtonRelease-1>", release)
+        canvas.bind("<space>", lambda _event: command())
+        canvas.bind("<Return>", lambda _event: command())
+        draw(False)
+        return canvas
+
+    def bind_dynamic_square_button_grid(self, parent: ttk.Frame, buttons: list[tk.Canvas]) -> None:
+        button_size = max((int(str(button.cget("width"))) for button in buttons), default=24)
+        gap = 6
+        right_safety_margin = 18
+
+        def layout(event=None) -> None:
+            width = event.width if event is not None else parent.winfo_width()
+            available_width = max(button_size, width - right_safety_margin)
+            columns = 1
+            for candidate in range(1, len(buttons) + 1):
+                required_width = candidate * button_size + (candidate - 1) * gap
+                if required_width > available_width:
+                    break
+                columns = candidate
+            for index, button in enumerate(buttons):
+                row = index // columns
+                column = index % columns
+                button.grid_configure(
+                    row=row,
+                    column=column,
+                    padx=(0 if column == 0 else gap, 0),
+                    pady=(0 if row == 0 else gap, 0),
+                )
+
+        parent.bind("<Configure>", layout)
+        parent.after_idle(layout)
+
+    def create_default_special_char_group(
+        self,
+        parent: ttk.Frame,
+        title: str,
+        chars: tuple[str, ...],
+        row: int,
+    ) -> None:
+        group = ttk.LabelFrame(parent, text=title, padding=8)
+        group.grid(row=row, column=0, sticky="ew", pady=(12, 0))
+        group.grid_columnconfigure(0, weight=1)
+        buttons_frame = ttk.Frame(group)
+        buttons_frame.grid(row=0, column=0, sticky="ew")
+        buttons: list[tk.Canvas] = []
+        for index, char in enumerate(chars):
+            buttons.append(self.create_symbol_button(
+                buttons_frame,
+                char,
+                row=0,
+                column=index,
+                padx=(0 if index == 0 else 6, 0),
+            ))
+        self.bind_dynamic_square_button_grid(buttons_frame, buttons)
+
+    def create_symbol_button(
+        self,
+        parent: ttk.Frame,
+        char: str,
+        row: int,
+        column: int,
+        padx=0,
+        pady=0,
+    ) -> tk.Canvas:
+        drawing = SPECIAL_CHAR_BUTTON_DRAWINGS.get(char)
+        if drawing is not None:
+            return self.create_drawn_special_char_button(parent, char, drawing, row, column, padx, pady)
+        font_size = 9 if 0x246A <= ord(char) <= 0x2473 else None
+        return self.create_square_compose_button(
+            parent,
+            chars=char,
+            command=lambda value=char: self.insert_default_special_char(value),
+            row=row,
+            column=column,
+            padx=padx,
+            pady=pady,
+            draw_box=False,
+            button_size=28,
+            font_size=font_size,
+        )
+
+    def create_drawn_special_char_button(
+        self,
+        parent: ttk.Frame,
+        char: str,
+        drawing: str,
+        row: int,
+        column: int,
+        padx=0,
+        pady=0,
+    ) -> tk.Canvas:
+        button_size = 28
+        canvas = tk.Canvas(
+            parent,
+            width=button_size,
+            height=button_size,
+            highlightthickness=1,
+            highlightbackground="#9a9a9a",
+            background="#ffffff",
+            cursor="hand2",
+        )
+        canvas.grid(row=row, column=column, padx=padx, pady=pady)
+        canvas.configure(takefocus=True)
+
+        def draw_arrow(width: int, height: int, offset: int) -> None:
+            center_x = width / 2 + offset
+            center_y = height / 2 + offset
+            if drawing == "arrow-left":
+                canvas.create_line(19 + offset, center_y, 9 + offset, center_y, fill="#111111", width=2)
+                canvas.create_polygon(8 + offset, center_y, 14 + offset, center_y - 5, 14 + offset, center_y + 5, fill="#111111")
+            elif drawing == "arrow-right":
+                canvas.create_line(9 + offset, center_y, 19 + offset, center_y, fill="#111111", width=2)
+                canvas.create_polygon(20 + offset, center_y, 14 + offset, center_y - 5, 14 + offset, center_y + 5, fill="#111111")
+            elif drawing == "arrow-up":
+                canvas.create_line(center_x, 19 + offset, center_x, 9 + offset, fill="#111111", width=2)
+                canvas.create_polygon(center_x, 8 + offset, center_x - 5, 14 + offset, center_x + 5, 14 + offset, fill="#111111")
+            elif drawing == "arrow-down":
+                canvas.create_line(center_x, 9 + offset, center_x, 19 + offset, fill="#111111", width=2)
+                canvas.create_polygon(center_x, 20 + offset, center_x - 5, 14 + offset, center_x + 5, 14 + offset, fill="#111111")
+
+        def draw_shape(offset: int) -> None:
+            if drawing == "shadow-circle":
+                canvas.create_oval(12 + offset, 12 + offset, 21 + offset, 21 + offset, fill="#111111", outline="")
+                canvas.create_oval(8 + offset, 8 + offset, 18 + offset, 18 + offset, fill="#ffffff", outline="#111111", width=1)
+            elif drawing == "shadow-square":
+                canvas.create_rectangle(12 + offset, 12 + offset, 21 + offset, 21 + offset, fill="#111111", outline="")
+                canvas.create_rectangle(8 + offset, 8 + offset, 18 + offset, 18 + offset, fill="#ffffff", outline="#111111", width=1)
+
+        def draw(pressed: bool = False) -> None:
+            canvas.delete("all")
+            width = max(canvas.winfo_width(), button_size)
+            height = max(canvas.winfo_height(), button_size)
+            offset = 1 if pressed else 0
+            if drawing.startswith("arrow-"):
+                draw_arrow(width, height, offset)
+            else:
+                draw_shape(offset)
+
+        def release(event) -> None:
+            draw(False)
+            if 0 <= event.x <= canvas.winfo_width() and 0 <= event.y <= canvas.winfo_height():
+                self.insert_default_special_char(char)
+
+        canvas.bind("<Configure>", lambda _event: draw(False))
+        canvas.bind("<ButtonPress-1>", lambda _event: draw(True))
+        canvas.bind("<ButtonRelease-1>", release)
+        canvas.bind("<space>", lambda _event: self.insert_default_special_char(char))
+        canvas.bind("<Return>", lambda _event: self.insert_default_special_char(char))
+        draw(False)
+        return canvas
+
+    def refresh_favorite_special_chars_buttons(self) -> None:
+        frame = getattr(self, "favorite_special_chars_frame", None)
+        if frame is None:
+            return
+        favorite_font = ("Malgun Gothic", 10)
+        for child in frame.winfo_children():
+            child.destroy()
+        for index, entry in enumerate(self.special_chars):
+            label = entry.get("label") or entry.get("text") or "?"
+            text = entry.get("text") or label
+            tk.Button(
+                frame,
+                text=label,
+                font=favorite_font,
+                bg="#ffffff",
+                activebackground="#ffffff",
+                relief="raised",
+                bd=1,
+                padx=8,
+                command=lambda value=text: self.insert_favorite_special_char(value),
+            ).grid(row=0, column=index, padx=(0 if index == 0 else 6, 0))
+
+    def insert_default_special_char(self, text: str) -> None:
+        self.insert_plain_special_char(text, f"기본 특수문자 {text}")
+
+    def insert_favorite_special_char(self, text: str) -> None:
+        self.insert_plain_special_char(text, f"특수문자 {text}")
+
+    def insert_plain_special_char(self, text: str, label: str) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            executed = self.insert_hwp_text(text)
+            self.log(f"{label}: result={executed}")
+            if not executed:
+                messagebox.showwarning(
+                    label,
+                    "한글이 특수문자 삽입을 실패로 반환했습니다. 입력 가능한 본문 위치에 커서를 둔 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def open_special_chars_window(self) -> None:
+        window = tk.Toplevel(self)
+        window.title("자주 쓰는 특수문자 관리")
+        window.transient(self)
+        window.grab_set()
+        window.geometry("360x360")
+        window.minsize(320, 320)
+
+        entries = [dict(entry) for entry in normalize_special_chars(self.special_chars)]
+        list_var = tk.StringVar()
+        label_var = tk.StringVar()
+        text_var = tk.StringVar()
+        special_char_font = ("Malgun Gothic", 10)
+        selected_entry_index: dict[str, int | None] = {"value": None}
+
+        def display_text(entry: dict[str, str]) -> str:
+            label = entry.get("label") or entry.get("text") or ""
+            text = entry.get("text") or ""
+            return label if label == text else f"{label}    {text}"
+
+        def refresh_list(select_index: int | None = None) -> None:
+            list_var.set(tuple(display_text(entry) for entry in entries))
+            if select_index is not None and entries:
+                index = max(0, min(select_index, len(entries) - 1))
+                selected_entry_index["value"] = index
+                listbox.selection_clear(0, "end")
+                listbox.selection_set(index)
+                listbox.see(index)
+                load_selected()
+            elif not entries:
+                selected_entry_index["value"] = None
+
+        def selected_index() -> int | None:
+            selection = listbox.curselection()
+            if selection:
+                selected_entry_index["value"] = int(selection[0])
+            return selected_entry_index["value"]
+
+        def load_selected(_event=None) -> None:
+            selection = listbox.curselection()
+            if selection:
+                selected_entry_index["value"] = int(selection[0])
+            index = selected_entry_index["value"]
+            if index is None or not (0 <= index < len(entries)):
+                return
+            label_var.set(entries[index].get("label", ""))
+            text_var.set(entries[index].get("text", ""))
+
+        def entry_from_form() -> dict[str, str] | None:
+            text = text_var.get().strip()
+            label = label_var.get().strip() or text
+            if not text:
+                messagebox.showwarning("자주 쓰는 특수문자", "삽입할 문자를 입력해 주세요.", parent=window)
+                return None
+            return {"label": label, "text": text}
+
+        def start_new_entry() -> None:
+            selected_entry_index["value"] = None
+            listbox.selection_clear(0, "end")
+            label_var.set("")
+            text_var.set("")
+            text_entry.focus_set()
+
+        def register_entry() -> None:
+            entry = entry_from_form()
+            if entry is None:
+                return
+            entries.append(entry)
+            refresh_list(len(entries) - 1)
+
+        def update_entry() -> None:
+            index = selected_index()
+            if index is None:
+                messagebox.showwarning("자주 쓰는 특수문자", "수정할 항목을 선택해 주세요.", parent=window)
+                return
+            entry = entry_from_form()
+            if entry is None:
+                return
+            entries[index] = entry
+            refresh_list(index)
+
+        def delete_entry() -> None:
+            index = selected_index()
+            if index is None:
+                return
+            entries.pop(index)
+            refresh_list(index)
+
+        def move_entry(delta: int) -> None:
+            index = selected_index()
+            if index is None:
+                return
+            target = index + delta
+            if not (0 <= target < len(entries)):
+                return
+            entries[index], entries[target] = entries[target], entries[index]
+            refresh_list(target)
+
+        def save_and_close() -> None:
+            normalized = normalize_special_chars(entries)
+            save_special_chars(normalized)
+            self.special_chars = normalized
+            self.refresh_favorite_special_chars_buttons()
+            self.log(f"자주 쓰는 특수문자 저장: {len(normalized)}개, file={SPECIAL_CHARS_FILE}")
+            window.destroy()
+
+        body = ttk.Frame(window, padding=8)
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        listbox = tk.Listbox(
+            body,
+            listvariable=list_var,
+            height=8,
+            font=special_char_font,
+            exportselection=False,
+        )
+        listbox.grid(row=0, column=0, columnspan=4, sticky="nsew")
+        listbox.bind("<<ListboxSelect>>", load_selected)
+
+        ttk.Label(body, text="버튼 이름").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        tk.Entry(body, textvariable=label_var, font=special_char_font).grid(
+            row=1,
+            column=1,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        ttk.Label(body, text="삽입 문자").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        text_entry = tk.Entry(body, textvariable=text_var, font=special_char_font)
+        text_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=(6, 0))
+        text_entry.bind("<Return>", lambda _event: register_entry() if selected_entry_index["value"] is None else update_entry())
+
+        ttk.Button(body, text="추가", command=start_new_entry).grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(body, text="등록", command=register_entry).grid(row=3, column=1, sticky="ew", padx=(6, 0), pady=(8, 0))
+        ttk.Button(body, text="수정", command=update_entry).grid(row=3, column=2, sticky="ew", padx=(6, 0), pady=(8, 0))
+        ttk.Button(body, text="삭제", command=delete_entry).grid(row=3, column=3, sticky="ew", padx=(6, 0), pady=(8, 0))
+        ttk.Button(body, text="위", command=lambda: move_entry(-1)).grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        ttk.Button(body, text="아래", command=lambda: move_entry(1)).grid(row=4, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+
+        footer = ttk.Frame(body)
+        footer.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+        footer.grid_columnconfigure(0, weight=1)
+        ttk.Button(footer, text="저장", command=save_and_close).grid(row=0, column=1)
+        ttk.Button(footer, text="취소", command=window.destroy).grid(row=0, column=2, padx=(6, 0))
+
+        refresh_list(0 if entries else None)
+        text_entry.focus_set()
 
     def load_icon_image(self, icon_name: str) -> tk.PhotoImage | None:
         if icon_name in self.icon_images:
@@ -3621,6 +4194,7 @@ class MvpApp(tk.Tk):
         self.log(f"사용자 설정 폴더: {CONFIG_ROOT}")
         self.log(f"업데이트 설정 파일: {UPDATE_SETTINGS_FILE.exists()} / {UPDATE_SETTINGS_FILE}")
         self.log(f"스타일 세트 파일: {STYLE_SETS_FILE.exists()} / {STYLE_SETS_FILE}")
+        self.log(f"특수문자 설정 파일: {SPECIAL_CHARS_FILE.exists()} / {SPECIAL_CHARS_FILE}")
         self.log(f"기본 스타일 세트 파일: {BUNDLED_STYLE_SETS_FILE.exists()} / {BUNDLED_STYLE_SETS_FILE.name}")
         self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.relative_to(ROOT)}")
         self.log(f"보고양식 파일: {GENERAL_REPORT_TEMPLATE_FILE.exists()} / {GENERAL_REPORT_TEMPLATE_FILE.relative_to(ROOT)}")
@@ -4810,6 +5384,73 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(
                     label,
                     "한글이 새 번호 개체 삽입을 실패로 반환했습니다. 번호를 넣을 위치에 커서를 둔 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def insert_custom_square_composed_number(self) -> None:
+        raw_value = self.compose_number_var.get().strip()
+        if not raw_value.isdecimal():
+            messagebox.showwarning("겹치기글자", "숫자만 입력해 주세요.")
+            return
+        self.insert_square_composed_number(int(raw_value))
+
+    def insert_square_composed_number(self, number: int) -> None:
+        self.insert_square_composed_chars(str(number), f"겹치기글자 □{number}")
+
+    def insert_checked_box_symbol(self) -> None:
+        label = "체크박스 ☑"
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            executed = self.insert_hwp_text("☑")
+            self.log(f"{label}: Chars=☑, result={executed}")
+            if not executed:
+                messagebox.showwarning(
+                    label,
+                    "한글이 체크박스 문자 삽입을 실패로 반환했습니다. 입력 가능한 본문 위치에 커서를 둔 상태인지 확인하세요.",
+                )
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def insert_square_composed_standard_check_mark(self) -> None:
+        self.insert_square_composed_chars("✓", "체크박스 □✓")
+
+    def insert_square_composed_check_mark(self) -> None:
+        self.insert_square_composed_chars("✔", "체크박스 □✔")
+
+    def insert_square_composed_chars(self, chars: str, label: str) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            pset = self.hwp_parameter_set("HChCompose")
+            default_ok = bool(self.hwp.HAction.GetDefault("ComposeChars", pset.HSet))
+            values = {
+                "Chars": chars,
+                "CircleType": 3,
+                "CharSize": -3,
+                "CheckCompose": 0,
+                "TextDir": 0,
+            }
+            for item, value in values.items():
+                self.set_parameter_item(pset, item, value, "ComposeChars")
+                try:
+                    self.set_parameter_item(pset.HSet, item, value, "ComposeChars")
+                except Exception:
+                    pass
+            executed = bool(self.hwp.HAction.Execute("ComposeChars", pset.HSet))
+            self.log(
+                f"{label}: Chars={chars}, CircleType=3, CharSize=-3, "
+                f"CheckCompose=0, TextDir=0, GetDefault={default_ok}, result={executed}"
+            )
+            if not executed:
+                messagebox.showwarning(
+                    label,
+                    "한글이 사각형 겹치기글자 삽입을 실패로 반환했습니다. 입력 가능한 본문 위치에 커서를 둔 상태인지 확인하세요.",
                 )
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
