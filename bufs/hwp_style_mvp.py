@@ -2617,14 +2617,24 @@ class MvpApp(tk.Tk):
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=(8, 0))
-        ttk.Button(buttons, text="한글 다시 연결", command=self.check_hwp).pack(side="left")
-        ttk.Button(buttons, text="대상 확인", command=self.show_current_target).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="테스트 문서 열기", command=self.open_style_test_copy).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="자산 다시 읽기", command=self.refresh_all).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="업데이트 확인", command=lambda: self.check_for_updates(silent=False)).pack(
-            side="left", padx=(8, 0)
+        for column in range(3):
+            buttons.grid_columnconfigure(column, weight=1)
+        status_buttons = (
+            ("한글 다시 연결", self.check_hwp),
+            ("대상 확인", self.show_current_target),
+            ("테스트 문서 열기", self.open_style_test_copy),
+            ("자산 다시 읽기", self.refresh_all),
+            ("업데이트 확인", lambda: self.check_for_updates(silent=False)),
+            ("실행취소", self.undo_hwp),
         )
-        ttk.Button(buttons, text="실행취소", command=self.undo_hwp).pack(side="left", padx=(8, 0))
+        for index, (text, command) in enumerate(status_buttons):
+            ttk.Button(buttons, text=text, command=command).grid(
+                row=index // 3,
+                column=index % 3,
+                sticky="ew",
+                padx=(0 if index % 3 == 0 else 6, 0),
+                pady=(0 if index < 3 else 6, 0),
+            )
 
     def _build_styles_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
