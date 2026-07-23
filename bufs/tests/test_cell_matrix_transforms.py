@@ -29,6 +29,7 @@ from hwp_style_mvp import (  # noqa: E402
     normalize_decimal_numbers,
     normalize_dates,
     normalize_clipboard_newlines,
+    normalize_table_settings,
     parse_cell_clipboard_matrix,
     parse_cover_input,
     parse_update_info,
@@ -41,6 +42,8 @@ from hwp_style_mvp import (  # noqa: E402
     scale_decimal_numbers,
     scale_decimal_numbers_for_unit_conversion,
     split_table_caption_parts,
+    merge_dict,
+    DEFAULT_TABLE_SETTINGS,
     SuspiciousDecimalNumberError,
     UnsafeUnitConversionNumberError,
     ensure_no_suspicious_decimal_numbers,
@@ -863,6 +866,22 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(spaced.suffix, "] 학사관리 체계 개선 실적")
         self.assertEqual(compact.prefix, "[표-17")
         self.assertEqual(compact.suffix, "] 제목")
+
+    def test_table_settings_upgrade_legacy_default_caption_parser(self) -> None:
+        settings = {
+            "caption_parser": {
+                "pattern": r"^\[\s*(?P<kind>표|그림)\s+(?P<prefix>[^\]]*-)\s*(?:\d+)?\s*\]\s*(?P<title>.*)$",
+                "prefix_template": "[{kind} {prefix}",
+                "suffix_template": "] {title}",
+            }
+        }
+
+        normalized = normalize_table_settings(merge_dict(DEFAULT_TABLE_SETTINGS, settings))
+        caption_parser = normalized["caption_parser"]
+
+        self.assertIn("(?P<gap>", caption_parser["pattern"])
+        self.assertIn("(?P<number>", caption_parser["pattern"])
+        self.assertEqual(caption_parser["prefix_template"], "[{kind}{gap}{prefix}{number}")
 
     def test_refresh_current_doc_style_map_prefers_hwp_memory_styles(self) -> None:
         class FakeHwp:

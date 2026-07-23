@@ -221,7 +221,11 @@ LINE_PRESETS = {
     "점선": {"width": "0.12mm", "type": "Dot"},
 }
 
-DEFAULT_CAPTION_PATTERN = r"^\[\s*(?P<kind>표|그림)\s+(?P<prefix>[^\]]*-)\s*(?:\d+)?\s*\]\s*(?P<title>.*)$"
+LEGACY_DEFAULT_CAPTION_PATTERN = r"^\[\s*(?P<kind>표|그림)\s+(?P<prefix>[^\]]*-)\s*(?:\d+)?\s*\]\s*(?P<title>.*)$"
+LEGACY_DEFAULT_CAPTION_PREFIX_TEMPLATE = "[{kind} {prefix}"
+DEFAULT_CAPTION_PATTERN = r"^\[\s*(?P<kind>표|그림)(?P<gap>\s*)(?P<prefix>(?:\d+(?:\.\d+)*\s*)?-)\s*(?P<number>\d+)?\s*\]\s*(?P<title>.*)$"
+DEFAULT_CAPTION_PREFIX_TEMPLATE = "[{kind}{gap}{prefix}{number}"
+DEFAULT_CAPTION_SUFFIX_TEMPLATE = "] {title}"
 
 DEFAULT_TABLE_SETTINGS = {
     "palette": DEFAULT_PALETTE,
@@ -262,8 +266,8 @@ DEFAULT_TABLE_SETTINGS = {
     },
     "caption_parser": {
         "pattern": DEFAULT_CAPTION_PATTERN,
-        "prefix_template": "[{kind} {prefix}",
-        "suffix_template": "] {title}",
+        "prefix_template": DEFAULT_CAPTION_PREFIX_TEMPLATE,
+        "suffix_template": DEFAULT_CAPTION_SUFFIX_TEMPLATE,
         "sample": "[그림 2.4-1] 학사관리 체계 개선 실적",
     },
 }
@@ -1065,6 +1069,14 @@ def normalize_table_settings(settings: dict) -> dict:
     if isinstance(markdown_table, dict):
         if markdown_table.get("table_style_preset") not in TABLE_STYLE_PRESET_LABELS:
             markdown_table["table_style_preset"] = DEFAULT_TABLE_SETTINGS["markdown_table"]["table_style_preset"]
+    caption_parser = settings.get("caption_parser")
+    if isinstance(caption_parser, dict):
+        if str(caption_parser.get("pattern") or "") == LEGACY_DEFAULT_CAPTION_PATTERN:
+            caption_parser["pattern"] = DEFAULT_CAPTION_PATTERN
+        if str(caption_parser.get("prefix_template") or "") == LEGACY_DEFAULT_CAPTION_PREFIX_TEMPLATE:
+            caption_parser["prefix_template"] = DEFAULT_CAPTION_PREFIX_TEMPLATE
+        if not caption_parser.get("suffix_template"):
+            caption_parser["suffix_template"] = DEFAULT_CAPTION_SUFFIX_TEMPLATE
     return settings
 
 
