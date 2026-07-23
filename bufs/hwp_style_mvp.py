@@ -16,11 +16,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -86,6 +88,7 @@ TEMPLATE_DIR = ROOT / "templates"
 COVER_FILE = TEMPLATE_DIR / "표지.hwpx"
 GENERAL_REPORT_TEMPLATE_FILE = TEMPLATE_DIR / "일반보고_양식.hwpx"
 TITLE_NUMBER_BOX_TEMPLATE_FILE = TEMPLATE_DIR / "대제목_번호박스.hwpx"
+PROOF_TEMPLATE_FILE = TEMPLATE_DIR / "증빙_양식.hwpx"
 LOGO_DIR = ROOT / "logos"
 TEST_OUTPUT_DIR = ROOT / "test-output"
 CONFIG_ROOT = user_config_root()
@@ -102,6 +105,16 @@ LAST_HWP_CONNECTION_LOG: list[str] = []
 APP_VERSION = "1.0.1"
 APP_NAME = "BUFS-HWP-Editor"
 TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
+PROOF_TITLE_MARKER = "{{증빙제목}}"
+PROOF_IMAGE_MARKER = "{{증빙자료}}"
+HWPUNIT_PER_MM = 7200 / 25.4
+PROOF_IMAGE_CELL_WIDTH = 48190
+PROOF_IMAGE_FIRST_CELL_HEIGHT = 63566
+PROOF_IMAGE_FULL_CELL_HEIGHT = 70016
+PROOF_IMAGE_CELL_MARGIN_X = 510
+PROOF_IMAGE_CELL_MARGIN_Y = 141
+PROOF_DEFAULT_DPI = 300
+PROOF_JPEG_QUALITY = 92
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
     "check_on_start": True,
@@ -250,6 +263,14 @@ class UpdateInfo:
     latest_version: str
     download_url: str
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class ProofImagePage:
+    path: Path
+    width_px: int
+    height_px: int
+    rotated: bool = False
 
 
 DEFAULT_PALETTE = [
@@ -1577,6 +1598,114 @@ def create_filled_title_number_box_file(
     return target
 
 
+def normalize_proof_title_from_path(path: Path) -> str:
+    title = path.stem.strip()
+    title = re.sub(r"^\s*\d+(?:\.\d+)?[\s._-]+", "", title).strip()
+    return title or path.stem
+
+
+def proof_sort_key(path: Path) -> tuple[float, str]:
+    match = re.match(r"^\s*(\d+(?:\.\d+)?)", path.stem)
+    number = float(match.group(1)) if match else float("inf")
+    return number, path.name.casefold()
+
+
+def create_filled_proof_template_file(
+    title: str,
+    template: Path = PROOF_TEMPLATE_FILE,
+) -> Path:
+    if not template.exists():
+        raise FileNotFoundError(f"증빙 양식 템플릿을 찾지 못했습니다: {template}")
+
+    TEST_OUTPUT_DIR.mkdir(exist_ok=True)
+    safe_digest = hashlib.sha1(title.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    target = TEST_OUTPUT_DIR / f"proof-template-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{safe_digest}.hwpx"
+
+    with zipfile.ZipFile(template, "r") as src, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename.endswith(".xml"):
+                text = data.decode("utf-8")
+                text = text.replace(PROOF_TITLE_MARKER, hwp_xml_text(title))
+                data = text.encode("utf-8")
+            elif info.filename == "Preview/PrvText.txt":
+                text = data.decode("utf-8")
+                text = text.replace(PROOF_TITLE_MARKER, title)
+                data = text.encode("utf-8")
+            dst.writestr(info, data)
+
+    return target
+
+
+def hwpunit_to_mm(value: int | float) -> float:
+    return float(value) / HWPUNIT_PER_MM
+
+
+def fit_mm_to_cell(
+    image_width_px: int,
+    image_height_px: int,
+    cell_width_hwp: int,
+    cell_height_hwp: int,
+) -> tuple[float, float]:
+    return fit_mm_to_box(
+        image_width_px,
+        image_height_px,
+        cell_width_hwp,
+        cell_height_hwp,
+        margin_x_hwp=PROOF_IMAGE_CELL_MARGIN_X,
+        margin_y_hwp=PROOF_IMAGE_CELL_MARGIN_Y,
+    )
+
+
+def fit_mm_to_box(
+    image_width_px: int,
+    image_height_px: int,
+    box_width_hwp: int,
+    box_height_hwp: int,
+    *,
+    margin_x_hwp: int = 0,
+    margin_y_hwp: int = 0,
+) -> tuple[float, float]:
+    available_width = max(1, box_width_hwp - (margin_x_hwp * 2))
+    available_height = max(1, box_height_hwp - (margin_y_hwp * 2))
+    width_mm = hwpunit_to_mm(available_width)
+    height_mm = hwpunit_to_mm(available_height)
+    scale = min(width_mm / max(1, image_width_px), height_mm / max(1, image_height_px))
+    return image_width_px * scale, image_height_px * scale
+
+
+def render_pdf_pages_to_jpegs(
+    pdf_path: Path,
+    output_dir: Path,
+    *,
+    dpi: int = PROOF_DEFAULT_DPI,
+    quality: int = PROOF_JPEG_QUALITY,
+    auto_rotate_landscape: bool = True,
+) -> list[ProofImagePage]:
+    try:
+        import fitz  # type: ignore[import-not-found]
+        from PIL import Image  # type: ignore[import-not-found]
+    except Exception as exc:
+        raise RuntimeError("증빙 PDF 렌더링에는 PyMuPDF와 Pillow가 필요합니다.") from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pages: list[ProofImagePage] = []
+    zoom = dpi / 72
+    matrix = fitz.Matrix(zoom, zoom)
+    with fitz.open(str(pdf_path)) as doc:
+        for index, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            image = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+            rotated = False
+            if auto_rotate_landscape and image.width > image.height:
+                image = image.rotate(90, expand=True)
+                rotated = True
+            target = output_dir / f"{pdf_path.stem}-p{index:03d}.jpg"
+            image.save(target, "JPEG", quality=quality, optimize=True)
+            pages.append(ProofImagePage(target, image.width, image.height, rotated))
+    return pages
+
+
 def list_logos(root: Path = LOGO_DIR) -> list[Path]:
     if not root.exists():
         return []
@@ -2792,6 +2921,8 @@ class MvpApp(tk.Tk):
         self.apply_on_select = tk.BooleanVar(value=True)
         self.cover_confidential = tk.BooleanVar(value=False)
         self.logo_height_var = tk.StringVar(value="12")
+        self.proof_dpi_var = tk.StringVar(value=str(PROOF_DEFAULT_DPI))
+        self.proof_auto_rotate_var = tk.BooleanVar(value=True)
         self.decimal_places_var = tk.StringVar(value="0")
         self.decimal_mode_var = tk.StringVar(value="반올림")
         self.decimal_use_commas_var = tk.BooleanVar(value=True)
@@ -4259,7 +4390,19 @@ class MvpApp(tk.Tk):
 
     def _build_cover_logo_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
-        self.notebook.add(frame, text="양식/로고")
+        self.notebook.add(frame, text="양식/그림")
+
+        cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=8)
+        cover_group.pack(fill="x", pady=(0, 10))
+        ttk.Checkbutton(cover_group, text="대외비 표시", variable=self.cover_confidential).pack(anchor="w")
+        ttk.Button(cover_group, text="선택 내용으로 표지 만들기", command=self.create_cover_from_selected_lines).pack(
+            fill="x", pady=(6, 0)
+        )
+        ttk.Label(
+            cover_group,
+            text="한글에서 제목, 날짜, 부서명을 선택한 뒤 실행합니다. 부서명은 Shift+Enter 줄바꿈처럼 여러 줄이어도 됩니다.",
+            wraplength=390,
+        ).pack(anchor="w", pady=(6, 0))
 
         template_group = ttk.LabelFrame(frame, text="보고 양식", padding=8)
         template_group.pack(fill="x", pady=(0, 10))
@@ -4274,17 +4417,49 @@ class MvpApp(tk.Tk):
             command=self.insert_title_number_box_template,
         ).pack(fill="x", pady=(6, 0))
 
-        cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=8)
-        cover_group.pack(fill="x", pady=(0, 10))
-        ttk.Checkbutton(cover_group, text="대외비 표시", variable=self.cover_confidential).pack(anchor="w")
-        ttk.Button(cover_group, text="선택 내용으로 표지 만들기", command=self.create_cover_from_selected_lines).pack(
-            fill="x", pady=(6, 0)
-        )
-        ttk.Label(
-            cover_group,
-            text="한글에서 제목, 날짜, 부서명을 선택한 뒤 실행합니다. 부서명은 Shift+Enter 줄바꿈처럼 여러 줄이어도 됩니다.",
-            wraplength=390,
-        ).pack(anchor="w", pady=(6, 0))
+        proof_group = ttk.LabelFrame(frame, text="증빙 PDF", padding=8)
+        proof_group.pack(fill="x", pady=(0, 10))
+        proof_option_row = ttk.Frame(proof_group)
+        proof_option_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(proof_option_row, text="해상도(dpi)").pack(side="left")
+        ttk.Entry(proof_option_row, textvariable=self.proof_dpi_var, width=7).pack(side="left", padx=(6, 10))
+        ttk.Checkbutton(
+            proof_option_row,
+            text="가로 자동 회전",
+            variable=self.proof_auto_rotate_var,
+        ).pack(side="left")
+        ttk.Button(
+            proof_group,
+            text="증빙 PDF 폴더 삽입",
+            command=self.insert_proof_pdf_folder,
+        ).pack(fill="x")
+        ttk.Button(
+            proof_group,
+            text="증빙 PDF 1건 삽입",
+            command=self.insert_single_proof_pdf,
+        ).pack(fill="x", pady=(6, 0))
+
+        picture_group = ttk.LabelFrame(frame, text="그림", padding=8)
+        picture_group.pack(fill="x", pady=(0, 10))
+        picture_tool_row = ttk.Frame(picture_group)
+        picture_tool_row.pack(fill="x")
+        ttk.Button(
+            picture_tool_row,
+            text="그림 왼쪽 90도",
+            command=lambda: self.rotate_selected_picture(clockwise=False),
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            picture_tool_row,
+            text="그림 오른쪽 90도",
+            command=lambda: self.rotate_selected_picture(clockwise=True),
+        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Button(
+            picture_tool_row,
+            text="선택 그림 셀 맞춤",
+            command=self.fit_selected_picture_to_proof_cell,
+        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        for column in range(3):
+            picture_tool_row.grid_columnconfigure(column, weight=1, uniform="picture-tools")
 
         logo_group = ttk.LabelFrame(frame, text="로고 삽입", padding=8)
         logo_group.pack(fill="both", expand=True)
@@ -7554,6 +7729,524 @@ class MvpApp(tk.Tk):
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
+
+    def proof_render_options(self) -> tuple[int, bool]:
+        try:
+            dpi = int(self.proof_dpi_var.get().strip())
+        except ValueError:
+            raise ValueError("증빙 PDF 해상도는 정수 dpi로 입력하세요.")
+        if dpi < 72 or dpi > 600:
+            raise ValueError("증빙 PDF 해상도는 72~600 dpi 사이로 입력하세요.")
+        return dpi, bool(self.proof_auto_rotate_var.get())
+
+    def hwp_find_text(self, text: str, *, direction: int = 2) -> bool:
+        pset = self.hwp.HParameterSet.HFindReplace
+        self.hwp.HAction.GetDefault("RepeatFind", pset.HSet)
+        values = {
+            "FindString": text,
+            "Direction": direction,
+            "IgnoreMessage": 1,
+            "FindType": 1,
+            "MatchCase": 0,
+            "AllWordForms": 0,
+            "SeveralWords": 0,
+            "UseWildCards": 0,
+            "WholeWordOnly": 0,
+            "ReplaceMode": 0,
+        }
+        for item, value in values.items():
+            try:
+                setattr(pset, item, value)
+            except Exception:
+                try:
+                    pset.HSet.SetItem(item, value)
+                except Exception:
+                    pass
+        return bool(self.hwp.HAction.Execute("RepeatFind", pset.HSet))
+
+    def current_proof_full_cell_height(self) -> int:
+        _default_ok, settings = self.read_current_page_settings()
+        if settings is None:
+            return PROOF_IMAGE_FULL_CELL_HEIGHT
+        body_height = (
+            settings.paper_height
+            - settings.top_margin
+            - settings.bottom_margin
+            - settings.header_len
+            - settings.footer_len
+        )
+        if body_height <= 0:
+            return PROOF_IMAGE_FULL_CELL_HEIGHT
+        self.debug(
+            f"[proof-cell-height-current] body_height={body_height} "
+            f"({hwpunit_to_mm(body_height):.2f}mm), settings={format_page_settings(settings)}"
+        )
+        return body_height
+
+    def current_page_body_size(self) -> tuple[int, int, str]:
+        default_ok, settings = self.read_current_page_settings()
+        if settings is None:
+            self.debug("[picture-fit-box] page settings unavailable; using proof defaults")
+            return PROOF_IMAGE_CELL_WIDTH, PROOF_IMAGE_FULL_CELL_HEIGHT, "page-default"
+        body_width = (
+            settings.paper_width
+            - settings.left_margin
+            - settings.right_margin
+            - settings.gutter_len
+        )
+        body_height = (
+            settings.paper_height
+            - settings.top_margin
+            - settings.bottom_margin
+            - settings.header_len
+            - settings.footer_len
+        )
+        body_width = max(1, body_width)
+        body_height = max(1, body_height)
+        self.debug(
+            "[picture-fit-box] "
+            f"page GetDefault={default_ok}, body={body_width}x{body_height} "
+            f"({hwpunit_to_mm(body_width):.2f}x{hwpunit_to_mm(body_height):.2f}mm), "
+            f"settings={format_page_settings(settings)}"
+        )
+        return body_width, body_height, "page"
+
+    def current_table_cell_size(self) -> tuple[int, int, str] | None:
+        return self.read_current_table_cell_size("picture-fit-box")
+
+    def read_current_table_cell_size(self, log_prefix: str) -> tuple[int, int, str] | None:
+        try:
+            cell_shape = self.hwp.CellShape
+            candidates: list[tuple[str, object]] = [("CellShape", cell_shape)]
+            cell = self.get_parameter_child(cell_shape, "Cell", f"{log_prefix}-cellshape")
+            if cell is not None:
+                candidates.insert(0, ("CellShape.Cell", cell))
+            for source, candidate in candidates:
+                width = self.get_parameter_item_value(candidate, "Width")
+                height = self.get_parameter_item_value(candidate, "Height")
+                self.debug(f"[{log_prefix}] {source} Width={width!r}, Height={height!r}")
+                try:
+                    width_int = int(width)
+                    height_int = int(height)
+                except Exception:
+                    continue
+                if width_int > 0 and height_int > 0:
+                    return width_int, height_int, source
+        except Exception as exc:
+            self.debug(f"[{log_prefix}] CellShape read failed: {type(exc).__name__}: {exc}")
+
+        try:
+            pset = self.hwp.HParameterSet.HShapeObject
+            default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", pset.HSet))
+            shape_cell = self.get_parameter_child(pset, "ShapeTableCell", f"{log_prefix}-table-dialog")
+            if shape_cell is not None:
+                width = self.get_parameter_item_value(shape_cell, "Width")
+                height = self.get_parameter_item_value(shape_cell, "Height")
+                self.debug(
+                    f"[{log_prefix}] TablePropertyDialog GetDefault={default_ok}, "
+                    f"ShapeTableCell Width={width!r}, Height={height!r}"
+                )
+                try:
+                    width_int = int(width)
+                    height_int = int(height)
+                except Exception:
+                    width_int = 0
+                    height_int = 0
+                if width_int > 0 and height_int > 0:
+                    return width_int, height_int, "TablePropertyDialog.ShapeTableCell"
+            else:
+                self.debug(f"[{log_prefix}] TablePropertyDialog GetDefault={default_ok}, ShapeTableCell=None")
+        except Exception as exc:
+            self.debug(f"[{log_prefix}] TablePropertyDialog read failed: {type(exc).__name__}: {exc}")
+        return None
+
+    def picture_fit_box_from_ctrl_anchor(self, ctrl, log_prefix: str) -> tuple[int, int, str] | None:
+        original_pos = self.get_hwp_pos_by_set()
+        try:
+            try:
+                anchor_pos = ctrl.GetAnchorPos(0)
+            except Exception as exc:
+                self.debug(f"[{log_prefix}] GetAnchorPos(0) failed: {type(exc).__name__}: {exc}")
+                return None
+            if anchor_pos is None:
+                self.debug(f"[{log_prefix}] GetAnchorPos(0)=None")
+                return None
+            set_ok = self.set_hwp_pos_by_set(anchor_pos)
+            time.sleep(0.03)
+            cell_size = self.read_current_table_cell_size(f"{log_prefix}-anchor-0")
+            if cell_size is None:
+                self.debug(f"[{log_prefix}] anchor[0] SetPosBySet={set_ok}, cell=None")
+                return None
+            width, height, source = cell_size
+            self.debug(
+                f"[{log_prefix}] anchor[0] SetPosBySet={set_ok}, "
+                f"source={source}, size={width}x{height}, "
+                f"mm={hwpunit_to_mm(width):.2f}x{hwpunit_to_mm(height):.2f}"
+            )
+            return width, height, f"anchor[0].{source}"
+        finally:
+            if original_pos is not None:
+                restored = self.set_hwp_pos_by_set(original_pos)
+                self.debug(f"[{log_prefix}] restore_pos={restored}")
+
+    def current_picture_fit_box(self, ctrl=None) -> tuple[int, int, str]:
+        if ctrl is not None:
+            anchor_size = self.picture_fit_box_from_ctrl_anchor(ctrl, "picture-fit-box")
+            if anchor_size is not None:
+                return anchor_size
+        cell_size = self.current_table_cell_size()
+        if cell_size is not None:
+            return cell_size
+        return self.current_page_body_size()
+
+    def set_current_cell_height(self, height_hwp: int, *, shape_cell_size: int = 1) -> bool:
+        self.run_hwp_command_best_effort("TableCellBlock")
+        time.sleep(0.03)
+        results: list[tuple[str, bool]] = []
+        try:
+            pset = self.hwp.HParameterSet.HShapeObject
+            default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", pset.HSet))
+            pset.HSet.SetItem("ShapeType", 3)
+            pset.HSet.SetItem("ShapeCellSize", shape_cell_size)
+            pset.ShapeTableCell.Height = int(height_hwp)
+            executed = bool(self.hwp.HAction.Execute("TablePropertyDialog", pset.HSet))
+            ok = bool(default_ok and executed)
+            self.debug(
+                f"[proof-cell-height-macro] height={height_hwp}, height_mm={hwpunit_to_mm(height_hwp):.2f}, "
+                f"GetDefault={default_ok}, ShapeCellSize={shape_cell_size}, Execute={executed}, ok={ok}"
+            )
+            results.append(("macro-style TablePropertyDialog", ok))
+            if ok:
+                self.clear_hwp_selection()
+                return True
+        except Exception as exc:
+            self.debug(f"[proof-cell-height-macro] 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            action = self.hwp.CreateAction("TablePropertyDialog")
+            pset = action.CreateSet()
+            default_ok = bool(action.GetDefault(pset))
+            size_ok = self.set_parameter_item(pset, "ShapeType", 3, "proof-cell-height-create")
+            size_ok = self.set_parameter_item(pset, "ShapeCellSize", shape_cell_size, "proof-cell-height-create") and size_ok
+            shape_cell = self.get_parameter_child(pset, "ShapeTableCell", "proof-cell-height-create")
+            cell_ok = False
+            if shape_cell is not None:
+                try:
+                    shape_cell.Height = int(height_hwp)
+                    cell_ok = True
+                except Exception as attr_exc:
+                    self.debug(f"[proof-cell-height-create] ShapeTableCell.Height 직접 설정 실패: {type(attr_exc).__name__}: {attr_exc}")
+                    cell_ok = self.set_parameter_item(shape_cell, "Height", int(height_hwp), "proof-cell-height-create")
+            executed = bool(action.Execute(pset))
+            ok = bool(default_ok and size_ok and cell_ok and executed)
+            self.debug(
+                f"[proof-cell-height-create] height={height_hwp}, GetDefault={default_ok}, "
+                f"ShapeCellSize={shape_cell_size}, size={size_ok}, cell={cell_ok}, Execute={executed}, ok={ok}"
+            )
+            results.append(("CreateAction(TablePropertyDialog)", ok))
+            if ok:
+                self.clear_hwp_selection()
+                return True
+        except Exception as exc:
+            self.debug(f"[proof-cell-height-create] 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            cell_shape = self.hwp.CellShape
+            cell = self.get_parameter_child(cell_shape, "Cell", "proof-cell-height-cellshape")
+            cell_ok = False
+            if cell is not None:
+                cell_ok = self.set_parameter_item(cell, "Height", int(height_hwp), "proof-cell-height-cellshape")
+                self.set_parameter_item(cell_shape, "Cell", cell, "proof-cell-height-cellshape")
+            commit_ok = self.commit_cell_shape(cell_shape)
+            ok = bool(cell_ok and commit_ok)
+            self.debug(f"[proof-cell-height-cellshape] height={height_hwp}, cell={cell_ok}, commit={commit_ok}, ok={ok}")
+            results.append(("CellShape.Cell.Height", ok))
+            if ok:
+                return True
+        except Exception as exc:
+            self.debug(f"[proof-cell-height-cellshape] 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            pset = self.hwp.HParameterSet.HShapeObject
+            default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", pset.HSet))
+            size_ok = self.set_parameter_item(pset, "ShapeType", 3, "proof-cell-height")
+            size_ok = self.set_parameter_item(pset, "ShapeCellSize", shape_cell_size, "proof-cell-height") and size_ok
+            shape_cell = self.get_parameter_child(pset, "ShapeTableCell", "proof-cell-height")
+            cell_ok = False
+            if shape_cell is not None:
+                try:
+                    shape_cell.Height = int(height_hwp)
+                    cell_ok = True
+                except Exception as attr_exc:
+                    self.debug(f"[proof-cell-height] ShapeTableCell.Height 직접 설정 실패: {type(attr_exc).__name__}: {attr_exc}")
+                    cell_ok = self.set_parameter_item(shape_cell, "Height", int(height_hwp), "proof-cell-height")
+            action_name, executed = self.execute_first_hwp_action(("TablePropertyDialog", "ShapeObjDialog"), pset.HSet)
+            ok = bool(default_ok and size_ok and cell_ok and executed)
+            self.debug(
+                f"[proof-cell-height] height={height_hwp}, GetDefault={default_ok}, "
+                f"ShapeCellSize={shape_cell_size}, size={size_ok}, cell={cell_ok}, action={action_name}, Execute={executed}, ok={ok}"
+            )
+            results.append((action_name, ok))
+            if ok:
+                self.clear_hwp_selection()
+                return True
+        except Exception as exc:
+            self.debug(f"[proof-cell-height] TablePropertyDialog fallback 실패: {type(exc).__name__}: {exc}")
+        self.debug(f"[proof-cell-height] 모든 경로 실패: {results}")
+        self.clear_hwp_selection()
+        return False
+
+    def prepare_proof_image_cell(self, height_hwp: int) -> None:
+        self.run_hwp_command("ParagraphShapeAlignCenter")
+        self.run_hwp_command("TableVAlignCenter")
+        self.set_current_cell_height(height_hwp, shape_cell_size=1)
+
+    def insert_proof_image_page(self, page: ProofImagePage, cell_height_hwp: int) -> bool:
+        self.prepare_proof_image_cell(cell_height_hwp)
+        width_mm, height_mm = fit_mm_to_cell(
+            page.width_px,
+            page.height_px,
+            PROOF_IMAGE_CELL_WIDTH,
+            cell_height_hwp,
+        )
+        return self.insert_picture_at_cursor(page.path, width_mm, height_mm)
+
+    def append_proof_image_row(self) -> bool:
+        self.clear_hwp_selection()
+        time.sleep(0.05)
+        before = self.get_current_cell_address()
+        appended = self.run_hwp_command_best_effort("TableAppendRow")
+        if not appended:
+            appended = self.run_hwp_command_best_effort("TableInsertLowerRow")
+        time.sleep(0.05)
+        moved = self.run_hwp_command_best_effort("TableLowerCell")
+        time.sleep(0.05)
+        after = self.get_current_cell_address()
+        moved_by_address = bool(before and after and after[1] > before[1])
+        ok = bool(appended and moved_by_address)
+        self.debug(f"[proof-row] before_col_row={before}, appended={appended}, moved={moved}, after_col_row={after}, ok={ok}")
+        return ok
+
+    def run_hwp_command_best_effort(self, command: str) -> bool:
+        for runner in (
+            lambda: self.hwp.HAction.Run(command),
+            lambda: self.hwp.Run(command),
+        ):
+            try:
+                result = runner()
+                self.debug(f"[hwp-command] {command}: result={result!r}")
+                return True
+            except Exception as exc:
+                self.debug(f"[hwp-command] {command} 실패: {type(exc).__name__}: {exc}")
+        return False
+
+    def move_after_current_proof_table(self, *, insert_page_break: bool = True) -> bool:
+        self.clear_hwp_selection()
+        time.sleep(0.05)
+        closed = self.run_hwp_command_best_effort("CloseEx")
+        if not insert_page_break:
+            self.debug(f"[proof-exit] CloseEx={closed}, BreakPage=skipped")
+            return bool(closed)
+        time.sleep(0.08)
+        page_break = self.run_hwp_command_best_effort("BreakPage")
+        time.sleep(0.05)
+        self.debug(f"[proof-exit] CloseEx={closed}, BreakPage={page_break}")
+        return bool(closed and page_break)
+
+    def insert_proof_pdf(self, pdf_path: Path, *, insert_page_break_after: bool = False) -> tuple[int, int]:
+        title = normalize_proof_title_from_path(pdf_path)
+        dpi, auto_rotate = self.proof_render_options()
+        with tempfile.TemporaryDirectory(prefix="bufs-proof-") as temp_name:
+            pages = render_pdf_pages_to_jpegs(
+                pdf_path,
+                Path(temp_name),
+                dpi=dpi,
+                quality=PROOF_JPEG_QUALITY,
+                auto_rotate_landscape=auto_rotate,
+            )
+            if not pages:
+                raise RuntimeError(f"PDF 페이지가 없습니다: {pdf_path.name}")
+
+            template_path = create_filled_proof_template_file(title)
+            insert_ok = self.insert_file_at_cursor(template_path, keep_section=0)
+            if not insert_ok:
+                raise RuntimeError(f"증빙 양식을 삽입하지 못했습니다: {template_path.name}")
+
+            if not self.hwp_find_text(PROOF_IMAGE_MARKER, direction=1):
+                if not self.hwp_find_text(PROOF_IMAGE_MARKER, direction=2):
+                    raise RuntimeError(f"증빙자료 위치를 찾지 못했습니다: {pdf_path.name}")
+            self.run_hwp_command("Delete")
+
+            inserted = 0
+            rotated = 0
+            full_cell_height = self.current_proof_full_cell_height()
+            for index, page in enumerate(pages):
+                if index > 0 and not self.append_proof_image_row():
+                    raise RuntimeError(f"증빙 이미지 행 추가에 실패했습니다: {pdf_path.name} p.{index + 1}")
+                cell_height = PROOF_IMAGE_FIRST_CELL_HEIGHT if index == 0 else full_cell_height
+                if not self.insert_proof_image_page(page, cell_height):
+                    raise RuntimeError(f"증빙 이미지 삽입에 실패했습니다: {pdf_path.name} p.{index + 1}")
+                inserted += 1
+                rotated += 1 if page.rotated else 0
+                self.clear_hwp_selection()
+            self.move_after_current_proof_table(insert_page_break=insert_page_break_after)
+        self.run_hwp_command("UpdateAll")
+        self.log(f"증빙 삽입 완료: {pdf_path.name}, title={title}, pages={inserted}, rotated={rotated}, dpi={dpi}, jpg={PROOF_JPEG_QUALITY}")
+        return inserted, rotated
+
+    def insert_single_proof_pdf(self) -> None:
+        label = "증빙 PDF 1건 삽입"
+        if not self.ensure_hwp():
+            return
+        path = filedialog.askopenfilename(
+            title=label,
+            filetypes=(("PDF 파일", "*.pdf"), ("모든 파일", "*.*")),
+        )
+        if not path:
+            return
+        try:
+            pages, rotated = self.insert_proof_pdf(Path(path))
+            self.activate_hwp_window()
+            messagebox.showinfo(label, f"삽입 완료\n\n페이지: {pages}개\n자동 회전: {rotated}개")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def insert_proof_pdf_folder(self) -> None:
+        label = "증빙 PDF 폴더 삽입"
+        if not self.ensure_hwp():
+            return
+        folder = filedialog.askdirectory(title=label)
+        if not folder:
+            return
+        try:
+            pdfs = sorted(
+                (path for path in Path(folder).iterdir() if path.is_file() and path.suffix.lower() == ".pdf"),
+                key=proof_sort_key,
+            )
+            if not pdfs:
+                messagebox.showwarning(label, "선택한 폴더에 PDF 파일이 없습니다.")
+                return
+            total_pages = 0
+            total_rotated = 0
+            failures: list[str] = []
+            for pdf_index, pdf_path in enumerate(pdfs):
+                try:
+                    pages, rotated = self.insert_proof_pdf(
+                        pdf_path,
+                        insert_page_break_after=pdf_index < len(pdfs) - 1,
+                    )
+                    total_pages += pages
+                    total_rotated += rotated
+                except Exception as proof_exc:
+                    failures.append(f"{pdf_path.name}: {proof_exc}")
+                    self.log(f"{label} 파일 실패: {pdf_path.name}: {type(proof_exc).__name__}: {proof_exc}")
+            self.activate_hwp_window()
+            if failures:
+                messagebox.showwarning(
+                    label,
+                    f"일부 파일을 건너뛰었습니다.\n\n성공 페이지: {total_pages}개\n자동 회전: {total_rotated}개\n실패: {len(failures)}건",
+                )
+            else:
+                messagebox.showinfo(label, f"삽입 완료\n\n파일: {len(pdfs)}개\n페이지: {total_pages}개\n자동 회전: {total_rotated}개")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def rotate_selected_picture(self, *, clockwise: bool) -> None:
+        label = "그림 회전"
+        if not self.ensure_hwp():
+            return
+        try:
+            command = "ShapeObjRightAngleRotater" if clockwise else "ShapeObjRightAngleRotaterAnticlockwise"
+            self.activate_hwp_window()
+            time.sleep(0.12)
+            unpin_ok = self.set_selected_shape_treat_as_char(False)
+            time.sleep(0.05)
+            rotate_result = self.run_hwp_command(command)
+            rotate_ok = bool(rotate_result)
+            rotate_detail = f"{command}:Run={rotate_result!r}"
+            time.sleep(0.05)
+            repin_ok = self.set_selected_shape_treat_as_char(True)
+            time.sleep(0.05)
+            fit_ok = False
+            if rotate_ok:
+                fit_ok = self.fit_selected_picture_to_proof_cell(show_messages=False)
+            self.log(
+                f"{label}: TreatAsChar0={unpin_ok}, command={command}, "
+                f"rotate={rotate_ok}({rotate_detail}), "
+                f"TreatAsChar1={repin_ok}, fit={fit_ok}"
+            )
+            if not rotate_ok:
+                messagebox.showwarning(label, "회전 명령을 실행하지 못했습니다. 그림 개체를 선택한 뒤 다시 실행하세요.")
+            elif not fit_ok:
+                messagebox.showwarning(label, "회전은 실행했지만 셀 크기 자동 맞춤은 적용하지 못했습니다.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def set_selected_shape_treat_as_char(self, enabled: bool) -> bool:
+        try:
+            pset = self.hwp.HParameterSet.HShapeObject
+            default_result = self.hwp.HAction.GetDefault("ShapeObjTreatAsChar", pset.HSet)
+            pset.TreatAsChar = 0 if enabled else 1
+            execute_result = self.hwp.HAction.Execute("ShapeObjTreatAsChar", pset.HSet)
+            self.debug(
+                f"[shape-treat-as-char] enabled={enabled}, "
+                f"TreatAsChar={pset.TreatAsChar}, GetDefault={default_result}, Execute={execute_result}"
+            )
+            return True
+        except Exception as exc:
+            self.debug(f"[shape-treat-as-char] 실패: {type(exc).__name__}: {exc}")
+            return False
+
+    def fit_selected_picture_to_proof_cell(self, *, show_messages: bool = True) -> bool:
+        label = "선택 그림 셀 맞춤"
+        if not self.ensure_hwp():
+            return False
+        try:
+            ctrl = self.hwp.CurSelectedCtrl
+        except Exception:
+            ctrl = None
+        if ctrl is None:
+            if show_messages:
+                messagebox.showwarning(label, "셀 안의 그림 개체를 선택한 뒤 다시 실행하세요.")
+            return False
+        try:
+            props = ctrl.Properties
+            width = int(self.get_parameter_item_value(props, "Width") or 0)
+            height = int(self.get_parameter_item_value(props, "Height") or 0)
+            if width <= 0 or height <= 0:
+                raise RuntimeError("선택 그림의 현재 크기를 읽지 못했습니다.")
+            target_width, target_height, fit_source = self.current_picture_fit_box(ctrl)
+            if fit_source.startswith("page"):
+                new_width_mm, new_height_mm = fit_mm_to_box(width, height, target_width, target_height)
+            else:
+                new_width_mm, new_height_mm = fit_mm_to_cell(width, height, target_width, target_height)
+            values = {
+                "Width": int(round(new_width_mm * HWPUNIT_PER_MM)),
+                "Height": int(round(new_height_mm * HWPUNIT_PER_MM)),
+                "ProtectSize": 0,
+            }
+            if not fit_source.startswith("page"):
+                values["WidthRelTo"] = 4
+                values["HeightRelTo"] = 2
+            ok = True
+            for item, value in values.items():
+                ok = self.set_parameter_item(props, item, value, "proof-picture-fit") and ok
+            ctrl.Properties = props
+            self.log(
+                f"{label}: source={fit_source}, target={target_width}x{target_height}, "
+                f"before={width}x{height}, after={values['Width']}x{values['Height']}, result={ok}"
+            )
+            if not ok and show_messages:
+                messagebox.showwarning(label, "그림 크기 속성 일부를 적용하지 못했습니다.")
+            return ok
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            if show_messages:
+                messagebox.showerror(f"{label} 실패", str(exc))
+            return False
 
     def insert_picture_at_cursor(self, path: Path, width_mm: float, height_mm: float) -> bool:
         file_name = str(path.resolve())
