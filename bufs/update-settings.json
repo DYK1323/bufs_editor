@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "check_on_start": true,
-  "version_url": "",
-  "download_url": "",
+  "version_url": "https://drive.google.com/file/d/17Xbc2yvHli1YTGXUy-T0yNfGQOMZpJb1/view?usp=sharing",
+  "download_url": "https://drive.google.com/drive/folders/1jGfD-de2HHmY41v0kAX-tROJZuOb4vKR?usp=sharing",
   "timeout_seconds": 5
 }

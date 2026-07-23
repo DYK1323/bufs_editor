@@ -2379,13 +2379,6 @@ def safe_str(value) -> str:
         return ""
 
 
-def preview_log_text(text: str, limit: int = 80) -> str:
-    preview = text.replace("\r", "\\r").replace("\n", "\\n")
-    if len(preview) > limit:
-        preview = preview[:limit] + "..."
-    return preview
-
-
 def get_foreground_title() -> str:
     if win32gui is None:
         return ""
@@ -2619,11 +2612,8 @@ class MvpApp(tk.Tk):
         frame = ttk.Frame(self.notebook, padding=8)
         self.notebook.add(frame, text="상태")
 
-        self.status_text = tk.Text(frame, height=30, wrap="word")
-        self.status_text.pack(fill="both", expand=True)
-
         buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(8, 0))
+        buttons.pack(fill="x", pady=(0, 8))
         for column in range(3):
             buttons.grid_columnconfigure(column, weight=1)
         status_buttons = (
@@ -2642,6 +2632,9 @@ class MvpApp(tk.Tk):
                 padx=(0 if index % 3 == 0 else 6, 0),
                 pady=(0 if index < 3 else 6, 0),
             )
+
+        self.status_text = tk.Text(frame, height=30, wrap="word")
+        self.status_text.pack(fill="both", expand=True)
 
     def _build_styles_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
@@ -4685,6 +4678,11 @@ class MvpApp(tk.Tk):
             return
         self.refresh_current_doc_style_map(force=True)
 
+    def current_doc_style_reconnect_hint(self) -> str:
+        if not self.__dict__.get("current_doc_style_map"):
+            return ""
+        return "\n\n스타일 불러오기를 이미 했다면 상태 탭에서 [한글 다시 연결]을 누른 뒤 다시 시도하세요."
+
     def warm_current_doc_style_cache(self) -> None:
         if self.current_doc_style_map:
             return
@@ -4932,7 +4930,8 @@ class MvpApp(tk.Tk):
                 "스타일 이름 매칭 실패",
                 f"현재 문서에서 같은 이름의 스타일을 찾지 못해 적용을 중단했습니다.\n\n"
                 f"찾는 스타일: {style_name}\n\n"
-                "스타일 번호로 대신 적용하면 다른 스타일이 적용될 수 있습니다.",
+                "스타일 번호로 대신 적용하면 다른 스타일이 적용될 수 있습니다."
+                f"{self.current_doc_style_reconnect_hint()}",
             )
             return False
         ok = self.execute_style_record(record)
@@ -6430,7 +6429,8 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning(
                     "스타일 이름 매칭 실패",
                     "현재 문서에서 같은 이름의 스타일을 찾지 못해 적용을 중단했습니다.\n\n"
-                    "스타일 번호로 대신 적용하면 다른 스타일이 적용될 수 있습니다.",
+                    "스타일 번호로 대신 적용하면 다른 스타일이 적용될 수 있습니다."
+                    f"{self.current_doc_style_reconnect_hint()}",
                 )
                 return
 
@@ -7366,14 +7366,15 @@ class MvpApp(tk.Tk):
     def delete_hwp_text_range(self, list_id: int, para: int, start_pos: int, end_pos: int) -> bool:
         if end_pos <= start_pos:
             return False
+        actual_start, actual_end = self.actual_hwp_text_range(list_id, para, start_pos, end_pos)
         try:
-            if not self.set_hwp_pos((list_id, para, start_pos)):
+            if not self.set_hwp_pos((list_id, para, actual_start)):
                 return False
-            if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(para, start_pos, para, end_pos):
+            if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(para, actual_start, para, actual_end):
                 return self.run_hwp_command("Delete")
         except Exception as exc:
             self.debug(f"[paragraph-delete] SelectText 실패 para={para}: {type(exc).__name__}: {exc}")
-        if not self.set_hwp_pos((list_id, para, start_pos)):
+        if not self.set_hwp_pos((list_id, para, actual_start)):
             return False
         for _ in range(end_pos - start_pos):
             if not self.run_hwp_command("MoveSelRight"):
@@ -7382,28 +7383,54 @@ class MvpApp(tk.Tk):
 
     def select_hwp_text_range(self, list_id: int, para: int, start_pos: int, end_pos: int) -> bool:
         if end_pos <= start_pos:
-            return self.set_hwp_pos((list_id, para, start_pos))
+            actual_start, _actual_end = self.actual_hwp_text_range(list_id, para, start_pos, end_pos)
+            return self.set_hwp_pos((list_id, para, actual_start))
         self.clear_hwp_selection()
+        actual_start, actual_end = self.actual_hwp_text_range(list_id, para, start_pos, end_pos)
         try:
-            if not self.set_hwp_pos((list_id, para, start_pos)):
+            if not self.set_hwp_pos((list_id, para, actual_start)):
                 return False
-            if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(para, start_pos, para, end_pos):
-                matches = self.selected_hwp_text_range_matches(list_id, para, start_pos, end_pos)
+            if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(para, actual_start, para, actual_end):
+                matches = self.selected_hwp_text_range_matches(list_id, para, actual_start, actual_end)
                 if matches is not False:
                     return True
                 self.debug(
                     f"[paragraph-select] SelectText 범위 불일치, fallback 사용 "
-                    f"para={para}, expected={start_pos}-{end_pos}"
+                    f"para={para}, expected={actual_start}-{actual_end}, visible={start_pos}-{end_pos}"
                 )
                 self.clear_hwp_selection()
         except Exception as exc:
             self.debug(f"[paragraph-select] SelectText 실패 para={para}: {type(exc).__name__}: {exc}")
-        if not self.set_hwp_pos((list_id, para, start_pos)):
+        if not self.set_hwp_pos((list_id, para, actual_start)):
             return False
         for _ in range(end_pos - start_pos):
             if not self.run_hwp_command("MoveSelRight"):
                 return False
-        return self.selected_hwp_text_range_matches(list_id, para, start_pos, end_pos) is not False
+        return self.selected_hwp_text_range_matches(list_id, para, actual_start, actual_end) is not False
+
+    def hwp_paragraph_visible_text_offset(self, list_id: int, para: int) -> int:
+        if not self.set_hwp_pos((list_id, para, 0)):
+            return 0
+        try:
+            pos = self.hwp.GetPos()
+        except Exception as exc:
+            self.debug(f"[paragraph-pos] GetPos 실패 para={para}: {type(exc).__name__}: {exc}")
+            return 0
+        if not isinstance(pos, tuple) or len(pos) < 3:
+            return 0
+        try:
+            actual_list_id = int(pos[0])
+            actual_para = int(pos[1])
+            actual_pos = int(pos[2])
+        except Exception:
+            return 0
+        if actual_list_id == list_id and actual_para == para and actual_pos > 0:
+            return actual_pos
+        return 0
+
+    def actual_hwp_text_range(self, list_id: int, para: int, start_pos: int, end_pos: int) -> tuple[int, int]:
+        offset = self.hwp_paragraph_visible_text_offset(list_id, para)
+        return offset + start_pos, offset + end_pos
 
     def selected_hwp_text_range_matches(self, list_id: int, para: int, start_pos: int, end_pos: int) -> bool | None:
         try:
@@ -7482,12 +7509,6 @@ class MvpApp(tk.Tk):
             if paragraph_text is None:
                 continue
             ranges = find_inline_rule_ranges_for_style_set(paragraph_text, rule, style_set)
-            if ranges:
-                self.debug(
-                    f"[inline-style] match para=({list_id},{para}), "
-                    f"rule={rule.name}/{rule.rule_type}, role={rule.style_role}, "
-                    f"in_table={in_table}, ranges={ranges}, text={preview_log_text(paragraph_text)!r}"
-                )
             for start_pos, end_pos, marker_range in reversed(ranges):
                 apply_start = start_pos
                 apply_end = end_pos
@@ -7502,15 +7523,6 @@ class MvpApp(tk.Tk):
                     apply_end = max(apply_start, end_pos - 2)
                 if self.select_hwp_text_range(list_id, para, apply_start, apply_end) and self.execute_style_record(record):
                     applied += 1
-                    self.debug(
-                        f"[inline-style] applied para=({list_id},{para}), "
-                        f"range={apply_start}-{apply_end}, role={rule.style_role}"
-                    )
-                else:
-                    self.debug(
-                        f"[inline-style] apply failed para=({list_id},{para}), "
-                        f"range={apply_start}-{apply_end}, role={rule.style_role}"
-                    )
                 self.clear_hwp_selection()
         return applied
 
@@ -7531,10 +7543,6 @@ class MvpApp(tk.Tk):
             return False, False, False, 0
 
         in_table = self.is_hwp_paragraph_in_table(list_id, para) if force_in_table is None else force_in_table
-        self.debug(
-            f"[bulk-style] visit para=({list_id},{para}), in_table={in_table}, "
-            f"text={preview_log_text(paragraph_text)!r}"
-        )
         matched = False
         changed = False
         rule = find_outline_style_rule(paragraph_text, active_set, in_table=in_table)
@@ -8911,12 +8919,7 @@ class MvpApp(tk.Tk):
                 return
 
             self.ensure_current_doc_style_cache()
-            selected_positions = self.get_selected_text_positions()
             list_id, first_para, last_para = paragraph_range
-            self.debug(
-                f"[bulk-style] selection positions={selected_positions!r}, "
-                f"range=({list_id},{first_para}-{last_para})"
-            )
             original_pos = self.get_hwp_pos_by_set()
             self.clear_hwp_selection()
             visited = 0
@@ -8965,7 +8968,9 @@ class MvpApp(tk.Tk):
                     parts.append("현재 세트/문서에서 글자 역할을 찾지 못해 건너뜀:\n" + "\n".join(sorted(missing_roles)))
                 messagebox.showwarning(
                     label,
-                    "일부 규칙을 건너뛰었습니다.\n\n" + "\n\n".join(parts),
+                    "일부 규칙을 건너뛰었습니다.\n\n"
+                    + "\n\n".join(parts)
+                    + self.current_doc_style_reconnect_hint(),
                 )
             elif changed == 0 and inline_applied == 0:
                 messagebox.showinfo(label, "선택한 문단에서 일괄처리 규칙과 일치하는 텍스트를 찾지 못했습니다.")
@@ -9068,7 +9073,12 @@ class MvpApp(tk.Tk):
                 parts.append("현재 문서에 같은 이름의 문단 스타일이 없어 건너뜀:\n" + "\n".join(sorted(missing_styles)))
             if missing_roles:
                 parts.append("현재 세트/문서에서 글자 역할을 찾지 못해 건너뜀:\n" + "\n".join(sorted(missing_roles)))
-            messagebox.showwarning(label, "일부 규칙을 건너뛰었습니다.\n\n" + "\n\n".join(parts))
+            messagebox.showwarning(
+                label,
+                "일부 규칙을 건너뛰었습니다.\n\n"
+                + "\n\n".join(parts)
+                + self.current_doc_style_reconnect_hint(),
+            )
         elif cells_range_failed and visited == 0:
             messagebox.showwarning(
                 label,

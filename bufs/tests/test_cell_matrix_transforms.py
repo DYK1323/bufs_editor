@@ -2090,6 +2090,35 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(applied, [current_record, current_record])
         self.assertEqual(restored, ["original"])
 
+    def test_select_hwp_text_range_offsets_document_start_visible_text(self) -> None:
+        app = object.__new__(MvpApp)
+        selected_ranges: list[tuple[int, int, int, int]] = []
+        positions: list[tuple[int, int, int]] = []
+
+        class FakeHwp:
+            def SetPos(self, list_id, para, pos):
+                positions.append((list_id, para, pos))
+                return True
+
+            def GetPos(self):
+                return (0, 0, 16)
+
+            def SelectText(self, spara, spos, epara, epos):
+                selected_ranges.append((spara, spos, epara, epos))
+                return True
+
+            def GetSelectedPos(self):
+                return (True, 0, 0, 16, 0, 0, 21)
+
+        app.hwp = FakeHwp()
+        app.clear_hwp_selection = lambda: True
+        app.debug = lambda _message: None
+
+        self.assertTrue(app.select_hwp_text_range(0, 0, 0, 5))
+
+        self.assertEqual(selected_ranges, [(0, 16, 0, 21)])
+        self.assertEqual(positions[-1], (0, 0, 16))
+
     def test_configured_outline_style_bulk_normal_selection_does_not_force_table_context(self) -> None:
         app = object.__new__(MvpApp)
         app.hwp = type("FakeHwp", (), {"SelectionMode": 1})()
