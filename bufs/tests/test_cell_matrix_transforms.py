@@ -18,6 +18,7 @@ from hwp_style_mvp import (  # noqa: E402
     cell_matrix_to_tsv,
     clean_manual_line_breaks,
     consume_numbering_entry,
+    convert_decimal_numbers_to_currency_unit,
     flatten_cell_matrix,
     find_suspicious_decimal_numbers,
     google_drive_direct_download_url,
@@ -28,6 +29,7 @@ from hwp_style_mvp import (  # noqa: E402
     manual_outline_prefix_length,
     normalize_decimal_numbers,
     normalize_dates,
+    normalize_years,
     normalize_clipboard_newlines,
     normalize_table_settings,
     parse_cell_clipboard_matrix,
@@ -1461,6 +1463,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
     def test_multiline_dates_are_cell_like_for_single_column_selection(self) -> None:
         self.assertTrue(looks_like_cell_clipboard_matrix("2026.7.22\r\n2026-07-23\r\n"))
+        self.assertTrue(looks_like_cell_clipboard_matrix("19910114\r\n910114\r\n"))
 
     def test_rejects_non_rectangular_matrix(self) -> None:
         matrix = parse_cell_clipboard_matrix("A\tB\r\nC")
@@ -1597,6 +1600,35 @@ class CellMatrixTransformTests(unittest.TestCase):
             "1,234천원 2백만원",
         )
 
+    def test_currency_unit_conversion_uses_target_unit_buttons(self) -> None:
+        self.assertEqual(
+            convert_decimal_numbers_to_currency_unit(
+                "1\ubc31\ub9cc 1\ucc9c 500",
+                "\uc6d0",
+                0,
+                "\ubc18\uc62c\ub9bc",
+            ),
+            "1,000,000\uc6d0 1,000\uc6d0 500\uc6d0",
+        )
+        self.assertEqual(
+            convert_decimal_numbers_to_currency_unit(
+                "1,000\uc6d0 1\ubc31\ub9cc",
+                "\ucc9c",
+                3,
+                "\ubc18\uc62c\ub9bc",
+            ),
+            "1.000\ucc9c\uc6d0 1,000.000\ucc9c\uc6d0",
+        )
+        self.assertEqual(
+            convert_decimal_numbers_to_currency_unit(
+                "1,000,000\uc6d0 1,000\ucc9c\uc6d0",
+                "\ubc31\ub9cc",
+                0,
+                "\ubc18\uc62c\ub9bc",
+            ),
+            "1\ubc31\ub9cc\uc6d0 1\ubc31\ub9cc\uc6d0",
+        )
+
     def test_unit_conversion_preflight_blocks_other_currency_units(self) -> None:
         with self.assertRaises(UnsafeUnitConversionNumberError) as ctx:
             ensure_safe_decimal_unit_conversion_text("1,234원 12억원", {"천원", "백만원"})
@@ -1616,6 +1648,57 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(transformed, [["2026. 07. 22.", "2026. 07. 22."]])
         self.assertEqual(changed, 2)
+
+    def test_normalize_dates_accepts_compact_yyyymmdd_and_yymmdd(self) -> None:
+        self.assertEqual(
+            normalize_dates("19910114 910114", "dot_padded"),
+            "1991. 01. 14. 1991. 01. 14.",
+        )
+        self.assertEqual(
+            normalize_dates("19910114 260723", "korean"),
+            "1991\ub144 1\uc6d4 14\uc77c 2026\ub144 7\uc6d4 23\uc77c",
+        )
+        self.assertEqual(normalize_dates("19910231 991399", "dot"), "19910231 991399")
+
+    def test_normalize_years_handles_year_and_school_year_without_dates(self) -> None:
+        source = (
+            "2026\ub144 26\ub144 '26\ub144 "
+            "2026\ud559\ub144\ub3c4 26\ud559\ub144\ub3c4 '26\ud559\ub144\ub3c4 "
+            "2026\ub144 1\ud559\uae30 26\ud559\ub144\ub3c4 2\ud559\uae30"
+        )
+        self.assertEqual(
+            normalize_years(source, "full"),
+            (
+                "2026\ub144 2026\ub144 2026\ub144 "
+                "2026\ud559\ub144\ub3c4 2026\ud559\ub144\ub3c4 2026\ud559\ub144\ub3c4 "
+                "2026\ub144 1\ud559\uae30 2026\ud559\ub144\ub3c4 2\ud559\uae30"
+            ),
+        )
+        self.assertEqual(
+            normalize_years(source, "short"),
+            (
+                "26\ub144 26\ub144 26\ub144 "
+                "26\ud559\ub144\ub3c4 26\ud559\ub144\ub3c4 26\ud559\ub144\ub3c4 "
+                "26\ub144 1\ud559\uae30 26\ud559\ub144\ub3c4 2\ud559\uae30"
+            ),
+        )
+        self.assertEqual(
+            normalize_years(source, "apostrophe"),
+            (
+                "'26\ub144 '26\ub144 '26\ub144 "
+                "'26\ud559\ub144\ub3c4 '26\ud559\ub144\ub3c4 '26\ud559\ub144\ub3c4 "
+                "'26\ub144 1\ud559\uae30 '26\ud559\ub144\ub3c4 2\ud559\uae30"
+            ),
+        )
+
+    def test_normalize_years_skips_year_month_or_day_date_context(self) -> None:
+        self.assertEqual(
+            normalize_years(
+                "2026\ub144 7\uc6d4 26\ub144 7\uc77c '26\ub144 12\uc6d4 2026\ud559\ub144\ub3c4 1\ud559\uae30",
+                "apostrophe",
+            ),
+            "2026\ub144 7\uc6d4 26\ub144 7\uc77c '26\ub144 12\uc6d4 '26\ud559\ub144\ub3c4 1\ud559\uae30",
+        )
 
     def test_weekday_add_remove_cell_by_cell(self) -> None:
         matrix = [["2026. 7. 22.", "2026. 7. 22.(수)"]]

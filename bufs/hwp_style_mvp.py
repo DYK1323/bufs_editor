@@ -1687,9 +1687,16 @@ class UnsafeUnitConversionNumberError(ValueError):
 
 CURRENCY_UNIT_FACTORS = {
     "원": Decimal("1"),
+    "천": Decimal("1000"),
     "천원": Decimal("1000"),
+    "백만": Decimal("1000000"),
     "백만원": Decimal("1000000"),
     "억원": Decimal("100000000"),
+}
+UNIT_CONVERSION_TARGET_LABELS = {
+    "원": "원",
+    "천": "천원",
+    "백만": "백만원",
 }
 NUMBER_PATTERN = r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 UNSAFE_UNIT_PATTERN = r"%|％|㎡|m\^2|m2|m²|평|명|개|건|회"
@@ -1869,6 +1876,52 @@ def scale_decimal_numbers_for_unit_conversion(
     return number_re.sub(repl, text)
 
 
+def convert_decimal_numbers_to_currency_unit(
+    text: str,
+    target_unit: str,
+    places: int,
+    mode: str,
+    use_commas: bool = True,
+) -> str:
+    if places < 0:
+        raise ValueError("소수 자릿수는 0 이상이어야 합니다.")
+    target_suffix = UNIT_CONVERSION_TARGET_LABELS.get(target_unit, target_unit)
+    target_factor = CURRENCY_UNIT_FACTORS.get(target_suffix)
+    if target_factor is None:
+        raise ValueError(f"알 수 없는 대상 단위입니다: {target_unit}")
+    rounding_by_mode = {
+        "반올림": ROUND_HALF_UP,
+        "올림": ROUND_UP,
+        "버림": ROUND_DOWN,
+        "내림": ROUND_FLOOR,
+    }
+    if mode not in rounding_by_mode:
+        raise ValueError(f"알 수 없는 소수 처리 방식입니다: {mode}")
+    quant = Decimal(1).scaleb(-places)
+    rounding = rounding_by_mode[mode]
+
+    unit_names = "|".join(sorted(map(re.escape, CURRENCY_UNIT_FACTORS), key=len, reverse=True))
+    number_re = re.compile(
+        rf"(?<![\d,.-])(?P<number>{NUMBER_PATTERN})"
+        rf"(?:(?P<space>[ \t]*)(?P<unit>{unit_names})|"
+        rf"(?![\d,.-]|년|년도|학년도|월|일|[A-Za-z가-힣%％㎡²]))"
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group("number")
+        source_unit = match.group("unit") or "원"
+        source_factor = CURRENCY_UNIT_FACTORS.get(source_unit)
+        if source_factor is None or source_unit == "억원":
+            return match.group(0)
+        won_value = Decimal(raw.replace(",", "")) * source_factor
+        converted = (won_value / target_factor).quantize(quant, rounding=rounding)
+        if converted == 0:
+            converted = abs(converted)
+        return format_decimal_value(converted, places, use_commas) + target_suffix
+
+    return number_re.sub(repl, text)
+
+
 def normalize_decimal_numbers(text: str, places: int, mode: str, use_commas: bool = True) -> str:
     return scale_decimal_numbers(text, Decimal(1), places, mode, use_commas)
 
@@ -1886,6 +1939,19 @@ DATE_RE = re.compile(
     r"(?P<day>\d{1,2})"
     r"(?:\s*일|\s*\.)?"
     r"(?!\d)"
+)
+COMPACT_DATE_RE = re.compile(
+    r"(?<![\d,.-])"
+    r"(?P<date>(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})|(?P<short_year>\d{2})(?P<short_month>\d{2})(?P<short_day>\d{2}))"
+    r"(?![\d,.-])"
+)
+YEAR_ONLY_RE = re.compile(
+    r"(?<![\d,.-])"
+    r"(?P<quote>['’]?)"
+    r"(?P<year>\d{4}|\d{2})"
+    r"(?P<suffix>학년도|년)"
+    r"(?!도)"
+    r"(?!\s*\d{1,2}\s*[월일])"
 )
 
 
@@ -1906,6 +1972,20 @@ WEEKDAY_DATE_RE = re.compile(
 KOREAN_WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")
 
 
+def normalize_date_parts(year: int, month: int, day: int, style: str, original: str) -> str:
+    try:
+        datetime(year, month, day)
+    except ValueError:
+        return original
+    if style == "korean":
+        return f"{year}년 {month}월 {day}일"
+    if style == "dot":
+        return f"{year}. {month}. {day}."
+    if style == "dot_padded":
+        return f"{year}. {month:02d}. {day:02d}."
+    return original
+
+
 def normalize_dates(text: str, style: str) -> str:
     def repl(match: re.Match[str]) -> str:
         year = int(match.group("year"))
@@ -1913,15 +1993,44 @@ def normalize_dates(text: str, style: str) -> str:
         day = int(match.group("day"))
         if not (1 <= month <= 12 and 1 <= day <= 31):
             return match.group(0)
-        if style == "korean":
-            return f"{year}년 {month}월 {day}일"
-        if style == "dot":
-            return f"{year}. {month}. {day}."
-        if style == "dot_padded":
-            return f"{year}. {month:02d}. {day:02d}."
+        return normalize_date_parts(year, month, day, style, match.group(0))
+
+    def compact_repl(match: re.Match[str]) -> str:
+        if match.group("short_year") is not None:
+            short_year = int(match.group("short_year"))
+            year = 2000 + short_year if short_year <= 49 else 1900 + short_year
+            month = int(match.group("short_month"))
+            day = int(match.group("short_day"))
+        else:
+            year = int(match.group("year"))
+            month = int(match.group("month"))
+            day = int(match.group("day"))
+        return normalize_date_parts(year, month, day, style, match.group(0))
+
+    return COMPACT_DATE_RE.sub(compact_repl, DATE_RE.sub(repl, text))
+
+
+def full_year_from_short_or_full(value: str) -> int:
+    year = int(value)
+    if len(value) == 2:
+        return 2000 + year if year <= 49 else 1900 + year
+    return year
+
+
+def normalize_years(text: str, style: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        year = full_year_from_short_or_full(match.group("year"))
+        suffix = match.group("suffix")
+        if style == "full":
+            return f"{year}{suffix}"
+        short_year = f"{year % 100:02d}"
+        if style == "short":
+            return f"{short_year}{suffix}"
+        if style == "apostrophe":
+            return f"'{short_year}{suffix}"
         return match.group(0)
 
-    return DATE_RE.sub(repl, text)
+    return YEAR_ONLY_RE.sub(repl, text)
 
 
 def add_weekdays_to_dates(text: str) -> str:
@@ -1967,7 +2076,7 @@ def looks_like_multiline_date_block(text: str) -> bool:
     values = [line for line in lines if line]
     if len(values) < 2:
         return False
-    return all(DATE_RE.search(value) for value in values)
+    return all(DATE_RE.search(value) or COMPACT_DATE_RE.search(value) for value in values)
 
 
 def parse_cell_clipboard_matrix(text: str) -> list[list[str]]:
@@ -3956,24 +4065,61 @@ class MvpApp(tk.Tk):
         cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=8)
         cleanup_group.pack(fill="x", pady=(8, 0))
 
-        sentence_button_defs = (
+        sentence_buttons = ttk.Frame(cleanup_group)
+        sentence_buttons.pack(fill="x")
+        sentence_buttons.grid_columnconfigure(0, weight=1, uniform="sentence-half")
+        sentence_buttons.grid_columnconfigure(1, weight=1, uniform="sentence-half")
+
+        main_buttons = ttk.Frame(sentence_buttons)
+        main_buttons.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        main_buttons.grid_columnconfigure(0, weight=1)
+        for row in range(2):
+            main_buttons.grid_rowconfigure(row, weight=1)
+
+        bulk_font = tkfont.nametofont("TkDefaultFont").copy()
+        bulk_font.configure(weight="bold")
+        tk.Button(
+            main_buttons,
+            text="일괄처리",
+            command=self.apply_configured_outline_styles_to_selection,
+            bg="#4a4a4a",
+            fg="#ffffff",
+            activebackground="#333333",
+            activeforeground="#ffffff",
+            font=bulk_font,
+            relief="raised",
+            bd=1,
+        ).grid(row=0, column=0, sticky="nsew", ipady=8)
+        ttk.Button(main_buttons, text="「 」 씌우기", command=self.wrap_regulation_names_in_selection).grid(
+            row=1,
+            column=0,
+            sticky="nsew",
+            pady=(6, 0),
+            ipady=8,
+        )
+
+        right_buttons = ttk.Frame(sentence_buttons)
+        right_buttons.grid(row=0, column=1, sticky="nsew")
+        for column in range(2):
+            right_buttons.grid_columnconfigure(column, weight=1, uniform="sentence-right")
+        for row in range(2):
+            right_buttons.grid_rowconfigure(row, weight=1)
+
+        normal_defs = (
             ("줄바꿈정리", self.clean_selected_line_breaks),
             ("기호제거", self.clean_selected_outline_prefixes),
-            ("일괄처리", self.apply_configured_outline_styles_to_selection),
             ("새 번호", self.put_new_paragraph_number_at_cursor),
-            ("「 」 씌우기", self.wrap_regulation_names_in_selection),
+            ("이어서", self.put_continued_paragraph_number_at_cursor),
         )
-        for row_index, row_defs in enumerate((sentence_button_defs[:3], sentence_button_defs[3:])):
-            sentence_buttons = ttk.Frame(cleanup_group)
-            sentence_buttons.pack(fill="x", pady=(0 if row_index == 0 else 6, 0))
-            for index, (button_text, command) in enumerate(row_defs):
-                ttk.Button(sentence_buttons, text=button_text, command=command).pack(
-                    side="left",
-                    fill="x",
-                    expand=True,
-                    padx=(6 if index else 0, 0),
-                    ipady=8,
-                )
+        for index, (button_text, command) in enumerate(normal_defs):
+            ttk.Button(right_buttons, text=button_text, command=command).grid(
+                row=index // 2,
+                column=index % 2,
+                sticky="nsew",
+                padx=(0 if index % 2 == 0 else 6, 0),
+                pady=(0 if index < 2 else 6, 0),
+                ipady=8,
+            )
 
         number_group = ttk.LabelFrame(parent, text="숫자 정리", padding=8)
         number_group.pack(fill="x", pady=(8, 0))
@@ -4022,29 +4168,40 @@ class MvpApp(tk.Tk):
         ttk.Checkbutton(unit_decimal_row, text="쉼표", variable=self.unit_decimal_use_commas_var).pack(side="left")
         unit_row = ttk.Frame(unit_group)
         unit_row.pack(fill="x", pady=(6, 0))
+        for column in range(5):
+            unit_row.grid_columnconfigure(column, weight=1, uniform="unit-buttons")
         unit_buttons = (
-            ("× 천", Decimal("1000"), {"천원": "원", "백만원": "천원"}),
-            ("÷ 천", Decimal("0.001"), {"원": "천원", "천원": "백만원"}),
-            ("× 백만", Decimal("1000000"), {"백만원": "원"}),
-            ("÷ 백만", Decimal("0.000001"), {"원": "백만원"}),
+            ("× 천", "scale", Decimal("1000"), {"천": "원", "천원": "원", "백만": "천원", "백만원": "천원"}),
+            ("÷ 천", "scale", Decimal("0.001"), {"원": "천원", "천": "백만원", "천원": "백만원"}),
+            ("원", "target", "원"),
+            ("천", "target", "천"),
+            ("백만", "target", "백만"),
         )
         unit_tooltips = {
-            "× 천": "숫자에 1,000을 곱합니다. 단위가 붙은 경우 천원→원, 백만원→천원으로 바꿉니다.",
-            "÷ 천": "숫자를 1,000으로 나눕니다. 단위가 붙은 경우 원→천원, 천원→백만원으로 바꿉니다.",
-            "× 백만": "숫자에 1,000,000을 곱합니다. 단위가 붙은 경우 백만원→원으로 바꿉니다.",
-            "÷ 백만": "숫자를 1,000,000으로 나눕니다. 단위가 붙은 경우 원→백만원으로 바꿉니다.",
+            "× 천": "숫자에 1,000을 곱합니다. 단위가 붙은 경우 천→원, 백만→천원으로 바꿉니다.",
+            "÷ 천": "숫자를 1,000으로 나눕니다. 단위가 붙은 경우 원→천원, 천→백만원으로 바꿉니다.",
+            "원": "선택한 숫자를 원 단위로 바꿉니다. 예: 1백만 → 1,000,000원, 1천 → 1,000원",
+            "천": "선택한 숫자를 천원 단위로 바꿉니다. 예: 1,000원 → 1천원, 1백만 → 1,000천원",
+            "백만": "선택한 숫자를 백만원 단위로 바꿉니다. 예: 1,000,000원 → 1백만원, 1천 → 0.001백만원",
         }
-        for index, (button_text, multiplier, unit_transitions) in enumerate(unit_buttons):
-            button = ttk.Button(
-                unit_row,
-                text=button_text,
-                command=lambda label=button_text, factor=multiplier, transitions=unit_transitions: self.apply_decimal_unit_conversion_to_selection(
+        for index, button_def in enumerate(unit_buttons):
+            button_text = button_def[0]
+            if button_def[1] == "scale":
+                _text, _mode, multiplier, unit_transitions = button_def
+                command = lambda label=button_text, factor=multiplier, transitions=unit_transitions: self.apply_decimal_unit_conversion_to_selection(
                     label,
                     factor,
                     transitions,
-                ),
+                )
+            else:
+                _text, _mode, target_unit = button_def
+                command = lambda label=button_text, unit=target_unit: self.apply_currency_unit_conversion_to_selection(label, unit)
+            button = ttk.Button(
+                unit_row,
+                text=button_text,
+                command=command,
             )
-            button.pack(side="left", fill="x", expand=True, padx=(6 if index else 0, 0))
+            button.grid(row=0, column=index, sticky="ew", padx=(6 if index else 0, 0))
             ToolTip(button, unit_tooltips[button_text])
 
         date_group = ttk.LabelFrame(parent, text="날짜 정규화", padding=8)
@@ -4066,6 +4223,20 @@ class MvpApp(tk.Tk):
             side="left", fill="x", expand=True
         )
         ttk.Button(date_buttons2, text="요일 제거", command=self.remove_weekdays_from_selection).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+
+        year_group = ttk.LabelFrame(parent, text="연도 정규화", padding=8)
+        year_group.pack(fill="x", pady=(8, 0))
+        year_buttons = ttk.Frame(year_group)
+        year_buttons.pack(fill="x")
+        ttk.Button(year_buttons, text="0000년", command=lambda: self.normalize_years_to_selection("full", "0000년")).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(year_buttons, text="00년", command=lambda: self.normalize_years_to_selection("short", "00년")).pack(
+            side="left", fill="x", expand=True, padx=(6, 0)
+        )
+        ttk.Button(year_buttons, text="'00년", command=lambda: self.normalize_years_to_selection("apostrophe", "'00년")).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
 
@@ -7993,6 +8164,12 @@ class MvpApp(tk.Tk):
         executed = bool(self.hwp.HAction.Execute("PutNewParaNumber", pset.HSet))
         return default_ok, executed
 
+    def execute_put_para_number(self) -> tuple[bool, bool]:
+        pset = self.hwp.HParameterSet.HParaShape
+        default_ok = bool(self.hwp.HAction.GetDefault("PutParaNumber", pset.HSet))
+        executed = bool(self.hwp.HAction.Execute("PutParaNumber", pset.HSet))
+        return default_ok, executed
+
     def put_new_para_number_at_paragraph(self, list_id: int, para: int) -> bool:
         original_pos = self.get_hwp_pos_by_set()
         try:
@@ -8019,6 +8196,20 @@ class MvpApp(tk.Tk):
             self.log(f"{label}: PutNewParaNumber, GetDefault={default_ok}, result={executed}")
             if not executed:
                 messagebox.showwarning(label, "현재 문단에서 새 번호 시작 명령이 실패했습니다. 문단번호가 적용된 문단인지 확인하세요.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def put_continued_paragraph_number_at_cursor(self) -> None:
+        label = "문단 번호 이어서"
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            default_ok, executed = self.execute_put_para_number()
+            self.log(f"{label}: PutParaNumber, GetDefault={default_ok}, result={executed}")
+            if not executed:
+                messagebox.showwarning(label, "현재 문단에서 번호 이어서 명령이 실패했습니다. 문단번호가 적용될 문단인지 확인하세요.")
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
@@ -9944,6 +10135,33 @@ class MvpApp(tk.Tk):
             preflight=lambda text: ensure_safe_decimal_unit_conversion_text(text, set(unit_transitions)),
         )
 
+    def apply_currency_unit_conversion_to_selection(self, label: str, target_unit: str) -> None:
+        options = self.get_decimal_transform_options(
+            self.unit_decimal_places_var,
+            self.unit_decimal_mode_var,
+            self.unit_decimal_use_commas_var,
+            "단위 변환 소숫점 자릿수 확인",
+        )
+        if options is None:
+            return
+        places, mode, use_commas = options
+        allowed_units = {"원", "천", "천원", "백만", "백만원"}
+        self.transform_selected_text(
+            f"단위 변환: {label}, {mode} {places}자리",
+            lambda text: convert_decimal_numbers_to_currency_unit(
+                text,
+                target_unit,
+                places,
+                mode,
+                use_commas,
+            ),
+            block_multiline_number_block=True,
+            allow_cell_iteration=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+            preflight=lambda text: ensure_safe_decimal_unit_conversion_text(text, allowed_units),
+        )
+
     def normalize_dates_to_korean(self) -> None:
         self.transform_selected_text(
             "날짜 정규화: 0000년 0월 0일",
@@ -9966,6 +10184,15 @@ class MvpApp(tk.Tk):
         self.transform_selected_text(
             "날짜 정규화: 0000. 00. 00.",
             lambda text: normalize_dates(text, "dot_padded"),
+            allow_cell_iteration=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+        )
+
+    def normalize_years_to_selection(self, style: str, label: str) -> None:
+        self.transform_selected_text(
+            f"연도 정규화: {label}",
+            lambda text: normalize_years(text, style),
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
