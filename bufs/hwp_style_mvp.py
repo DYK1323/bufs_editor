@@ -85,6 +85,7 @@ STYLE_FILE = ROOT / "보고서 본문 서식.hwpx"
 TEMPLATE_DIR = ROOT / "templates"
 COVER_FILE = TEMPLATE_DIR / "표지.hwpx"
 GENERAL_REPORT_TEMPLATE_FILE = TEMPLATE_DIR / "일반보고_양식.hwpx"
+TITLE_NUMBER_BOX_TEMPLATE_FILE = TEMPLATE_DIR / "대제목_번호박스.hwpx"
 LOGO_DIR = ROOT / "logos"
 TEST_OUTPUT_DIR = ROOT / "test-output"
 CONFIG_ROOT = user_config_root()
@@ -99,6 +100,7 @@ UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
 APP_VERSION = "0.1.0"
 APP_NAME = "BUFS-HWP-Editor"
+TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
     "check_on_start": True,
@@ -1395,6 +1397,77 @@ def create_filled_general_report_template_file(
     return target
 
 
+def normalize_title_box_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def strip_xml_encoding_declaration(text: str) -> str:
+    return re.sub(r"^\s*<\?xml[^>]*\?>", "", text, count=1)
+
+
+def element_text_content(element: ET.Element) -> str:
+    return "".join(element.itertext()).strip()
+
+
+def title_number_box_numbers_from_hwpml(hwpml: str) -> list[int]:
+    try:
+        root = ET.fromstring(strip_xml_encoding_declaration(hwpml))
+    except Exception:
+        return []
+
+    numbers: list[int] = []
+    for table in root.iter():
+        table_tag = xml_local_name(table.tag).lower()
+        if table_tag != "tbl" and table_tag != "table":
+            continue
+        row_count = table.get("rowCnt") or table.get("RowCount")
+        if row_count != "1":
+            continue
+        table_text = element_text_content(table)
+        if TITLE_NUMBER_BOX_MARKER not in table_text:
+            continue
+        cells = [child for child in table.iter() if xml_local_name(child.tag).lower() in {"tc", "cell"}]
+        if len(cells) < 2:
+            continue
+        first_text = element_text_content(cells[0])
+        if re.fullmatch(r"\d{1,3}", first_text):
+            numbers.append(int(first_text))
+    return numbers
+
+
+def create_filled_title_number_box_file(
+    title: str,
+    number: int = 1,
+    template: Path = TITLE_NUMBER_BOX_TEMPLATE_FILE,
+) -> Path:
+    if not template.exists():
+        raise FileNotFoundError(f"대제목 번호박스 템플릿을 찾지 못했습니다: {template}")
+
+    title = normalize_title_box_text(title)
+    number_text = str(max(1, int(number)))
+    TEST_OUTPUT_DIR.mkdir(exist_ok=True)
+    target = TEST_OUTPUT_DIR / f"title-number-box-{datetime.now().strftime('%Y%m%d-%H%M%S')}.hwpx"
+
+    with zipfile.ZipFile(template, "r") as src, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename.endswith(".xml"):
+                text = data.decode("utf-8")
+                text = re.sub(r"(<[^>]*:t>)1(</[^>]*:t>)", rf"\g<1>{hwp_xml_text(number_text)}\2", text, count=1)
+                if title:
+                    text = text.replace(">대제목<", f">{hwp_xml_text(title)}<")
+                data = text.encode("utf-8")
+            elif info.filename == "Preview/PrvText.txt":
+                text = data.decode("utf-8")
+                text = re.sub(r"^\s*1\b", number_text, text, count=1)
+                if title:
+                    text = text.replace("대제목", title)
+                data = text.encode("utf-8")
+            dst.writestr(info, data)
+
+    return target
+
+
 def list_logos(root: Path = LOGO_DIR) -> list[Path]:
     if not root.exists():
         return []
@@ -2520,6 +2593,7 @@ class MvpApp(tk.Tk):
         self._build_page_tab()
         self._build_cover_logo_tab()
         self._build_status_tab()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind_all("<Control-z>", self.on_global_undo)
         self.bind_all("<Control-Z>", self.on_global_undo)
         self.refresh_all()
@@ -3357,6 +3431,11 @@ class MvpApp(tk.Tk):
             text="보고양식 불러오기",
             command=self.insert_general_report_template,
         ).pack(fill="x")
+        ttk.Button(
+            template_group,
+            text="대제목 번호박스 삽입",
+            command=self.insert_title_number_box_template,
+        ).pack(fill="x", pady=(6, 0))
 
         cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=8)
         cover_group.pack(fill="x", pady=(0, 10))
@@ -3452,6 +3531,7 @@ class MvpApp(tk.Tk):
         self.log(f"기본 스타일 세트 파일: {BUNDLED_STYLE_SETS_FILE.exists()} / {BUNDLED_STYLE_SETS_FILE.name}")
         self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.relative_to(ROOT)}")
         self.log(f"보고양식 파일: {GENERAL_REPORT_TEMPLATE_FILE.exists()} / {GENERAL_REPORT_TEMPLATE_FILE.relative_to(ROOT)}")
+        self.log(f"대제목 번호박스 파일: {TITLE_NUMBER_BOX_TEMPLATE_FILE.exists()} / {TITLE_NUMBER_BOX_TEMPLATE_FILE.relative_to(ROOT)}")
 
         self.active_style_set_name, self.style_sets = load_style_sets()
         self.style_set_var.set(self.active_style_set_name)
@@ -3495,12 +3575,26 @@ class MvpApp(tk.Tk):
         self.active_style_set_name = name
         self.style_set_var.set(name)
         self.style_records = style_set_to_records(self.active_style_set())
-        save_style_sets(self.active_style_set_name, self.style_sets)
+        self.save_active_style_set_preference()
         self.populate_style_list()
         self.build_table_tab_content()
         if self.hwp is not None:
             self.refresh_current_doc_style_map(force=True)
         self.debug(f"[style-sets] 활성 세트 변경: {name}")
+
+    def save_active_style_set_preference(self) -> None:
+        names = {style_set.name for style_set in self.style_sets}
+        selected_name = self.style_set_var.get().strip()
+        if selected_name in names:
+            self.active_style_set_name = selected_name
+        save_style_sets(self.active_style_set_name, self.style_sets)
+
+    def on_close(self) -> None:
+        try:
+            self.save_active_style_set_preference()
+        except Exception as exc:
+            self.debug(f"[style-sets] 종료 전 활성 세트 저장 실패: {type(exc).__name__}: {exc}")
+        self.destroy()
 
     def refresh_style_set_combo(self) -> None:
         if "style_set_combo" in self.__dict__:
@@ -5947,13 +6041,6 @@ class MvpApp(tk.Tk):
 
     def refresh_current_doc_style_map(self, *, force: bool = False) -> None:
         path = self.get_current_hwp_path()
-        if path is None:
-            self.current_doc_style_path = None
-            self.current_doc_style_map = {}
-            self.current_doc_style_norm_map = {}
-            self.debug("[style-map] 현재 문서 경로를 확인하지 못함")
-            return
-
         if not force and path == self.current_doc_style_path and self.current_doc_style_map:
             return
 
@@ -5963,6 +6050,9 @@ class MvpApp(tk.Tk):
 
         records = self.read_current_doc_style_records_from_memory()
         if not records:
+            if path is None:
+                self.debug("[style-map] 현재 문서 경로가 없고 메모리 스타일도 없어 이름 매칭 불가")
+                return
             if path.suffix.lower() != ".hwpx":
                 self.debug(f"[style-map] 현재 문서가 hwpx가 아니고 메모리 스타일도 없어 이름 매칭 불가: {path}")
                 return
@@ -6262,6 +6352,60 @@ class MvpApp(tk.Tk):
                 f"보고양식 쪽설정 결과: {page_detail}",
             ]
             self.log(log_lines)
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def next_title_number_box_number(self) -> tuple[int, list[int]]:
+        numbers: list[int] = []
+        if self.hwp is None:
+            return 1, numbers
+        try:
+            hwpml = safe_str(self.hwp.GetTextFile("HWPML2X", ""))
+            numbers = title_number_box_numbers_from_hwpml(hwpml)
+        except Exception as exc:
+            self.debug(f"[title-number-box] 현재 문서 번호 읽기 실패: {type(exc).__name__}: {exc}")
+        if not numbers:
+            return 1, []
+        return max(numbers) + 1, numbers
+
+    def insert_title_number_box_template(self) -> None:
+        label = "대제목 번호박스 삽입"
+        if not self.ensure_hwp():
+            return
+        template_path = TITLE_NUMBER_BOX_TEMPLATE_FILE
+        try:
+            if not template_path.exists():
+                messagebox.showwarning(label, f"대제목 번호박스 파일을 찾을 수 없습니다.\n\n{template_path}")
+                self.log(f"{label}: 파일 없음, path={template_path}")
+                return
+
+            copy_ok = self.run_hwp_command("Copy")
+            time.sleep(0.08)
+            selected_text = self.get_clipboard_text().strip() if copy_ok else ""
+            delete_ok = None
+            if selected_text:
+                delete_ok = self.run_hwp_command("Delete")
+                if not delete_ok:
+                    messagebox.showwarning(label, "선택 텍스트를 삭제하지 못했습니다. 커서 위치만 선택하거나 다시 시도하세요.")
+                    self.log(f"{label}: 선택 영역 삭제 실패, copy={copy_ok}")
+                    return
+
+            next_number, existing_numbers = self.next_title_number_box_number()
+            insert_path = create_filled_title_number_box_file(selected_text, next_number, template_path)
+            insert_ok = self.insert_file_at_cursor(insert_path, keep_section=0)
+            if not insert_ok:
+                messagebox.showwarning(label, "한글이 번호박스 삽입을 실패로 반환했습니다. 삽입할 위치에 커서를 둔 상태인지 확인하세요.")
+                self.log(f"{label}: 삽입 실패, file={insert_path.name}, selected_text={bool(selected_text)}, delete={delete_ok}")
+                return
+
+            self.refresh_current_doc_style_map(force=True)
+            self.activate_hwp_window()
+            self.log(
+                f"{label} 완료: number={next_number}, existing={existing_numbers}, "
+                f"file={insert_path.name}, selected_text={bool(selected_text)}, "
+                f"delete={delete_ok}, text_preview={selected_text[:40]!r}"
+            )
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))

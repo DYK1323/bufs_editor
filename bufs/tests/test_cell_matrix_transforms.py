@@ -32,6 +32,9 @@ from hwp_style_mvp import (  # noqa: E402
     parse_cell_clipboard_matrix,
     parse_cover_input,
     parse_update_info,
+    create_filled_title_number_box_file,
+    normalize_title_box_text,
+    title_number_box_numbers_from_hwpml,
     remove_manual_outline_prefixes,
     remove_number_commas,
     remove_weekdays_from_dates,
@@ -494,6 +497,67 @@ class CellMatrixTransformTests(unittest.TestCase):
         )
         self.assertEqual(info.latest_version, "0.1.2")
         self.assertEqual(info.notes, "업데이트 확인 추가")
+
+    def test_title_number_box_text_is_normalized_to_single_line(self) -> None:
+        self.assertEqual(normalize_title_box_text("  첫 줄\r\n둘째\t줄  "), "첫 줄 둘째 줄")
+
+    def test_create_filled_title_number_box_replaces_title_text(self) -> None:
+        target = create_filled_title_number_box_file("사업 <성과> & 계획", number=7)
+        with zipfile.ZipFile(target) as zf:
+            section = zf.read("Contents/section0.xml").decode("utf-8")
+            preview = zf.read("Preview/PrvText.txt").decode("utf-8")
+
+        self.assertIn("사업 &lt;성과&gt; &amp; 계획", section)
+        self.assertIn(">7<", section)
+        self.assertNotIn(">대제목<", section)
+        self.assertIn("사업 <성과> & 계획", preview)
+
+    def test_title_number_box_numbers_from_hwpml_reads_marker_tables(self) -> None:
+        hwpml = """<?xml version="1.0" encoding="UTF-16"?>
+<HWPML xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:tbl rowCnt="1" colCnt="3">
+    <hp:tr>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>1</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>첫 제목</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>{{bufs_title}}</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+  <hp:tbl rowCnt="1" colCnt="3">
+    <hp:tr>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>3</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>셋째 제목</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>{{bufs_title}}</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+  <hp:tbl rowCnt="1" colCnt="2">
+    <hp:tr>
+      <hp:tc><hp:t>99</hp:t></hp:tc>
+      <hp:tc><hp:t>마커 없는 표는 무시</hp:t></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+</HWPML>
+"""
+        self.assertEqual(title_number_box_numbers_from_hwpml(hwpml), [1, 3])
+
+    def test_next_title_number_box_number_uses_current_document_max_plus_one(self) -> None:
+        class FakeHwp:
+            def GetTextFile(self, _format_name, _option):
+                return """<HWPML>
+  <TABLE RowCount="1" ColCount="3"><ROW>
+    <CELL><P><TEXT><CHAR>2</CHAR></TEXT></P></CELL><CELL><P><TEXT><CHAR>제목</CHAR></TEXT></P></CELL>
+    <CELL><P><TEXT><CHAR>{{bufs_title}}</CHAR></TEXT></P></CELL>
+  </ROW></TABLE>
+  <TABLE RowCount="1" ColCount="3"><ROW>
+    <CELL><P><TEXT><CHAR>5</CHAR></TEXT></P></CELL><CELL><P><TEXT><CHAR>제목</CHAR></TEXT></P></CELL>
+    <CELL><P><TEXT><CHAR>{{bufs_title}}</CHAR></TEXT></P></CELL>
+  </ROW></TABLE>
+</HWPML>"""
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        app.debug = lambda _message: None
+
+        self.assertEqual(app.next_title_number_box_number(), (6, [2, 5]))
         self.assertTrue(is_standard_regulation_wrapper("｢규정명｣"))
 
     def test_find_outline_style_rule_prefers_longer_marker(self) -> None:
@@ -653,6 +717,27 @@ class CellMatrixTransformTests(unittest.TestCase):
                 self.last_request = (format_name, option)
                 return """<HWPML><HEAD>
                     <STYLE Id="95" Name="xl65"/>
+                    <STYLE Id="97" Name="표내용-중간"/>
+                </HEAD></HWPML>"""
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        app.current_doc_style_path = None
+        app.current_doc_style_map = {}
+        app.current_doc_style_norm_map = {}
+        app.style_records = [StyleRecord(style_id=33, style_index=31, style_type="PARA", name="표내용-중간")]
+        app.debug = lambda _message: None
+
+        app.refresh_current_doc_style_map(force=True)
+
+        self.assertEqual(app.find_current_doc_style_record("표내용-중간").style_id, 97)
+
+    def test_refresh_current_doc_style_map_reads_memory_styles_for_unsaved_document(self) -> None:
+        class FakeHwp:
+            Path = ""
+
+            def GetTextFile(self, _format_name, _option):
+                return """<HWPML><HEAD>
                     <STYLE Id="97" Name="표내용-중간"/>
                 </HEAD></HWPML>"""
 
