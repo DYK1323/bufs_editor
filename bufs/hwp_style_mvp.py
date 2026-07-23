@@ -2379,6 +2379,13 @@ def safe_str(value) -> str:
         return ""
 
 
+def preview_log_text(text: str, limit: int = 80) -> str:
+    preview = text.replace("\r", "\\r").replace("\n", "\\n")
+    if len(preview) > limit:
+        preview = preview[:limit] + "..."
+    return preview
+
+
 def get_foreground_title() -> str:
     if win32gui is None:
         return ""
@@ -7475,6 +7482,12 @@ class MvpApp(tk.Tk):
             if paragraph_text is None:
                 continue
             ranges = find_inline_rule_ranges_for_style_set(paragraph_text, rule, style_set)
+            if ranges:
+                self.debug(
+                    f"[inline-style] match para=({list_id},{para}), "
+                    f"rule={rule.name}/{rule.rule_type}, role={rule.style_role}, "
+                    f"in_table={in_table}, ranges={ranges}, text={preview_log_text(paragraph_text)!r}"
+                )
             for start_pos, end_pos, marker_range in reversed(ranges):
                 apply_start = start_pos
                 apply_end = end_pos
@@ -7489,6 +7502,15 @@ class MvpApp(tk.Tk):
                     apply_end = max(apply_start, end_pos - 2)
                 if self.select_hwp_text_range(list_id, para, apply_start, apply_end) and self.execute_style_record(record):
                     applied += 1
+                    self.debug(
+                        f"[inline-style] applied para=({list_id},{para}), "
+                        f"range={apply_start}-{apply_end}, role={rule.style_role}"
+                    )
+                else:
+                    self.debug(
+                        f"[inline-style] apply failed para=({list_id},{para}), "
+                        f"range={apply_start}-{apply_end}, role={rule.style_role}"
+                    )
                 self.clear_hwp_selection()
         return applied
 
@@ -7509,6 +7531,10 @@ class MvpApp(tk.Tk):
             return False, False, False, 0
 
         in_table = self.is_hwp_paragraph_in_table(list_id, para) if force_in_table is None else force_in_table
+        self.debug(
+            f"[bulk-style] visit para=({list_id},{para}), in_table={in_table}, "
+            f"text={preview_log_text(paragraph_text)!r}"
+        )
         matched = False
         changed = False
         rule = find_outline_style_rule(paragraph_text, active_set, in_table=in_table)
@@ -8885,7 +8911,12 @@ class MvpApp(tk.Tk):
                 return
 
             self.ensure_current_doc_style_cache()
+            selected_positions = self.get_selected_text_positions()
             list_id, first_para, last_para = paragraph_range
+            self.debug(
+                f"[bulk-style] selection positions={selected_positions!r}, "
+                f"range=({list_id},{first_para}-{last_para})"
+            )
             original_pos = self.get_hwp_pos_by_set()
             self.clear_hwp_selection()
             visited = 0
