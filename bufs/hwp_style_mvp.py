@@ -104,7 +104,7 @@ TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 SPECIAL_CHARS_FILE = CONFIG_ROOT / "special-chars.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 APP_NAME = "BUFS-HWP-Editor"
 TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
 PROOF_TITLE_MARKER = "{{증빙제목}}"
@@ -4702,7 +4702,8 @@ class MvpApp(tk.Tk):
             if not silent:
                 messagebox.showinfo("업데이트 확인", "업데이트 확인이 꺼져 있습니다.")
             return
-        if not str(settings.get("version_url") or "").strip():
+        provider = str(settings.get("provider") or "").strip().lower()
+        if provider != "github" and not str(settings.get("version_url") or "").strip():
             message = f"업데이트 확인 URL이 설정되지 않았습니다.\n\n설정 파일: {UPDATE_SETTINGS_FILE}"
             self.log("업데이트 확인: version_url 미설정")
             if not silent:
