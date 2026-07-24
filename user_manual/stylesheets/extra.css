@@ -1,0 +1,29 @@
+:root {
+  --md-sidebar-width: 18.35rem;
+}
+
+.md-sidebar--primary .md-nav__link,
+.md-sidebar--primary .md-nav__title {
+  display: block;
+  font-weight: 700 !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-sidebar--primary .md-nav__link .md-ellipsis,
+.md-sidebar--primary .md-nav__title .md-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-weight: 700 !important;
+}
+
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+}
