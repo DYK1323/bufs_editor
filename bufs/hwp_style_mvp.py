@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -37,7 +38,7 @@ from datetime import datetime
 from html import escape
 from html import unescape
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 def app_root() -> Path:
@@ -83,6 +84,7 @@ except Exception:
     win32gui = None  # type: ignore[assignment]
 
 
+INSTALL_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 STYLE_FILE = ROOT / "보고서 본문 서식.hwpx"
 TEMPLATE_DIR = ROOT / "templates"
 COVER_FILE = TEMPLATE_DIR / "표지.hwpx"
@@ -118,6 +120,12 @@ PROOF_JPEG_QUALITY = 92
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
     "check_on_start": True,
+    "provider": "github",
+    "github_owner": "DYK1323",
+    "github_repo": "bufs_editor",
+    "asset_pattern": "BUFS-HWP-Editor-v*.zip",
+    "expected_root_dir": "BUFS-HWP-Editor",
+    "expected_exe_name": "BUFS-HWP-Editor.exe",
     "version_url": "",
     "download_url": "",
     "timeout_seconds": 5,
@@ -263,6 +271,11 @@ class UpdateInfo:
     latest_version: str
     download_url: str
     notes: str = ""
+    html_url: str = ""
+    asset_name: str = ""
+    sha256: str = ""
+    size: int = 0
+    source: str = "custom"
 
 
 @dataclass(frozen=True)
@@ -1104,22 +1117,107 @@ def google_drive_direct_download_url(url: str) -> str:
     return f"https://drive.google.com/uc?export=download&id={file_id}"
 
 
+def wildcard_match(pattern: str, text: str) -> bool:
+    regex = "^" + re.escape(pattern).replace(r"\*", ".*").replace(r"\?", ".") + "$"
+    return re.match(regex, text, flags=re.IGNORECASE) is not None
+
+
+def github_api_latest_release_url(owner: str, repo: str) -> str:
+    owner = str(owner).strip()
+    repo = str(repo).strip()
+    if not owner or not repo:
+        raise ValueError("GitHub owner/repo 설정이 비어 있습니다.")
+    return f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+
+
+def github_asset_sha256(asset: dict) -> str:
+    digest = str(asset.get("digest") or "").strip()
+    if digest.lower().startswith("sha256:"):
+        return digest.split(":", 1)[1].strip()
+    return ""
+
+
+def parse_github_release_info(data: dict, asset_pattern: str = "BUFS-HWP-Editor-v*.zip") -> UpdateInfo:
+    latest_version = str(data.get("tag_name") or data.get("name") or "").strip()
+    notes = str(data.get("body") or "").strip()
+    html_url = str(data.get("html_url") or "").strip()
+    assets = data.get("assets")
+    if not isinstance(assets, list):
+        assets = []
+    zip_assets = [
+        asset
+        for asset in assets
+        if isinstance(asset, dict)
+        and str(asset.get("browser_download_url") or "").strip()
+        and wildcard_match(asset_pattern, str(asset.get("name") or ""))
+    ]
+    if not zip_assets:
+        raise ValueError(f"GitHub Release에서 업데이트 ZIP을 찾지 못했습니다: {asset_pattern}")
+    asset = zip_assets[0]
+    download_url = str(asset.get("browser_download_url") or "").strip()
+    asset_name = str(asset.get("name") or "").strip()
+    size = int(asset.get("size") or 0)
+    if not latest_version:
+        match = re.search(r"v?(\d+(?:\.\d+)+)", asset_name)
+        latest_version = match.group(1) if match else ""
+    if not latest_version:
+        raise ValueError("GitHub Release 버전(tag_name)을 찾지 못했습니다.")
+    return UpdateInfo(
+        latest_version=latest_version,
+        download_url=download_url,
+        notes=notes,
+        html_url=html_url,
+        asset_name=asset_name,
+        sha256=github_asset_sha256(asset),
+        size=size,
+        source="github",
+    )
+
+
 def parse_update_info(data: dict, fallback_download_url: str = "") -> UpdateInfo:
     latest_version = str(data.get("latest_version") or data.get("version") or "").strip()
     download_url = str(data.get("download_url") or fallback_download_url or "").strip()
     notes = str(data.get("notes") or data.get("release_notes") or "").strip()
+    html_url = str(data.get("html_url") or data.get("release_url") or "").strip()
+    sha256 = str(data.get("sha256") or "").strip()
+    asset_name = str(data.get("asset_name") or Path(download_url).name or "").strip()
     if not latest_version:
         raise ValueError("latest_version 값이 없습니다.")
     if not download_url:
         raise ValueError("download_url 값이 없습니다.")
-    return UpdateInfo(latest_version=latest_version, download_url=download_url, notes=notes)
+    return UpdateInfo(
+        latest_version=latest_version,
+        download_url=download_url,
+        notes=notes,
+        html_url=html_url,
+        asset_name=asset_name,
+        sha256=sha256,
+        source="custom",
+    )
 
 
 def fetch_update_info(settings: dict) -> UpdateInfo:
+    provider = str(settings.get("provider") or "").strip().lower()
+    timeout = float(settings.get("timeout_seconds") or DEFAULT_UPDATE_SETTINGS["timeout_seconds"])
+    if provider == "github":
+        request_url = github_api_latest_release_url(settings.get("github_owner", ""), settings.get("github_repo", ""))
+        request = urllib.request.Request(
+            request_url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": APP_NAME,
+            },
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read().decode("utf-8-sig")
+        data = json.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError("GitHub Release 응답은 객체 형태여야 합니다.")
+        return parse_github_release_info(data, str(settings.get("asset_pattern") or DEFAULT_UPDATE_SETTINGS["asset_pattern"]))
+
     version_url = str(settings.get("version_url") or "").strip()
     if not version_url:
         raise ValueError("update-settings.json에 version_url이 비어 있습니다.")
-    timeout = float(settings.get("timeout_seconds") or DEFAULT_UPDATE_SETTINGS["timeout_seconds"])
     request_url = google_drive_direct_download_url(version_url)
     with urllib.request.urlopen(request_url, timeout=timeout) as response:
         payload = response.read().decode("utf-8-sig")
@@ -1127,6 +1225,117 @@ def fetch_update_info(settings: dict) -> UpdateInfo:
     if not isinstance(data, dict):
         raise ValueError("버전 정보 JSON은 객체 형태여야 합니다.")
     return parse_update_info(data, str(settings.get("download_url") or ""))
+
+
+def update_cache_dir() -> Path:
+    root = CONFIG_ROOT / "updates"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_zip_member_path(name: str) -> bool:
+    if not name or name.startswith(("/", "\\")):
+        return False
+    parts = Path(name.replace("\\", "/")).parts
+    return all(part not in ("", ".", "..") for part in parts)
+
+
+def validate_update_zip(zip_path: Path, expected_root_dir: str = "BUFS-HWP-Editor", expected_exe_name: str = "BUFS-HWP-Editor.exe") -> None:
+    expected_root = str(expected_root_dir).strip().strip("/\\")
+    expected_exe = str(expected_exe_name).strip()
+    if not expected_root:
+        raise ValueError("업데이트 ZIP 루트 폴더 설정이 비어 있습니다.")
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            names = archive.namelist()
+    except zipfile.BadZipFile as exc:
+        raise ValueError("업데이트 ZIP 파일이 손상되었습니다.") from exc
+    if not names:
+        raise ValueError("업데이트 ZIP 파일이 비어 있습니다.")
+    normalized = [name.replace("\\", "/") for name in names]
+    unsafe = [name for name in normalized if not safe_zip_member_path(name)]
+    if unsafe:
+        raise ValueError(f"업데이트 ZIP에 안전하지 않은 경로가 있습니다: {unsafe[0]}")
+    prefix = expected_root + "/"
+    outside = [name for name in normalized if name != expected_root and not name.startswith(prefix)]
+    if outside:
+        raise ValueError(f"업데이트 ZIP 최상위 폴더는 {expected_root} 하나여야 합니다.")
+    required_exe = prefix + expected_exe
+    if required_exe not in normalized:
+        raise ValueError(f"업데이트 ZIP에서 실행 파일을 찾지 못했습니다: {required_exe}")
+    if prefix + "_internal/" not in normalized and not any(name.startswith(prefix + "_internal/") for name in normalized):
+        raise ValueError("업데이트 ZIP에서 _internal 폴더를 찾지 못했습니다.")
+
+
+def update_zip_name(info: UpdateInfo) -> str:
+    if info.asset_name.lower().endswith(".zip"):
+        return info.asset_name
+    version = str(info.latest_version).strip().lstrip("vV") or "latest"
+    return f"{APP_NAME}-v{version}.zip"
+
+
+def download_update_asset(info: UpdateInfo, timeout: float, progress: Callable[[int, int], None] | None = None) -> Path:
+    destination = update_cache_dir() / update_zip_name(info)
+    request_url = google_drive_direct_download_url(info.download_url) if "drive.google.com" in info.download_url else info.download_url
+    request = urllib.request.Request(request_url, headers={"User-Agent": APP_NAME})
+    with urllib.request.urlopen(request, timeout=timeout) as response, destination.open("wb") as file:
+        total = int(response.headers.get("Content-Length") or info.size or 0)
+        received = 0
+        while True:
+            chunk = response.read(1024 * 256)
+            if not chunk:
+                break
+            file.write(chunk)
+            received += len(chunk)
+            if progress:
+                progress(received, total)
+    if info.sha256:
+        actual = file_sha256(destination)
+        if actual.lower() != info.sha256.lower():
+            destination.unlink(missing_ok=True)
+            raise ValueError("다운로드한 업데이트 파일의 SHA-256이 일치하지 않습니다.")
+    return destination
+
+
+def updater_source_path() -> Path:
+    return INSTALL_ROOT / "BUFS-HWP-Updater.exe"
+
+
+def prepare_updater_copy() -> Path:
+    source = updater_source_path()
+    if not source.exists():
+        raise FileNotFoundError(f"업데이터 실행 파일을 찾지 못했습니다: {source}")
+    target = update_cache_dir() / "BUFS-HWP-Updater.exe"
+    shutil.copy2(source, target)
+    return target
+
+
+def launch_update_helper(zip_path: Path, info: UpdateInfo, settings: dict) -> None:
+    updater = prepare_updater_copy()
+    args = [
+        str(updater),
+        "--pid",
+        str(os.getpid()),
+        "--install-dir",
+        str(INSTALL_ROOT),
+        "--zip",
+        str(zip_path),
+        "--root-dir",
+        str(settings.get("expected_root_dir") or DEFAULT_UPDATE_SETTINGS["expected_root_dir"]),
+        "--exe-name",
+        str(settings.get("expected_exe_name") or DEFAULT_UPDATE_SETTINGS["expected_exe_name"]),
+        "--version",
+        str(info.latest_version),
+    ]
+    subprocess.Popen(args, cwd=str(update_cache_dir()), close_fds=True)
 
 
 def normalize_table_settings(settings: dict) -> dict:
@@ -4519,12 +4728,56 @@ class MvpApp(tk.Tk):
 
         self.log(f"업데이트 확인: 새 버전 발견 current={APP_VERSION}, latest={info.latest_version}")
         notes = f"\n\n변경 내용:\n{info.notes}" if info.notes else ""
-        open_download = messagebox.askyesno(
+        install_now = messagebox.askyesno(
             "새 버전 있음",
-            f"새 버전이 있습니다.\n\n현재 버전: {APP_VERSION}\n최신 버전: {info.latest_version}{notes}\n\n다운로드 페이지를 열까요?",
+            f"새 버전이 있습니다.\n\n현재 버전: {APP_VERSION}\n최신 버전: {info.latest_version}{notes}\n\n지금 다운로드하고 설치할까요?\n앱은 설치 과정에서 자동으로 종료됩니다.",
         )
-        if open_download:
-            webbrowser.open(info.download_url)
+        if install_now:
+            self.download_and_install_update(info)
+        elif info.html_url or info.download_url:
+            open_page = messagebox.askyesno("업데이트", "릴리즈 페이지를 브라우저로 열까요?")
+            if open_page:
+                webbrowser.open(info.html_url or info.download_url)
+
+    def download_and_install_update(self, info: UpdateInfo) -> None:
+        settings = self.update_settings
+        timeout = float(settings.get("timeout_seconds") or DEFAULT_UPDATE_SETTINGS["timeout_seconds"])
+        expected_root = str(settings.get("expected_root_dir") or DEFAULT_UPDATE_SETTINGS["expected_root_dir"])
+        expected_exe = str(settings.get("expected_exe_name") or DEFAULT_UPDATE_SETTINGS["expected_exe_name"])
+
+        def progress(received: int, total: int) -> None:
+            if total:
+                percent = int(received * 100 / total)
+                self.after(0, lambda: self.log(f"업데이트 다운로드 중... {percent}%"))
+
+        def worker() -> None:
+            try:
+                self.after(0, lambda: self.log("업데이트 다운로드 시작"))
+                zip_path = download_update_asset(info, timeout, progress)
+                validate_update_zip(zip_path, expected_root, expected_exe)
+                self.after(0, lambda: self.start_update_install(zip_path, info, settings))
+            except Exception as exc:
+                self.after(0, lambda error=exc: self.handle_update_install_error(error, info))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_update_install(self, zip_path: Path, info: UpdateInfo, settings: dict) -> None:
+        try:
+            launch_update_helper(zip_path, info, settings)
+        except Exception as exc:
+            self.handle_update_install_error(exc, info)
+            return
+        self.log(f"업데이트 설치 시작: {info.latest_version}")
+        self.destroy()
+
+    def handle_update_install_error(self, exc: Exception, info: UpdateInfo) -> None:
+        self.log(f"업데이트 설치 준비 실패: {type(exc).__name__}: {exc}")
+        open_page = messagebox.askyesno(
+            "업데이트 설치 실패",
+            f"자동 설치를 준비하지 못했습니다.\n\n{exc}\n\n릴리즈 페이지를 브라우저로 열까요?",
+        )
+        if open_page:
+            webbrowser.open(info.html_url or info.download_url)
 
     def handle_update_error(self, exc: Exception, silent: bool) -> None:
         self.log(f"업데이트 확인 실패: {type(exc).__name__}: {exc}")

@@ -1,6 +1,12 @@
 {
   "enabled": true,
   "check_on_start": true,
+  "provider": "github",
+  "github_owner": "DYK1323",
+  "github_repo": "bufs_editor",
+  "asset_pattern": "BUFS-HWP-Editor-v*.zip",
+  "expected_root_dir": "BUFS-HWP-Editor",
+  "expected_exe_name": "BUFS-HWP-Editor.exe",
   "version_url": "https://drive.google.com/file/d/17Xbc2yvHli1YTGXUy-T0yNfGQOMZpJb1/view?usp=sharing",
   "download_url": "https://drive.google.com/drive/folders/1jGfD-de2HHmY41v0kAX-tROJZuOb4vKR?usp=sharing",
   "timeout_seconds": 5

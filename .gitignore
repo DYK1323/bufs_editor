@@ -16,3 +16,7 @@ bufs/test-output/logo-thumbs/*.png
 build/
 dist/
 *.spec
+
+# Local/reference-only Hancom API materials
+HancomDev/
+bufs/hancom_official_api_catalog_v1.json

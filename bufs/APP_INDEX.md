@@ -4,12 +4,12 @@
 
 ## 새 기능 개발 원칙
 
-한글 자동화 기능을 새로 추가하거나 기존 COM/HAction 호출을 바꿀 때는 반드시 `HancomDev/` 폴더의 공식 PDF를 먼저 확인한다.
+한글 자동화 기능을 새로 추가하거나 기존 COM/HAction 호출을 바꿀 때는 한컴 공식 개발자 문서 또는 신뢰 가능한 API 카탈로그를 먼저 확인한다. 한컴DEV PDF와 파생 카탈로그 파일은 공개 저장소에 포함하지 않는다.
 
-- `HancomDev/HwpAutomation_2504.pdf`: HWP 자동화 객체 모델, COM 진입점, 주요 객체/메서드 확인
-- `HancomDev/ActionTable_2504.pdf`: `HAction.Execute`, `Run` 등에 사용할 액션 이름 확인
-- `HancomDev/ParameterSetTable_2504.pdf`: 액션별 `HParameterSet` 이름과 속성 확인
-- `HancomDev/한글오토메이션EventHandler추가_2504.pdf`: 이벤트 처리나 대화상자/상호작용 자동화가 필요한 경우 확인
+- `HwpAutomation`: HWP 자동화 객체 모델, COM 진입점, 주요 객체/메서드 확인
+- `ActionTable`: `HAction.Execute`, `Run` 등에 사용할 액션 이름 확인
+- `ParameterSetTable`: 액션별 `HParameterSet` 이름과 속성 확인
+- `한글오토메이션 EventHandler`: 이벤트 처리나 대화상자/상호작용 자동화가 필요한 경우 확인
 
 구현 전에 관련 PDF에서 액션명, 파라미터셋, 속성명을 확인하고, 코드에는 추측한 이름보다 검증된 이름을 사용한다. 새 기능 검증 결과나 한글 COM 특이사항은 이 문서 또는 관련 설계/검증 문서에 남긴다.
 
@@ -64,14 +64,6 @@ bufs/
   verification-results.md       # 검증 기록
   mvp-test-results.md           # MVP 테스트 기록
   hwp-table-cell-selection-notes.md
-```
-
-```text
-HancomDev/
-  HwpAutomation_2504.pdf
-  ActionTable_2504.pdf
-  ParameterSetTable_2504.pdf
-  한글오토메이션EventHandler추가_2504.pdf
 ```
 
 ## 데이터와 설정 흐름
@@ -175,7 +167,7 @@ HancomDev/
 
 ## 기능 추가 체크리스트
 
-1. `HancomDev/` PDF에서 필요한 액션명, 파라미터셋, 속성명을 확인한다.
+1. 한컴 공식 개발자 문서 또는 검증된 API 카탈로그에서 필요한 액션명, 파라미터셋, 속성명을 확인한다.
 2. 기존 `MvpApp`의 한글 COM 헬퍼를 먼저 재사용한다.
    - `run_hwp_command`
    - `execute_first_hwp_action`

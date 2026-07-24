@@ -23,6 +23,7 @@ from hwp_style_mvp import (  # noqa: E402
     find_suspicious_decimal_numbers,
     google_drive_direct_download_url,
     google_drive_file_id,
+    github_api_latest_release_url,
     is_rectangular_cell_matrix,
     is_newer_version,
     looks_like_cell_clipboard_matrix,
@@ -34,6 +35,7 @@ from hwp_style_mvp import (  # noqa: E402
     normalize_table_settings,
     parse_cell_clipboard_matrix,
     parse_cover_input,
+    parse_github_release_info,
     parse_update_info,
     create_filled_title_number_box_file,
     normalize_title_box_text,
@@ -84,6 +86,7 @@ from hwp_style_mvp import (  # noqa: E402
     today_ymd_text,
     today_ym_text,
     transform_cell_matrix,
+    validate_update_zip,
     MvpApp,
 )
 
@@ -642,6 +645,64 @@ class CellMatrixTransformTests(unittest.TestCase):
         )
         self.assertEqual(info.latest_version, "0.1.2")
         self.assertEqual(info.notes, "업데이트 확인 추가")
+
+    def test_github_latest_release_url_uses_owner_and_repo(self) -> None:
+        self.assertEqual(
+            github_api_latest_release_url("DYK1323", "bufs_editor"),
+            "https://api.github.com/repos/DYK1323/bufs_editor/releases/latest",
+        )
+
+    def test_parse_github_release_info_selects_matching_zip_asset(self) -> None:
+        info = parse_github_release_info(
+            {
+                "tag_name": "v1.0.2",
+                "html_url": "https://github.com/DYK1323/bufs_editor/releases/tag/v1.0.2",
+                "body": "release notes",
+                "assets": [
+                    {
+                        "name": "source.zip",
+                        "browser_download_url": "https://example.test/source.zip",
+                    },
+                    {
+                        "name": "BUFS-HWP-Editor-v1.0.2.zip",
+                        "browser_download_url": "https://example.test/app.zip",
+                        "digest": "sha256:abcdef",
+                        "size": 123,
+                    },
+                ],
+            }
+        )
+        self.assertEqual(info.latest_version, "v1.0.2")
+        self.assertEqual(info.download_url, "https://example.test/app.zip")
+        self.assertEqual(info.asset_name, "BUFS-HWP-Editor-v1.0.2.zip")
+        self.assertEqual(info.sha256, "abcdef")
+        self.assertEqual(info.source, "github")
+
+    def test_validate_update_zip_accepts_expected_release_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = Path(temp_dir) / "release.zip"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("BUFS-HWP-Editor/BUFS-HWP-Editor.exe", "")
+                archive.writestr("BUFS-HWP-Editor/_internal/runtime.dat", "")
+            validate_update_zip(zip_path, "BUFS-HWP-Editor", "BUFS-HWP-Editor.exe")
+
+    def test_validate_update_zip_rejects_files_outside_release_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = Path(temp_dir) / "release.zip"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("BUFS-HWP-Editor/BUFS-HWP-Editor.exe", "")
+                archive.writestr("BUFS-HWP-Editor/_internal/runtime.dat", "")
+                archive.writestr("unexpected.txt", "")
+            with self.assertRaises(ValueError):
+                validate_update_zip(zip_path, "BUFS-HWP-Editor", "BUFS-HWP-Editor.exe")
+
+    def test_validate_update_zip_rejects_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            zip_path = Path(temp_dir) / "release.zip"
+            with zipfile.ZipFile(zip_path, "w") as archive:
+                archive.writestr("../escape.txt", "")
+            with self.assertRaises(ValueError):
+                validate_update_zip(zip_path, "BUFS-HWP-Editor", "BUFS-HWP-Editor.exe")
 
     def test_title_number_box_text_is_normalized_to_single_line(self) -> None:
         self.assertEqual(normalize_title_box_text("  첫 줄\r\n둘째\t줄  "), "첫 줄 둘째 줄")
