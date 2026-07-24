@@ -1,0 +1,39 @@
+site_name: BUFS 한글 편집기 사용설명서
+site_description: 한글 보고서 서식을 빠르게 맞추는 BUFS 한글 편집기 도움말
+
+docs_dir: user_manual
+site_dir: site
+exclude_docs: |
+  terms.md
+  manual_outline.md
+
+theme:
+  name: material
+  language: ko
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.integrate
+    - toc.follow
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: teal
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - 홈: index.md
+  - 사용설명서: user_manual.md

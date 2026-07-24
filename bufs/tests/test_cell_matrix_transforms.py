@@ -374,28 +374,6 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(commands, ["Cancel", "SelectCtrlReverse", "ShapeObjTableSelCell", "TableCellBlock", "TableCellBlockRow"])
         self.assertIn("TableCellBlock=False, ready=True", steps)
 
-    def test_default_table_and_title_row_button_runs_one_click_sequence(self) -> None:
-        app = object.__new__(MvpApp)
-        calls: list[tuple[str, object | None]] = []
-        app.ensure_hwp = lambda: True
-        app.select_current_table_all_cells = lambda: calls.append(("all_cells", None)) or True
-        app.set_table_border_preset = lambda preset: calls.append(("border", preset)) or ("CellZoneBorderFill", True)
-        app.select_current_table_first_row = lambda: calls.append(("first_row", None)) or (True, ["TableCellBlockRow=True"])
-        app.apply_title_cell_preset = lambda: calls.append(("title_cell", None))
-        app.log = lambda _message: None
-
-        app.apply_default_table_and_title_row_preset()
-
-        self.assertEqual(
-            calls,
-            [
-                ("all_cells", None),
-                ("border", hwp_style_mvp.DEFAULT_TABLE_ONE_CLICK_BORDER_PRESET),
-                ("first_row", None),
-                ("title_cell", None),
-            ],
-        )
-
     def test_table_style_preset_applies_header_background_after_border(self) -> None:
         app = object.__new__(MvpApp)
         calls: list[tuple[str, object | None]] = []

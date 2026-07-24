@@ -364,7 +364,6 @@ TABLE_STYLE_ICON_PRESETS = (
     ("굵은상하이중선", "thick_top_bottom_header_double", "굵은 상하선 + 헤더 아래 이중선"),
 )
 TABLE_STYLE_PRESET_LABELS = {preset_name: icon_name for icon_name, preset_name, _tooltip in TABLE_STYLE_ICON_PRESETS}
-DEFAULT_TABLE_ONE_CLICK_BORDER_PRESET = "thin_top_bottom"
 
 TABLE_BORDER_ICON_PRESETS = (
     ("이중아래", "double_bottom", "아래 이중선"),
@@ -3968,19 +3967,6 @@ class MvpApp(tk.Tk):
         )
         title_button.pack(fill="x", pady=(0, 6), ipady=8)
 
-        default_table_button = tk.Button(
-            content,
-            text="표 기본+제목셀",
-            command=self.apply_default_table_and_title_row_preset,
-            bg=title_bg,
-            activebackground=title_bg,
-            fg="#000000",
-            font=title_button_font,
-            relief="raised",
-            bd=1,
-        )
-        default_table_button.pack(fill="x", pady=(0, 12), ipady=8)
-
     def table_content_style_records(self) -> list[StyleRecord]:
         prefix = normalize_style_name("표내용-")
         active_set = self.active_style_set()
@@ -7416,42 +7402,6 @@ class MvpApp(tk.Tk):
 
         return row_ok, results
 
-    def apply_default_table_and_title_row_preset(self) -> None:
-        label = "표 기본+제목셀"
-        if not self.ensure_hwp():
-            return
-
-        results: list[str] = []
-        try:
-            all_cells_ok = self.select_current_table_all_cells()
-            results.append(f"전체셀선택={all_cells_ok}")
-            if not all_cells_ok:
-                self.log(f"{label}: " + ", ".join(results))
-                messagebox.showwarning(label, "표 안에 커서를 둔 상태에서 실행하세요.")
-                return
-
-            border_action, border_ok = self.set_table_border_preset(DEFAULT_TABLE_ONE_CLICK_BORDER_PRESET)
-            results.append(f"표스타일={border_ok}({border_action}:{DEFAULT_TABLE_ONE_CLICK_BORDER_PRESET})")
-            if not border_ok:
-                self.log(f"{label}: " + ", ".join(results))
-                messagebox.showwarning(label, "표 전체 스타일 적용에 실패했습니다. 표 셀 선택 상태를 확인하세요.")
-                return
-
-            first_row_ok, first_row_steps = self.select_current_table_first_row()
-            results.extend(first_row_steps)
-            results.append(f"첫줄선택={first_row_ok}")
-            if not first_row_ok:
-                self.log(f"{label}: " + ", ".join(results))
-                messagebox.showwarning(label, "표 전체 스타일은 적용했지만 첫째 줄을 선택하지 못했습니다.")
-                return
-
-            self.apply_title_cell_preset()
-            results.append("제목셀자동화=called")
-            self.log(f"{label}: " + ", ".join(results))
-        except Exception as exc:
-            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
-            messagebox.showerror(f"{label} 실패", str(exc))
-
     def apply_title_cell_preset(self) -> None:
         if not self.ensure_hwp():
             return
@@ -10398,11 +10348,11 @@ class MvpApp(tk.Tk):
         if not self.ensure_hwp():
             return
         try:
-            result = self.set_table_border_preset(DEFAULT_TABLE_ONE_CLICK_BORDER_PRESET)
+            result = self.set_table_border_preset("thin_top_bottom")
         except Exception as exc:
             result = ("예외", False)
             self.log(f"[probe] 기본선 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("기본선", f"set_table_border_preset({DEFAULT_TABLE_ONE_CLICK_BORDER_PRESET})", result)
+        self.log_hwp_table_probe_state("기본선", "set_table_border_preset(thin_top_bottom)", result)
 
     def probe_select_current_table_first_row(self) -> None:
         if not self.ensure_hwp():

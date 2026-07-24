@@ -15,6 +15,7 @@ bufs/test-output/logo-thumbs/*.png
 # Build artifacts
 build/
 dist/
+site/
 *.spec
 
 # Local/reference-only Hancom API materials
