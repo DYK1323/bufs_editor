@@ -130,6 +130,42 @@ DEFAULT_UPDATE_SETTINGS = {
     "download_url": "",
     "timeout_seconds": 5,
 }
+DEFAULT_TITLE_NUMBER_BOX_SETTINGS = {
+    "enabled": True,
+    "role": "title_number_box",
+    "marker": TITLE_NUMBER_BOX_MARKER,
+    "template_file": "templates/대제목_번호박스.hwpx",
+    "placeholder_title": "대제목",
+    "placeholder_number": "1",
+    "outside_margin": {
+        "left": 0,
+        "right": 0,
+        "top": 0,
+        "bottom": 850,
+    },
+    "table_style_preset": "thin_all",
+    "cells": [
+        {
+            "width": 2487,
+            "height": 2414,
+            "paragraph_style": "바탕글 사본1",
+            "fill_rgb": [217, 217, 217],
+            "margins": {"left": 510, "right": 510, "top": 141, "bottom": 141},
+        },
+        {
+            "width": 45211,
+            "height": 2414,
+            "paragraph_style": "대제목",
+            "margins": {"left": 510, "right": 510, "top": 141, "bottom": 141},
+        },
+        {
+            "width": 498,
+            "height": 2414,
+            "text_color_rgb": [255, 255, 255],
+            "margins": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+        },
+    ],
+}
 DEFAULT_SPECIAL_CHARS: list[dict[str, str]] = []
 DEFAULT_SPECIAL_CHAR_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("원숫자", tuple(chr(codepoint) for codepoint in range(0x2460, 0x2474))),
@@ -353,6 +389,7 @@ DEFAULT_TABLE_SETTINGS = {
         "suffix_template": DEFAULT_CAPTION_SUFFIX_TEMPLATE,
         "sample": "[그림 2.4-1] 학사관리 체계 개선 실적",
     },
+    "title_number_box": DEFAULT_TITLE_NUMBER_BOX_SETTINGS,
 }
 
 TABLE_STYLE_ICON_PRESETS = (
@@ -961,6 +998,41 @@ def normalize_style_set_item(item: object) -> StyleSet | None:
     return StyleSet(name=name, paragraph_styles=paragraph_styles, character_styles=character_styles, inline_rules=inline_rules)
 
 
+def migrate_title_number_box_roles(style_sets: list[StyleSet]) -> list[StyleSet]:
+    migrated_sets: list[StyleSet] = []
+    for style_set in style_sets:
+        migrated_entries: list[StyleEntry] = []
+        for entry in style_set.paragraph_styles:
+            roles = tuple(entry.roles)
+            if (
+                entry.name == "대제목"
+                and "대제목" in entry.outline_markers
+                and "title_number_box" not in roles
+            ):
+                roles = (*roles, "title_number_box")
+            migrated_entries.append(
+                StyleEntry(
+                    entry.name,
+                    table_style=entry.table_style,
+                    caption_style=entry.caption_style,
+                    outline_markers=entry.outline_markers,
+                    roles=roles,
+                    numbering_group=entry.numbering_group,
+                    numbering_level=entry.numbering_level,
+                    restart_after_higher_level=entry.restart_after_higher_level,
+                )
+            )
+        migrated_sets.append(
+            StyleSet(
+                style_set.name,
+                migrated_entries,
+                style_set.character_styles,
+                style_set.inline_rules,
+            )
+        )
+    return migrated_sets
+
+
 def default_style_sets() -> tuple[str, list[StyleSet]]:
     records = apply_saved_style_order(read_style_records())
     sets = style_sets_from_records(records)
@@ -984,6 +1056,7 @@ def load_style_sets() -> tuple[str, list[StyleSet]]:
     style_sets = [item for item in (normalize_style_set_item(raw) for raw in raw_sets) if item is not None]
     if not style_sets:
         return default_active, default_sets
+    style_sets = migrate_title_number_box_roles(style_sets)
     active_name = str(data.get("active_set", "")).strip()
     if active_name not in {item.name for item in style_sets}:
         active_name = style_sets[0].name
@@ -1804,6 +1877,32 @@ def create_filled_title_number_box_file(
             dst.writestr(info, data)
 
     return target
+
+
+def create_title_number_box_hwpml(
+    title: str,
+    number: int = 1,
+    template: Path = TITLE_NUMBER_BOX_TEMPLATE_FILE,
+) -> str:
+    if not template.exists():
+        raise FileNotFoundError(f"대제목 번호박스 템플릿을 찾지 못했습니다: {template}")
+
+    title = normalize_title_box_text(title)
+    number_text = str(max(1, int(number)))
+    section_xml = read_zip_text(template, "Contents/section0.xml")
+    section_xml = re.sub(
+        r"(<[^>]*:t>)1(</[^>]*:t>)",
+        rf"\g<1>{hwp_xml_text(number_text)}\2",
+        section_xml,
+        count=1,
+    )
+    if title:
+        section_xml = section_xml.replace(">대제목<", f">{hwp_xml_text(title)}<")
+    return section_xml
+
+
+def style_entry_has_role(entry: StyleEntry, role: str) -> bool:
+    return role in entry.roles
 
 
 def normalize_proof_title_from_path(path: Path) -> str:
@@ -3817,6 +3916,9 @@ class MvpApp(tk.Tk):
         bottom_frame = ttk.Frame(frame)
         bottom_frame.pack(side="bottom", fill="x")
         ttk.Button(bottom_frame, text="markdown 표 → 한글 표", command=self.convert_selected_markdown_table).pack(
+            fill="x", pady=(0, 6), ipady=8
+        )
+        ttk.Button(bottom_frame, text="붙여넣기 액션 probe", command=self.probe_paste_related_actions).pack(
             fill="x", pady=(0, 6), ipady=8
         )
         ttk.Button(bottom_frame, text="표 설정", command=self.open_table_settings_window).pack(fill="x", ipady=8)
@@ -5910,11 +6012,12 @@ class MvpApp(tk.Tk):
             try:
                 self.activate_hwp_window()
                 time.sleep(0.03)
-                ok = bool(self.hwp.HAction.Execute(action, hset))
+                result = self.hwp.HAction.Execute(action, hset)
+                ok = result is not False and result != 0
             except Exception as exc:
                 self.debug(f"[hwp-action] {action} 실패: {type(exc).__name__}: {exc}")
                 continue
-            self.debug(f"[hwp-action] {action} result={ok}")
+            self.debug(f"[hwp-action] {action} result={result!r}, ok={ok}")
             if ok:
                 return action, True
         return last_action, False
@@ -6153,7 +6256,8 @@ class MvpApp(tk.Tk):
         pset = self.hwp.HParameterSet.HCharShape
         default_ok = bool(self.hwp.HAction.GetDefault("CharShape", pset.HSet))
         pset.TextColor = value
-        ok = bool(self.hwp.HAction.Execute("CharShape", pset.HSet))
+        result = self.hwp.HAction.Execute("CharShape", pset.HSet)
+        ok = result is not False and result != 0
         return ok, default_ok
 
     def configure_style_apply_set(self, pset, style_id: int) -> None:
@@ -7685,6 +7789,42 @@ class MvpApp(tk.Tk):
         option.KeepStyle = 1
         return bool(self.hwp.HAction.Execute("InsertFile", option.HSet))
 
+    def table_creation_parameter_set(self):
+        for name in ("HTableCreation", "TableCreation"):
+            try:
+                return getattr(self.hwp.HParameterSet, name)
+            except Exception:
+                continue
+        raise AttributeError("HParameterSet.TableCreation")
+
+    def create_table_at_cursor(self, rows: int, cols: int) -> tuple[str, bool]:
+        pset = self.table_creation_parameter_set()
+        default_ok = False
+        try:
+            default_ok = bool(self.hwp.HAction.GetDefault("TableCreate", pset.HSet))
+        except Exception as exc:
+            self.debug(f"[table-create] GetDefault 실패: {type(exc).__name__}: {exc}")
+        for item, value in (("Rows", rows), ("Cols", cols)):
+            self.set_parameter_item(pset, item, value, "table-create")
+            self.set_parameter_item(pset.HSet, item, value, "table-create")
+        action_name = "TableCreate"
+        executed = False
+        for action in ("TableCreate", "TableInsert"):
+            action_name = action
+            try:
+                self.activate_hwp_window()
+                time.sleep(0.03)
+                result = self.hwp.HAction.Execute(action, pset.HSet)
+                executed = result is not False and result != 0
+                self.debug(f"[table-create] {action} result={result!r}, ok={executed}")
+            except Exception as exc:
+                self.debug(f"[table-create] {action} 실패: {type(exc).__name__}: {exc}")
+                continue
+            if executed:
+                break
+        self.debug(f"[table-create] rows={rows}, cols={cols}, GetDefault={default_ok}, action={action_name}, result={executed}")
+        return action_name, executed
+
     def page_settings_values(self, settings: PageSettings, *, apply_to: int = 3) -> dict[str, int]:
         return {
             "PaperWidth": settings.paper_width,
@@ -7825,6 +7965,10 @@ class MvpApp(tk.Tk):
             original_text = self.get_clipboard_text() if copy_ok else ""
             filled_fields = None
             insert_path = template_path
+            self.log(
+                f"{label}: 시작, template={template_path.name}, exists={template_path.exists()}, "
+                f"styles={style_count}, copy={copy_ok}, input_len={len(original_text.strip())}"
+            )
             if original_text.strip():
                 try:
                     filled_fields = parse_report_template_input(original_text)
@@ -7893,6 +8037,268 @@ class MvpApp(tk.Tk):
             return 1, []
         return max(numbers) + 1, numbers
 
+    def title_number_box_settings(self) -> dict:
+        table_settings = self.__dict__.get("table_settings", {})
+        raw = table_settings.get("title_number_box", {}) if isinstance(table_settings, dict) else {}
+        settings = merge_dict(DEFAULT_TITLE_NUMBER_BOX_SETTINGS, raw if isinstance(raw, dict) else {})
+        template_file = str(settings.get("template_file") or DEFAULT_TITLE_NUMBER_BOX_SETTINGS["template_file"])
+        template_path = Path(template_file)
+        if not template_path.is_absolute():
+            template_path = ROOT / template_path
+        settings["template_path"] = template_path
+        return settings
+
+    def title_number_box_cell_specs(self) -> list[dict]:
+        specs = self.title_number_box_settings().get("cells", [])
+        return [spec for spec in specs if isinstance(spec, dict)]
+
+    def title_number_box_outside_margin_values(self) -> dict[str, int]:
+        raw = self.title_number_box_settings().get("outside_margin", {})
+        if not isinstance(raw, dict):
+            raw = {}
+        return {
+            "OutsideMarginLeft": int(raw.get("left", 0)),
+            "OutsideMarginRight": int(raw.get("right", 0)),
+            "OutsideMarginTop": int(raw.get("top", 0)),
+            "OutsideMarginBottom": int(raw.get("bottom", 0)),
+        }
+
+    def apply_current_table_outside_margins(self, margin_values: dict[str, int]) -> bool:
+        pset = self.get_table_property_set()
+        set_ok = True
+        for attr, value in margin_values.items():
+            applied = self.set_com_attr(pset, attr, int(value))
+            self.debug(f"[title-number-box] {attr}={value}, set={applied}")
+            set_ok = applied and set_ok
+        action_name, executed = self.execute_first_hwp_action(("TablePropertyDialog", "ShapeObjDialog"), pset.HSet)
+        self.debug(f"[title-number-box] outside-margin action={action_name}, executed={executed}, set={set_ok}")
+        return set_ok and executed
+
+    def apply_current_cell_dimensions(
+        self,
+        width_hwp: int,
+        height_hwp: int,
+        margins: dict[str, int] | None = None,
+    ) -> bool:
+        self.run_hwp_command_best_effort("TableCellBlock")
+        time.sleep(0.03)
+        margins = margins or {}
+        has_margin = any(int(margins.get(name, 0)) for name in ("left", "right", "top", "bottom"))
+        results: list[tuple[str, bool]] = []
+        try:
+            action = self.hwp.CreateAction("TablePropertyDialog")
+            pset = action.CreateSet()
+            default_ok = bool(action.GetDefault(pset))
+            size_ok = self.set_parameter_item(pset, "ShapeType", 3, "title-number-box-cell")
+            size_ok = self.set_parameter_item(pset, "ShapeCellSize", 1, "title-number-box-cell") and size_ok
+            shape_cell = self.get_parameter_child(pset, "ShapeTableCell", "title-number-box-cell")
+            cell_ok = shape_cell is not None
+            if shape_cell is not None:
+                cell_ok = self.set_parameter_item(shape_cell, "Width", int(width_hwp), "title-number-box-cell") and cell_ok
+                cell_ok = self.set_parameter_item(shape_cell, "Height", int(height_hwp), "title-number-box-cell") and cell_ok
+                cell_ok = self.set_parameter_item(shape_cell, "HasMargin", 1 if has_margin else 0, "title-number-box-cell") and cell_ok
+                for axis_name, item_name in (
+                    ("left", "MarginLeft"),
+                    ("right", "MarginRight"),
+                    ("top", "MarginTop"),
+                    ("bottom", "MarginBottom"),
+                ):
+                    cell_ok = self.set_parameter_item(
+                        shape_cell,
+                        item_name,
+                        int(margins.get(axis_name, 0)),
+                        "title-number-box-cell",
+                    ) and cell_ok
+            executed = action.Execute(pset)
+            ok = bool(default_ok and size_ok and cell_ok and executed is not False and executed != 0)
+            self.debug(
+                f"[title-number-box-cell] width={width_hwp}, height={height_hwp}, margins={margins}, "
+                f"default={default_ok}, size={size_ok}, cell={cell_ok}, execute={executed!r}, ok={ok}"
+            )
+            results.append(("CreateAction(TablePropertyDialog)", ok))
+            if ok:
+                self.clear_hwp_selection()
+                return True
+        except Exception as exc:
+            self.debug(f"[title-number-box-cell] CreateAction 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            pset = self.hwp.HParameterSet.HShapeObject
+            default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", pset.HSet))
+            size_ok = self.set_parameter_item(pset, "ShapeType", 3, "title-number-box-cell-fallback")
+            size_ok = self.set_parameter_item(pset, "ShapeCellSize", 1, "title-number-box-cell-fallback") and size_ok
+            shape_cell = self.get_parameter_child(pset, "ShapeTableCell", "title-number-box-cell-fallback")
+            cell_ok = shape_cell is not None
+            if shape_cell is not None:
+                cell_ok = self.set_parameter_item(shape_cell, "Width", int(width_hwp), "title-number-box-cell-fallback") and cell_ok
+                cell_ok = self.set_parameter_item(shape_cell, "Height", int(height_hwp), "title-number-box-cell-fallback") and cell_ok
+                cell_ok = self.set_parameter_item(shape_cell, "HasMargin", 1 if has_margin else 0, "title-number-box-cell-fallback") and cell_ok
+                for axis_name, item_name in (
+                    ("left", "MarginLeft"),
+                    ("right", "MarginRight"),
+                    ("top", "MarginTop"),
+                    ("bottom", "MarginBottom"),
+                ):
+                    cell_ok = self.set_parameter_item(
+                        shape_cell,
+                        item_name,
+                        int(margins.get(axis_name, 0)),
+                        "title-number-box-cell-fallback",
+                    ) and cell_ok
+            action_name, executed = self.execute_first_hwp_action(("TablePropertyDialog", "ShapeObjDialog"), pset.HSet)
+            ok = bool(default_ok and size_ok and cell_ok and executed)
+            self.debug(
+                f"[title-number-box-cell] fallback width={width_hwp}, height={height_hwp}, margins={margins}, "
+                f"default={default_ok}, size={size_ok}, cell={cell_ok}, action={action_name}, ok={ok}"
+            )
+            results.append((action_name, ok))
+            if ok:
+                self.clear_hwp_selection()
+                return True
+        except Exception as exc:
+            self.debug(f"[title-number-box-cell] HShapeObject fallback 실패: {type(exc).__name__}: {exc}")
+
+        self.debug(f"[title-number-box-cell] 모든 경로 실패: {results}")
+        self.clear_hwp_selection()
+        return False
+
+    def apply_title_number_box_cell(
+        self,
+        cell_spec: dict,
+        text: str,
+    ) -> bool:
+        margins = cell_spec.get("margins", {})
+        if not isinstance(margins, dict):
+            margins = {}
+        dimension_ok = self.apply_current_cell_dimensions(
+            int(cell_spec.get("width", 0)),
+            int(cell_spec.get("height", 0)),
+            {name: int(margins.get(name, 0)) for name in ("left", "right", "top", "bottom")},
+        )
+        if not dimension_ok:
+            return False
+
+        fill_ok = True
+        fill_rgb = cell_spec.get("fill_rgb")
+        if isinstance(fill_rgb, (list, tuple)) and len(fill_rgb) == 3:
+            fill_ok = self.set_cell_fill_color(
+                self.palette_color_or_rgb("대제목번호박스배경", tuple(int(value) for value in fill_rgb))
+            )[1]
+        if not fill_ok:
+            return False
+        self.clear_hwp_selection()
+
+        style_name = str(cell_spec.get("paragraph_style", "")).strip()
+        style_ok = True
+        if style_name:
+            style_ok = self.apply_style_by_name(style_name)
+        if not style_ok:
+            return False
+
+        text_color_ok = True
+        text_color_rgb = cell_spec.get("text_color_rgb")
+        if isinstance(text_color_rgb, (list, tuple)) and len(text_color_rgb) == 3:
+            text_color_ok, _default_ok = self.set_text_color(
+                self.palette_color_or_rgb("대제목번호박스글자", tuple(int(value) for value in text_color_rgb))
+            )
+        if not text_color_ok:
+            return False
+
+        return self.insert_hwp_text(text)
+
+    def insert_title_number_box_file_at_cursor(self, title: str, number: int) -> bool:
+        settings = self.title_number_box_settings()
+        template_path = settings["template_path"]
+        insert_path = create_filled_title_number_box_file(title, number, template_path)
+        return self.insert_file_at_cursor(insert_path, keep_section=0)
+
+    def is_title_number_box_entry(self, entry: StyleEntry) -> bool:
+        settings = self.title_number_box_settings()
+        if not settings.get("enabled", True):
+            return False
+        return style_entry_has_role(entry, str(settings.get("role") or "title_number_box"))
+
+    def draw_title_number_box_at_cursor(self, title: str, number: int) -> bool:
+        title = normalize_title_box_text(title)
+        settings = self.title_number_box_settings()
+        marker = str(settings.get("marker") or TITLE_NUMBER_BOX_MARKER)
+        action_name, table_ok = self.create_table_at_cursor(1, 3)
+        if not table_ok:
+            self.debug(f"[title-number-box] 표 생성 실패: action={action_name}")
+            return False
+        texts = [str(number), title, marker]
+        cell_specs = self.title_number_box_cell_specs()
+        if len(cell_specs) < len(texts):
+            self.debug(f"[title-number-box] 셀 설정 부족: specs={len(cell_specs)}, texts={len(texts)}")
+            return False
+
+        entered_first_cell = self.is_in_table_cell()
+        if not entered_first_cell:
+            entered_first_cell = self.select_current_table_object() and self.select_selected_table_first_cell()
+            if entered_first_cell:
+                self.clear_hwp_selection()
+
+        steps_ok = bool(entered_first_cell)
+        move_results: list[bool] = []
+        apply_results: list[bool] = []
+        for index, (cell_spec, text_value) in enumerate(zip(cell_specs, texts)):
+            if index > 0:
+                moved = self.move_table_cell("TableRightCell")
+                move_results.append(moved)
+                steps_ok = moved and steps_ok
+                if not moved:
+                    break
+            applied = self.apply_title_number_box_cell(cell_spec, text_value)
+            apply_results.append(applied)
+            steps_ok = applied and steps_ok
+            if not applied:
+                break
+
+        border_ok = False
+        valign_ok = False
+        outside_ok = False
+        border_preset = str(settings.get("table_style_preset") or "").strip()
+        if steps_ok and self.select_current_table_all_cells(1, 3):
+            if border_preset:
+                _border_action, border_ok = self.set_table_border_preset(border_preset)
+            else:
+                border_ok = True
+            valign_ok = self.run_hwp_command_best_effort("TableVAlignCenter")
+            self.clear_hwp_selection()
+        if steps_ok and self.select_current_table_object():
+            outside_ok = self.apply_current_table_outside_margins(self.title_number_box_outside_margin_values())
+            self.clear_hwp_selection()
+
+        ok = steps_ok and border_ok and valign_ok and outside_ok
+        self.debug(
+            "[title-number-box] draw "
+            f"number={number}, table={table_ok}, entered={entered_first_cell}, "
+            f"moves={move_results}, cells={apply_results}, border={border_ok}, "
+            f"valign={valign_ok}, outside={outside_ok}, ok={ok}"
+        )
+        return ok
+
+    def replace_paragraph_with_title_number_box(
+        self,
+        list_id: int,
+        para: int,
+        title: str,
+    ) -> tuple[bool, int, list[int]]:
+        title = normalize_title_box_text(title)
+        if not title:
+            return False, 0, []
+        next_number, existing_numbers = self.next_title_number_box_number()
+        paragraph_text = self.read_current_paragraph_text(list_id, para)
+        if paragraph_text is None:
+            return False, next_number, existing_numbers
+        delete_ok = self.delete_hwp_text_range(list_id, para, 0, len(paragraph_text)) if paragraph_text else True
+        if not delete_ok:
+            return False, next_number, existing_numbers
+        if not self.set_hwp_pos((list_id, para, 0)):
+            return False, next_number, existing_numbers
+        insert_ok = self.insert_title_number_box_file_at_cursor(title, next_number)
+        return insert_ok, next_number, existing_numbers
+
     def insert_title_number_box_template(self) -> None:
         label = "대제목 번호박스 삽입"
         if not self.ensure_hwp():
@@ -7916,18 +8322,22 @@ class MvpApp(tk.Tk):
                     return
 
             next_number, existing_numbers = self.next_title_number_box_number()
-            insert_path = create_filled_title_number_box_file(selected_text, next_number, template_path)
-            insert_ok = self.insert_file_at_cursor(insert_path, keep_section=0)
+            insert_ok = self.insert_title_number_box_file_at_cursor(selected_text, next_number)
             if not insert_ok:
-                messagebox.showwarning(label, "한글이 번호박스 삽입을 실패로 반환했습니다. 삽입할 위치에 커서를 둔 상태인지 확인하세요.")
-                self.log(f"{label}: 삽입 실패, file={insert_path.name}, selected_text={bool(selected_text)}, delete={delete_ok}")
-                return
+                insert_ok = self.draw_title_number_box_at_cursor(selected_text, next_number)
+                if not insert_ok:
+                    messagebox.showwarning(label, "한글이 번호박스 삽입을 실패로 반환했습니다. 삽입할 위치에 커서를 둔 상태인지 확인하세요.")
+                    self.log(f"{label}: 삽입 실패, template={template_path.name}, selected_text={bool(selected_text)}, delete={delete_ok}")
+                    return
+                insert_mode = "table-action-fallback"
+            else:
+                insert_mode = "insertfile-template"
 
             self.refresh_current_doc_style_map(force=True)
             self.activate_hwp_window()
             self.log(
                 f"{label} 완료: number={next_number}, existing={existing_numbers}, "
-                f"file={insert_path.name}, selected_text={bool(selected_text)}, "
+                f"mode={insert_mode}, selected_text={bool(selected_text)}, "
                 f"delete={delete_ok}, text_preview={selected_text[:40]!r}"
             )
         except Exception as exc:
@@ -8543,7 +8953,8 @@ class MvpApp(tk.Tk):
             pset = self.hwp.HParameterSet.HInsertText
             self.hwp.HAction.GetDefault("InsertText", pset.HSet)
             pset.Text = text
-            return bool(self.hwp.HAction.Execute("InsertText", pset.HSet))
+            result = self.hwp.HAction.Execute("InsertText", pset.HSet)
+            return result is not False and result != 0
         except Exception as exc:
             self.debug(f"[insert-text] 실패: {type(exc).__name__}: {exc}")
             return False
@@ -8574,8 +8985,12 @@ class MvpApp(tk.Tk):
             lambda: self.hwp.Run(command),
         ):
             try:
-                return bool(runner())
-            except Exception:
+                result = runner()
+                if result is not False and result != 0:
+                    self.debug(f"[hwp-command] {command}: result={result!r}")
+                    return True
+            except Exception as exc:
+                self.debug(f"[hwp-command] {command} 실패: {type(exc).__name__}: {exc}")
                 continue
         return False
 
@@ -8986,6 +9401,22 @@ class MvpApp(tk.Tk):
             return None
         return start[0], first_para, last_para
 
+    def current_paragraph_range(self) -> tuple[int, int, int] | None:
+        try:
+            pos = self.hwp.GetPos()
+        except Exception as exc:
+            self.debug(f"[paragraph-range] 현재 커서 위치 확인 실패: {type(exc).__name__}: {exc}")
+            return None
+        if not isinstance(pos, tuple) or len(pos) < 2:
+            self.debug(f"[paragraph-range] 현재 커서 위치 invalid: {pos!r}")
+            return None
+        try:
+            list_id = int(pos[0])
+            para = int(pos[1])
+        except Exception:
+            return None
+        return list_id, para, para
+
     def parse_hwp_get_text_result(self, result) -> tuple[int | None, str]:
         if isinstance(result, str):
             return None, result
@@ -9297,6 +9728,24 @@ class MvpApp(tk.Tk):
         if rule is not None:
             entry, prefix_length = rule
             matched = True
+            if self.is_title_number_box_entry(entry):
+                if in_table:
+                    self.debug(f"[title-number-box-bulk] 표 내부 문단은 번호박스 치환 건너뜀 para={para}")
+                else:
+                    consume_numbering_entry(numbering_state, entry)
+                    title = paragraph_text[prefix_length:]
+                    insert_ok, next_number, existing_numbers = self.replace_paragraph_with_title_number_box(
+                        list_id,
+                        para,
+                        title,
+                    )
+                    changed = insert_ok
+                    self.debug(
+                        f"[title-number-box-bulk] para={para}, number={next_number}, "
+                        f"existing={existing_numbers}, title={normalize_title_box_text(title)!r}, result={insert_ok}"
+                    )
+                    return True, matched, changed, 0
+
             should_restart_numbering = consume_numbering_entry(numbering_state, entry)
             current_record = self.find_current_doc_style_record(entry.name)
             if current_record is None:
@@ -10453,6 +10902,49 @@ class MvpApp(tk.Tk):
             self.log(f"[probe] 얇은상하만 실패: {type(exc).__name__}: {exc}")
         self.log_hwp_table_probe_state("얇은상하만", "set_table_border_preset(thin_top_bottom)", result)
 
+    def probe_paste_related_actions(self) -> None:
+        if not self.ensure_hwp():
+            return
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        candidates = (
+            ("Paste", "HSelectionOpt"),
+            ("PasteSpecial", "HSelectionOpt"),
+            ("PasteDialog", "HSelectionOpt"),
+            ("PasteHtmlDialog", "HPasteHtml"),
+            ("ShapeCopyPaste", "HShapeCopyPaste"),
+            ("InsertFile", "HInsertFile"),
+        )
+        self.log_hwp_table_probe_state("붙여넣기액션-전")
+        lines = ["[probe] 붙여넣기 관련 액션 catalog 확인 (Execute 없음)"]
+        for action_name, parameter_name in candidates:
+            details = [f"candidate={action_name} pset={parameter_name}"]
+            hset = None
+            try:
+                parameter_sets = getattr(self.hwp, "HParameterSet")
+                parameter_set = getattr(parameter_sets, parameter_name)
+                hset = getattr(parameter_set, "HSet", parameter_set)
+                details.append("pset=True")
+            except Exception as exc:
+                details.append(f"pset=False ({type(exc).__name__}: {exc})")
+            try:
+                action = self.hwp.CreateAction(action_name)
+                created_set = action.CreateSet()
+                create_result = action.GetDefault(created_set)
+                create_ok = create_result is not False and create_result != 0
+                details.append(f"CreateAction.GetDefault={create_ok} raw={create_result!r}")
+            except Exception as exc:
+                details.append(f"CreateAction.GetDefault=False ({type(exc).__name__}: {exc})")
+            if hset is not None:
+                try:
+                    default_result = self.hwp.HAction.GetDefault(action_name, hset)
+                    default_ok = default_result is not False and default_result != 0
+                    details.append(f"HAction.GetDefault={default_ok} raw={default_result!r}")
+                except Exception as exc:
+                    details.append(f"HAction.GetDefault=False ({type(exc).__name__}: {exc})")
+            lines.append("[probe] " + " | ".join(details))
+        self.log(lines)
+
     def probe_markdown_table_paste_only(self) -> None:
         label = "Markdown 표 붙여넣기 probe"
         if not self.ensure_hwp():
@@ -10662,9 +11154,12 @@ class MvpApp(tk.Tk):
 
             paragraph_range = self.selected_paragraph_range()
             if paragraph_range is None:
-                messagebox.showwarning(label, "한글에서 변환할 문단 영역을 먼저 선택하세요.")
-                self.log(f"{label}: 문단 선택 범위 확인 실패")
-                return
+                paragraph_range = self.current_paragraph_range()
+                if paragraph_range is None:
+                    messagebox.showwarning(label, "한글에서 변환할 문단 영역을 먼저 선택하세요.")
+                    self.log(f"{label}: 문단 선택 범위 확인 실패")
+                    return
+                self.log(f"{label}: 선택 범위 확인 실패, 현재 커서 문단 1개로 진행 range={paragraph_range}")
 
             self.ensure_current_doc_style_cache()
             list_id, first_para, last_para = paragraph_range

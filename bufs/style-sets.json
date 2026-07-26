@@ -296,10 +296,10 @@
                                                         "table_style":  false,
                                                         "caption_style":  false,
                                                         "outline_markers":  [
-
+                                                                                "대제목"
                                                                             ],
                                                         "roles":  [
-
+                                                                      "title_number_box"
                                                                   ],
                                                         "numbering":  {
                                                                           "group":  "",

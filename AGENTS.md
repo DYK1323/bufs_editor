@@ -97,6 +97,7 @@ bufs\.venv\Scripts\python.exe bufs\hwp_style_mvp.py --smoke
 - GUI 이벤트 핸들러나 COM 호출부를 직접 바꾸기 전에, 가능하면 순수 유틸 함수와 테스트를 먼저 추가/수정한다.
 - HWP COM 호출은 기존 래퍼를 우선 재사용한다: `run_hwp_command`, `execute_first_hwp_action`, `set_com_attr`, `set_hset_item`, `set_parameter_item`.
 - 검증되지 않은 HWP 액션명, 파라미터셋, 속성명은 추측하지 말고 `HancomDev/` 공식 PDF에서 먼저 확인한다.
+- 표, 문단, 셀, 도형처럼 한글 내부 구조를 "생성"하거나 "변형"하는 작업은 HWPML/XML 직접 삽입보다 한글 카탈로그 액션(`HAction.Execute`, `Run`)과 공식 파라미터셋을 우선 사용한다. `SetTextFile(..., "HWPML2X", ...)` 같은 직접 삽입은 공식 액션으로 불가능하거나 검증된 fallback인 경우에만 사용한다.
 - HWP 자동화는 현재 커서 위치, 선택 모드, 포커스된 창, 표 선택 상태, Windows 클립보드 상태에 민감하다. 실패 로그와 복원 동작을 함께 고려한다.
 - 테스트 중 원본 HWP/HWPX 템플릿을 직접 덮어쓰지 않는다. 생성물은 가능하면 `bufs/test-output/` 아래에 둔다.
 - `build/`, `dist/`, `bufs/.venv/`, `__pycache__/`, `bufs/test-output/` 생성물은 커밋하지 않는다.

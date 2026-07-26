@@ -38,7 +38,10 @@ from hwp_style_mvp import (  # noqa: E402
     parse_github_release_info,
     parse_update_info,
     create_filled_title_number_box_file,
+    create_title_number_box_hwpml,
+    migrate_title_number_box_roles,
     normalize_title_box_text,
+    style_entry_has_role,
     title_number_box_numbers_from_hwpml,
     remove_manual_outline_prefixes,
     remove_number_commas,
@@ -696,6 +699,33 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertNotIn(">대제목<", section)
         self.assertIn("사업 <성과> & 계획", preview)
 
+    def test_create_title_number_box_hwpml_replaces_number_and_title(self) -> None:
+        hwpml = create_title_number_box_hwpml("사업 <성과> & 계획", number=7)
+
+        self.assertIn("사업 &lt;성과&gt; &amp; 계획", hwpml)
+        self.assertIn(">7<", hwpml)
+        self.assertIn("{{bufs_title}}", hwpml)
+        self.assertNotIn(">대제목<", hwpml)
+
+    def test_style_entry_has_title_number_box_role(self) -> None:
+        entry = StyleEntry("대제목", roles=("title_number_box",))
+
+        self.assertTrue(style_entry_has_role(entry, "title_number_box"))
+        self.assertFalse(style_entry_has_role(entry, "table_bold"))
+
+    def test_migrate_title_number_box_roles_adds_role_to_existing_user_style_set(self) -> None:
+        style_sets = [
+            StyleSet(
+                "일반보고용",
+                [StyleEntry("대제목", outline_markers=("대제목",), roles=())],
+                [],
+            )
+        ]
+
+        migrated = migrate_title_number_box_roles(style_sets)
+
+        self.assertEqual(migrated[0].paragraph_styles[0].roles, ("title_number_box",))
+
     def test_title_number_box_numbers_from_hwpml_reads_marker_tables(self) -> None:
         hwpml = """<?xml version="1.0" encoding="UTF-16"?>
 <HWPML xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
@@ -743,6 +773,130 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(app.next_title_number_box_number(), (6, [2, 5]))
         self.assertTrue(is_standard_regulation_wrapper("｢규정명｣"))
+
+    def test_draw_title_number_box_uses_table_actions_and_cell_moves(self) -> None:
+        calls: list[tuple[str, object]] = []
+        app = object.__new__(MvpApp)
+        app.table_settings = {}
+        app.create_table_at_cursor = lambda rows, cols: calls.append(("create", (rows, cols))) or ("TableCreate", True)
+        app.title_number_box_settings = lambda: {"marker": "{{bufs_title}}", "table_style_preset": "thin_all"}
+        app.title_number_box_cell_specs = lambda: [{}, {}, {}]
+        app.is_in_table_cell = lambda: calls.append(("in_cell", True)) or True
+        app.select_current_table_object = lambda: calls.append(("select_object", True)) or True
+        app.select_selected_table_first_cell = lambda: calls.append(("select_first", True)) or True
+        app.apply_title_number_box_cell = lambda spec, text: calls.append(("cell", text)) or True
+        app.move_table_cell = lambda command: calls.append(("move", command)) or True
+        app.select_current_table_all_cells = lambda rows, cols: calls.append(("select_all", (rows, cols))) or True
+        app.set_table_border_preset = lambda preset: calls.append(("border", preset)) or ("CellBorderFill", True)
+        app.run_hwp_command_best_effort = lambda command: calls.append(("command", command)) or True
+        app.clear_hwp_selection = lambda: calls.append(("clear", None)) or True
+        app.apply_current_table_outside_margins = lambda values: calls.append(("outside", values)) or True
+        app.title_number_box_outside_margin_values = lambda: {"OutsideMarginBottom": 850}
+        app.debug = lambda _message: None
+
+        self.assertTrue(app.draw_title_number_box_at_cursor("  Title\r\nHere  ", 7))
+
+        self.assertEqual(
+            calls,
+            [
+                ("create", (1, 3)),
+                ("in_cell", True),
+                ("cell", "7"),
+                ("move", "TableRightCell"),
+                ("cell", "Title Here"),
+                ("move", "TableRightCell"),
+                ("cell", "{{bufs_title}}"),
+                ("select_all", (1, 3)),
+                ("border", "thin_all"),
+                ("command", "TableVAlignCenter"),
+                ("clear", None),
+                ("select_object", True),
+                ("outside", {"OutsideMarginBottom": 850}),
+                ("clear", None),
+            ],
+        )
+
+    def test_apply_title_number_box_cell_applies_dimensions_fill_style_color_then_text(self) -> None:
+        calls: list[tuple[str, object]] = []
+        app = object.__new__(MvpApp)
+        app.apply_current_cell_dimensions = lambda width, height, margins: calls.append(("dimensions", (width, height, margins))) or True
+        app.set_cell_fill_color = lambda color: calls.append(("fill", color.rgb)) or ("CellBorderFill", True, True)
+        app.palette_color_or_rgb = lambda name, rgb: calls.append(("palette", (name, rgb))) or hwp_style_mvp.PaletteColor(name, rgb, "#000000", "")
+        app.clear_hwp_selection = lambda: calls.append(("clear", None)) or True
+        app.apply_style_by_name = lambda name: calls.append(("style", name)) or True
+        app.set_text_color = lambda color: calls.append(("text_color", color.rgb)) or (True, True)
+        app.insert_hwp_text = lambda text: calls.append(("text", text)) or True
+
+        cell_spec = {
+            "width": 2487,
+            "height": 2414,
+            "paragraph_style": "바탕글 사본1",
+            "fill_rgb": [217, 217, 217],
+            "text_color_rgb": [255, 255, 255],
+            "margins": {"left": 510, "right": 510, "top": 141, "bottom": 141},
+        }
+
+        self.assertTrue(app.apply_title_number_box_cell(cell_spec, "7"))
+        self.assertEqual(
+            calls,
+            [
+                ("dimensions", (2487, 2414, {"left": 510, "right": 510, "top": 141, "bottom": 141})),
+                ("palette", ("대제목번호박스배경", (217, 217, 217))),
+                ("fill", (217, 217, 217)),
+                ("clear", None),
+                ("style", "바탕글 사본1"),
+                ("palette", ("대제목번호박스글자", (255, 255, 255))),
+                ("text_color", (255, 255, 255)),
+                ("text", "7"),
+            ],
+        )
+
+    def test_insert_title_number_box_file_at_cursor_uses_filled_template_insert_action(self) -> None:
+        calls: list[tuple[str, object]] = []
+        original = hwp_style_mvp.create_filled_title_number_box_file
+
+        def fake_create(title: str, number: int, template):
+            calls.append(("create_file", (title, number, template)))
+            return Path("C:/temp/title-box.hwpx")
+
+        try:
+            hwp_style_mvp.create_filled_title_number_box_file = fake_create
+            app = object.__new__(MvpApp)
+            app.title_number_box_settings = lambda: {"template_path": Path("C:/templates/title.hwpx")}
+            app.insert_file_at_cursor = lambda path, keep_section=0: calls.append(("insert_file", (path, keep_section))) or True
+
+            self.assertTrue(app.insert_title_number_box_file_at_cursor("대제목 테스트", 4))
+        finally:
+            hwp_style_mvp.create_filled_title_number_box_file = original
+
+        self.assertEqual(
+            calls,
+            [
+                ("create_file", ("대제목 테스트", 4, Path("C:/templates/title.hwpx"))),
+                ("insert_file", (Path("C:/temp/title-box.hwpx"), 0)),
+            ],
+        )
+
+    def test_replace_paragraph_with_title_number_box_inserts_template_file(self) -> None:
+        calls: list[tuple[str, object]] = []
+        app = object.__new__(MvpApp)
+        app.next_title_number_box_number = lambda: (4, [1, 3])
+        app.read_current_paragraph_text = lambda list_id, para: "대제목 테스트"
+        app.delete_hwp_text_range = lambda list_id, para, start, end: calls.append(("delete", (list_id, para, start, end))) or True
+        app.set_hwp_pos = lambda pos: calls.append(("pos", pos)) or True
+        app.insert_title_number_box_file_at_cursor = lambda title, number: calls.append(("insert_file", (title, number))) or True
+
+        result = app.replace_paragraph_with_title_number_box(2, 5, "  대제목\r\n테스트  ")
+
+        self.assertEqual(result, (True, 4, [1, 3]))
+        self.assertEqual(
+            calls,
+            [
+                ("delete", (2, 5, 0, len("대제목 테스트"))),
+                ("pos", (2, 5, 0)),
+                ("insert_file", ("대제목 테스트", 4)),
+            ],
+        )
 
     def test_find_outline_style_rule_prefers_longer_marker(self) -> None:
         style_set = StyleSet(
@@ -1477,6 +1631,69 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertIn("CellAddress=(2, 3)", joined)
         self.assertIn("CellShape=True", joined)
         self.assertIn("SaveBlockHasTable=True", joined)
+
+    def test_probe_paste_related_actions_logs_catalog_results(self) -> None:
+        class FakeParameterSet:
+            def __init__(self, hset) -> None:
+                self.HSet = hset
+
+        class FakeActionInstance:
+            def __init__(self, action_name: str) -> None:
+                self.action_name = action_name
+
+            def CreateSet(self):
+                return f"create-set:{self.action_name}"
+
+            def GetDefault(self, created_set):
+                if self.action_name == "PasteSpecial":
+                    raise RuntimeError("missing")
+                return created_set != ""
+
+        class FakeHAction:
+            def GetDefault(self, action_name, hset):
+                if action_name == "PasteDialog":
+                    raise RuntimeError("unsupported")
+                return not (action_name == "ShapeCopyPaste" and hset == "shape-hset")
+
+        class FakeHwp:
+            def __init__(self) -> None:
+                self.HParameterSet = type(
+                    "FakeParameterSets",
+                    (),
+                    {
+                        "HSelectionOpt": FakeParameterSet("selection-hset"),
+                        "HPasteHtml": FakeParameterSet("html-hset"),
+                        "HShapeCopyPaste": FakeParameterSet("shape-hset"),
+                        "HInsertFile": FakeParameterSet("insert-hset"),
+                    },
+                )()
+                self.HAction = FakeHAction()
+
+            def CreateAction(self, action_name):
+                return FakeActionInstance(action_name)
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        app.ensure_hwp = lambda: True
+        app.activate_hwp_window = lambda: None
+        app.log_hwp_table_probe_state = lambda *args, **kwargs: None
+        lines: list[str] = []
+        app.log = lambda value: lines.extend(value if isinstance(value, list) else [value])
+
+        app.probe_paste_related_actions()
+
+        joined = "\n".join(lines)
+        self.assertIn("[probe] 붙여넣기 관련 액션 catalog 확인 (Execute 없음)", joined)
+        self.assertIn("candidate=Paste pset=HSelectionOpt", joined)
+        self.assertIn("candidate=PasteSpecial pset=HSelectionOpt", joined)
+        self.assertIn("candidate=PasteDialog pset=HSelectionOpt", joined)
+        self.assertIn("candidate=PasteHtmlDialog pset=HPasteHtml", joined)
+        self.assertIn("candidate=ShapeCopyPaste pset=HShapeCopyPaste", joined)
+        self.assertIn("candidate=InsertFile pset=HInsertFile", joined)
+        self.assertIn("CreateAction.GetDefault=True raw=True", joined)
+        self.assertIn("CreateAction.GetDefault=False (RuntimeError: missing)", joined)
+        self.assertIn("HAction.GetDefault=False (RuntimeError: unsupported)", joined)
+        self.assertIn("HAction.GetDefault=False raw=False", joined)
 
     def test_parse_tsv_matrix_preserves_empty_cells(self) -> None:
         matrix = parse_cell_clipboard_matrix("A\t\tC\r\n1\t2\t")
@@ -2353,6 +2570,78 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.apply_configured_outline_styles_to_selection()
 
         self.assertEqual(applied, ["본문-개요2"])
+
+    def test_configured_outline_style_bulk_title_box_replaces_paragraph(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 1})()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((0, 2, 0), (0, 2, 6))
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = restored.append
+        app.clear_hwp_selection = lambda: True
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.debug = lambda _message: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.is_hwp_paragraph_in_table = lambda _list_id, _para: False
+        app.active_style_set_name = "set"
+        app.style_sets = [
+            StyleSet(
+                "set",
+                [StyleEntry("대제목", outline_markers=("대",), roles=("title_number_box",))],
+                [],
+            )
+        ]
+        app.read_current_paragraph_text = lambda _list_id, _para: "대 사업계획"
+        calls: list[tuple[int, int, str]] = []
+        app.replace_paragraph_with_title_number_box = lambda list_id, para, title: calls.append((list_id, para, title)) or (True, 3, [1, 2])
+        app.find_current_doc_style_record = lambda name: self.fail("title_number_box role should not use paragraph style lookup")
+        app.apply_inline_rules_to_paragraph = lambda *_args, **_kwargs: self.fail("title_number_box replacement should stop before inline rules")
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(calls, [(0, 2, "사업계획")])
+        self.assertEqual(restored, ["original"])
+
+    def test_configured_outline_style_bulk_falls_back_to_current_paragraph(self) -> None:
+        class FakeHwp:
+            SelectionMode = 1
+
+            def GetPos(self):
+                return (0, 5, 0)
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: None
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = restored.append
+        app.clear_hwp_selection = lambda: True
+        app.activate_hwp_window = lambda: None
+        logs: list[str] = []
+        app.log = logs.append
+        app.debug = lambda _message: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.is_hwp_paragraph_in_table = lambda _list_id, _para: False
+        app.active_style_set_name = "set"
+        app.style_sets = [
+            StyleSet(
+                "set",
+                [StyleEntry("대제목", outline_markers=("대제목",), roles=("title_number_box",))],
+                [],
+            )
+        ]
+        app.read_current_paragraph_text = lambda _list_id, _para: "대제목 사업계획"
+        calls: list[tuple[int, int, str]] = []
+        app.replace_paragraph_with_title_number_box = lambda list_id, para, title: calls.append((list_id, para, title)) or (True, 1, [])
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(calls, [(0, 5, "사업계획")])
+        self.assertTrue(any("현재 커서 문단" in message for message in logs))
+        self.assertEqual(restored, ["original"])
 
     def test_configured_outline_style_bulk_routes_cell_block_through_cell_addresses(self) -> None:
         app = object.__new__(MvpApp)

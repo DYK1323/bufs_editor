@@ -129,6 +129,65 @@
     "suffix_template": "] {title}",
     "sample": "[그림 2.4-1] 학사관리 체계 개선 실적"
   },
+  "title_number_box": {
+    "enabled": true,
+    "role": "title_number_box",
+    "marker": "{{bufs_title}}",
+    "template_file": "templates/대제목_번호박스.hwpx",
+    "placeholder_title": "대제목",
+    "placeholder_number": "1",
+    "outside_margin": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 850
+    },
+    "table_style_preset": "thin_all",
+    "cells": [
+      {
+        "width": 2487,
+        "height": 2414,
+        "paragraph_style": "바탕글 사본1",
+        "fill_rgb": [
+          217,
+          217,
+          217
+        ],
+        "margins": {
+          "left": 510,
+          "right": 510,
+          "top": 141,
+          "bottom": 141
+        }
+      },
+      {
+        "width": 45211,
+        "height": 2414,
+        "paragraph_style": "대제목",
+        "margins": {
+          "left": 510,
+          "right": 510,
+          "top": 141,
+          "bottom": 141
+        }
+      },
+      {
+        "width": 498,
+        "height": 2414,
+        "text_color_rgb": [
+          255,
+          255,
+          255
+        ],
+        "margins": {
+          "left": 0,
+          "right": 0,
+          "top": 0,
+          "bottom": 0
+        }
+      }
+    ]
+  },
   "hotkeys": {
     "title_cell": "",
     "cell_shape_copy_paste": "",
