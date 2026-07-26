@@ -709,6 +709,43 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertIn("{{bufs_title}}", hwpml)
         self.assertNotIn(">대제목<", hwpml)
 
+    def test_create_cover_from_selected_lines_inserts_empty_cover_when_selection_is_missing(self) -> None:
+        app = object.__new__(MvpApp)
+        app.ensure_hwp = lambda: True
+        commands: list[str] = []
+
+        def fake_run(command: str) -> bool:
+            commands.append(command)
+            if command == "Copy":
+                return False
+            self.fail(f"빈 표지 삽입에서는 {command} 명령을 호출하지 않아야 합니다")
+
+        app.run_hwp_command = fake_run
+        app.get_clipboard_text = lambda: ""
+        app.cover_confidential = type("Flag", (), {"get": lambda self: False})()
+        inserted: list[Path] = []
+        app.insert_file_at_cursor = lambda path: inserted.append(path) or True
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.apply_page_settings = lambda settings, apply_to=3: ("apply", True, "detail")
+        cover_path = Path("empty-cover.hwpx")
+        created: list[tuple[str, str, str, bool]] = []
+        original_create_cover = hwp_style_mvp.create_filled_cover_file
+        original_read_page = hwp_style_mvp.read_hwpx_page_settings
+        hwp_style_mvp.create_filled_cover_file = lambda title, date_text, department, confidential: (
+            created.append((title, date_text, department, confidential)) or cover_path
+        )
+        hwp_style_mvp.read_hwpx_page_settings = lambda _path: None
+        try:
+            app.create_cover_from_selected_lines()
+        finally:
+            hwp_style_mvp.create_filled_cover_file = original_create_cover
+            hwp_style_mvp.read_hwpx_page_settings = original_read_page
+
+        self.assertEqual(commands, ["Copy"])
+        self.assertEqual(created, [("", "", "", False)])
+        self.assertEqual(inserted, [cover_path])
+
     def test_style_entry_has_title_number_box_role(self) -> None:
         entry = StyleEntry("대제목", roles=("title_number_box",))
 

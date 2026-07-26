@@ -9091,13 +9091,15 @@ class MvpApp(tk.Tk):
         try:
             copy_ok = self.run_hwp_command("Copy")
             time.sleep(0.08)
-            original_text = self.get_clipboard_text()
-            if not copy_ok or not original_text:
-                messagebox.showwarning("표지 입력 선택 필요", "한글에서 제목/부서명 또는 제목/날짜/부서명 줄을 먼저 선택하세요.")
-                self.log("표지 만들기: 선택 텍스트 없음")
-                return
+            original_text = self.get_clipboard_text() if copy_ok else ""
+            has_input = bool(copy_ok and original_text.strip())
+            if has_input:
+                title, date_text, department = parse_cover_input(original_text)
+            else:
+                title = ""
+                date_text = ""
+                department = ""
 
-            title, date_text, department = parse_cover_input(original_text)
             cover_path = create_filled_cover_file(
                 title,
                 date_text,
@@ -9105,16 +9107,20 @@ class MvpApp(tk.Tk):
                 self.cover_confidential.get(),
             )
 
-            delete_ok = self.run_hwp_command("Delete")
-            if not delete_ok:
-                messagebox.showwarning("표지 만들기 실패", "선택한 3줄을 삭제하지 못했습니다. 선택 영역을 확인하세요.")
-                self.log("표지 만들기: 선택 영역 삭제 실패")
-                return
+            if has_input:
+                delete_ok = self.run_hwp_command("Delete")
+                if not delete_ok:
+                    messagebox.showwarning("표지 만들기 실패", "선택한 3줄을 삭제하지 못했습니다. 선택 영역을 확인하세요.")
+                    self.log("표지 만들기: 선택 영역 삭제 실패")
+                    return
 
             insert_ok = self.insert_file_at_cursor(cover_path)
             if not insert_ok:
-                self.set_clipboard_text(original_text)
-                restore_ok = self.run_hwp_command("Paste")
+                if has_input:
+                    self.set_clipboard_text(original_text)
+                    restore_ok = self.run_hwp_command("Paste")
+                else:
+                    restore_ok = None
                 messagebox.showwarning(
                     "표지 삽입 실패",
                     f"표지 파일은 만들었지만 현재 문서에 삽입하지 못했습니다.\n\n{cover_path}\n원문 복구: {restore_ok}",
