@@ -39,7 +39,7 @@
 
 .md-sidebar--primary .md-nav--primary .md-nav .md-nav {
   margin-left: 0.55rem;
-  padding-left: 0.7rem;
+  padding-left: 0.35rem;
   border-left: 1px solid var(--md-default-fg-color--lighter);
 }
 
