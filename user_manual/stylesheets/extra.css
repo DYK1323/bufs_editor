@@ -16,7 +16,7 @@
 }
 
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item {
-  margin: 0.18rem 0;
+  margin: 0;
 }
 
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link {
@@ -24,11 +24,15 @@
   font-size: 0.80rem;
   padding-top: 0.4rem;
   padding-bottom: 0.4rem;
+  margin: 0.18rem 0;
+  line-height: 1.25;
 }
 
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__container {
   padding-top: 0.4rem;
   padding-bottom: 0.4rem;
+  margin: 0.18rem 0;
+  line-height: 1.25;
 }
 
 .md-sidebar--primary .md-nav--primary .md-nav .md-nav__link {
