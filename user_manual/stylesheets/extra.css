@@ -28,6 +28,10 @@
   color: var(--md-default-fg-color);
 }
 
+.md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav > .md-nav__list {
+  padding-left: 0.5rem;
+}
+
 .md-sidebar--primary .md-nav--primary .md-nav .md-nav {
   margin-left: 0.55rem;
   padding-left: 0.7rem;
