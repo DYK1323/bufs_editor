@@ -14,16 +14,24 @@ document.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
+  const setExpanded = (section, expanded) => {
+    const toggle = section.querySelector(":scope > input.md-nav__toggle");
+    const nav = section.querySelector(":scope > nav.md-nav");
+    if (toggle) {
+      toggle.checked = expanded;
+    }
+    if (nav) {
+      nav.style.display = expanded ? "" : "none";
+      nav.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+  };
+
   const closeOthers = (currentSection) => {
     for (const section of topLevelSections) {
       if (section === currentSection) {
         continue;
       }
-
-      const toggle = section.querySelector(":scope > input.md-nav__toggle");
-      if (toggle) {
-        toggle.checked = false;
-      }
+      setExpanded(section, false);
     }
   };
 
@@ -34,26 +42,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   for (const section of topLevelSections) {
     const toggle = section.querySelector(":scope > input.md-nav__toggle");
-    if (!toggle) {
+    const label = section.querySelector(":scope > .md-nav__container > label.md-nav__link");
+    if (!toggle || !label) {
       continue;
     }
 
-    toggle.checked = section === activeSection;
-    toggle.addEventListener("change", () => {
-      if (toggle.checked) {
-        closeOthers(section);
-      }
-    });
+    setExpanded(section, section === activeSection);
 
-    const nestedLabel = section.querySelector(":scope > .md-nav__link + label.md-nav__link");
-    if (nestedLabel) {
-      nestedLabel.addEventListener("click", () => {
-        window.requestAnimationFrame(() => {
-          if (toggle.checked) {
-            closeOthers(section);
-          }
-        });
-      });
-    }
+    label.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const shouldExpand = !toggle.checked;
+      closeOthers(section);
+      setExpanded(section, shouldExpand);
+    });
   }
 });
