@@ -20,4 +20,5 @@ site/
 
 # Local/reference-only Hancom API materials
 HancomDev/
-bufs/hancom_official_api_catalog_v1.json
+hancom_official_api_catalog_v1.json
+hancom_operation_index_v1.json.gz
