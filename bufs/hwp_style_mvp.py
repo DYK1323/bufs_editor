@@ -45,7 +45,11 @@ def app_root() -> Path:
     if getattr(sys, "frozen", False):
         bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
         for candidate in (bundle_root / "bufs", Path(sys.executable).resolve().parent / "bufs", bundle_root):
-            if (candidate / "style-sets.json").exists() or (candidate / "보고서 본문 서식.hwpx").exists():
+            if (
+                (candidate / "style-sets.json").exists()
+                or (candidate / "templates" / "보고서 본문 서식.hwpx").exists()
+                or (candidate / "보고서 본문 서식.hwpx").exists()
+            ):
                 return candidate
     return Path(__file__).resolve().parent
 
@@ -85,8 +89,8 @@ except Exception:
 
 
 INSTALL_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
-STYLE_FILE = ROOT / "보고서 본문 서식.hwpx"
 TEMPLATE_DIR = ROOT / "templates"
+STYLE_FILE = TEMPLATE_DIR / "보고서 본문 서식.hwpx"
 COVER_FILE = TEMPLATE_DIR / "표지.hwpx"
 GENERAL_REPORT_TEMPLATE_FILE = TEMPLATE_DIR / "일반보고_양식.hwpx"
 TITLE_NUMBER_BOX_TEMPLATE_FILE = TEMPLATE_DIR / "대제목_번호박스.hwpx"

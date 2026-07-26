@@ -5,8 +5,9 @@
 $ErrorActionPreference = "Continue"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$stylePath = Join-Path $root "보고서 본문 서식.hwpx"
-$coverPath = Join-Path $root "표지.hwpx"
+$templatesPath = Join-Path $root "templates"
+$stylePath = Join-Path $templatesPath "보고서 본문 서식.hwpx"
+$coverPath = Join-Path $templatesPath "표지.hwpx"
 
 function Write-Section($title) {
   ""

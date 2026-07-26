@@ -1,4 +1,4 @@
-# 구현 전 검증 결과
+﻿# 구현 전 검증 결과
 
 검증 일시: 2026-07-15
 
@@ -45,7 +45,7 @@
 
 ### 스타일 라이브러리 파일
 
-- `bufs/보고서 본문 서식.hwpx` 존재
+- `bufs/templates/보고서 본문 서식.hwpx` 존재
 - COM으로 열기 성공
 - 열기 직후 수정 상태: `False`
 - 스타일 이름 추출 가능
@@ -53,7 +53,7 @@
 
 ### 표지 템플릿 파일
 
-- `bufs/표지.hwpx` 존재
+- `bufs/templates/표지.hwpx` 존재
 - COM으로 열기 성공
 - 열기 직후 수정 상태: `False`
 - 자리표시자 확인 완료
@@ -132,7 +132,7 @@
 
 ```powershell
 $set = $hwp.HParameterSet.HStyleTemplate
-$set.filename = "bufs/보고서 본문 서식.hwpx"
+$set.filename = "bufs/templates/보고서 본문 서식.hwpx"
 $hwp.ImportStyle($set.HSet)
 ```
 
@@ -176,3 +176,4 @@ $hwp.ImportStyle($set.HSet)
 3. 스타일 적용, 제목셀 설정, 테두리 적용을 실제 문서 복사본에서 검증한다.
 4. `ImportStyle` 호출법을 추가 조사한다.
 5. `ImportStyle`가 계속 불안정하면 스타일 적용 기능은 먼저 제공하고, 스타일 세트 불러오기는 2차 방식으로 우회한다.
+

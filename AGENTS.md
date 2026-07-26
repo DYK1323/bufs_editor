@@ -38,7 +38,7 @@
 
 ## 런타임 구조
 
-`hwp_style_mvp.py`는 `app_root()`로 `ROOT`를 계산한다. 소스 실행 시 `ROOT`는 `bufs/`이고, PyInstaller 빌드 실행 시에는 번들 내부 또는 실행 파일 주변에서 `style-sets.json`이나 `보고서 본문 서식.hwpx`를 찾아 앱 루트를 결정한다.
+`hwp_style_mvp.py`는 `app_root()`로 `ROOT`를 계산한다. 소스 실행 시 `ROOT`는 `bufs/`이고, PyInstaller 빌드 실행 시에는 번들 내부 또는 실행 파일 주변에서 `style-sets.json`이나 `templates/보고서 본문 서식.hwpx`를 찾아 앱 루트를 결정한다.
 
 번들 JSON은 최초 실행 시 사용자 설정 폴더로 복사될 수 있다.
 

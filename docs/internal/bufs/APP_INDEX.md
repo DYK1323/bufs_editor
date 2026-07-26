@@ -1,6 +1,6 @@
-# BUFS 한글 스타일 자동화 앱 인덱스
+﻿# BUFS 한글 스타일 자동화 앱 인덱스
 
-이 문서는 `bufs/` 폴더의 한글 스타일 자동화 MVP를 수정하거나 확장할 때 먼저 읽는 구조 안내서다.
+이 문서는 `bufs/` 폴더의 한글 스타일 자동화 MVP를 수정하거나 확장할 때 먼저 읽는 구조 안내서다. 루트에 흩어져 있던 내부 메모 문서는 정리 과정에서 `docs/internal/bufs/`로 옮겼다.
 
 ## 새 기능 개발 원칙
 
@@ -55,23 +55,30 @@ bufs/
   table-settings.json           # 팔레트, 선 프리셋, 표 제목셀, 여백, 단축키 설정
   style-sets.json               # 스타일 세트, 문단/글자 구분, 표/캡션 플래그
   style-order.json              # 구버전 스타일 목록 표시 순서 호환용
-  보고서 본문 서식.hwpx          # 구버전 스타일 라이브러리/테스트 문서
-  표지.hwpx                     # 표지 생성 템플릿
-  표지.hwp                      # 표지 호환/원본 파일
+  templates/
+    보고서 본문 서식.hwpx        # 스타일 기준 문서
+    표지.hwpx                   # 표지 생성 템플릿
+    표지.hwp                    # 표지 호환/원본 파일
   logos/                        # 삽입 가능한 BUFS 로고 이미지
   test-output/                  # 테스트/생성 산출물
-  implementation-plan.md        # 초기 구현 계획
-  verification-results.md       # 검증 기록
-  mvp-test-results.md           # MVP 테스트 기록
-  hwp-table-cell-selection-notes.md
+docs/
+  internal/
+    bufs/
+      APP_INDEX.md
+      implementation-plan.md
+      verification-results.md
+      mvp-test-results.md
+      hwp-table-cell-selection-notes.md
+      demo-cases.md
+      리팩터링-기능명세서.md
 ```
 
 ## 데이터와 설정 흐름
 
-- `STYLE_FILE = bufs/보고서 본문 서식.hwpx`
+- `STYLE_FILE = bufs/templates/보고서 본문 서식.hwpx`
   - 스타일 목록과 스타일 ID를 읽는 기준 파일이다.
   - 앱은 현재 문서에 같은 스타일 이름이 있는지 찾아 적용한다.
-- `COVER_FILE = bufs/표지.hwpx`
+- `COVER_FILE = bufs/templates/표지.hwpx`
   - `{{문서제목}}`, `{{날짜}}`, `{{부서명}}` 같은 표지 플레이스홀더를 채워 새 표지 파일을 만든다.
 - `LOGO_DIR = bufs/logos`
   - GUI 로고 탭에서 이미지 후보를 표시하고 현재 커서 위치에 삽입한다.
@@ -187,3 +194,4 @@ bufs/
 - 클립보드 기반 기능은 한글 포커스와 Windows 클립보드 상태에 영향을 받는다.
 - `bufs/.venv`, `__pycache__`, 생성된 `test-output/*.hwpx`는 커밋하지 않는다.
 - `test-output/logo-thumbs/*.png`는 현재 레포에서 추적 중인 파일이므로 일괄 삭제/ignore 정책을 바꿀 때 주의한다.
+
