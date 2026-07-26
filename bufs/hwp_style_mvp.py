@@ -6187,6 +6187,20 @@ class MvpApp(tk.Tk):
                 return action, True
         return last_action, False
 
+    def set_caption_position_top_best_effort(self) -> tuple[str, bool, bool]:
+        default_ok = False
+        try:
+            pset = self.hwp.HParameterSet.HShapeObject
+            default_ok = bool(self.hwp.HAction.GetDefault("CaptionPosTop", pset.HSet))
+            if default_ok:
+                action_name, ok = self.execute_first_hwp_action(("CaptionPosTop",), pset.HSet)
+                if ok:
+                    return action_name, True, default_ok
+        except Exception as exc:
+            self.debug(f"[caption-build] CaptionPosTop Execute 실패: {type(exc).__name__}: {exc}")
+        run_ok = self.run_hwp_command("CaptionPosTop")
+        return "CaptionPosTop", run_ok, default_ok
+
     def hwp_parameter_set(self, name: str):
         return getattr(self.hwp.HParameterSet, name)
 
@@ -6823,6 +6837,12 @@ class MvpApp(tk.Tk):
                 self.log(f"{label}: 캡션 액션 실패, action={action}")
                 return False
 
+            caption_pos_action, caption_pos_ok, caption_pos_default = self.set_caption_position_top_best_effort()
+            self.debug(
+                f"[caption-build] caption position top action={caption_pos_action}, "
+                f"default={caption_pos_default}, result={caption_pos_ok}"
+            )
+
             parts = self.pending_caption_parts
             remove_tail_space_ok = self.run_hwp_command("DeleteBack")
             suffix_ok = remove_tail_space_ok and (not parts.suffix or self.insert_hwp_text(parts.suffix))
@@ -6844,6 +6864,7 @@ class MvpApp(tk.Tk):
                 self.activate_hwp_window()
                 self.log(
                     f"{label}: caption={action}:{caption_ok}, begin={begin_action}:{begin_ok}, "
+                    f"caption_pos_top={caption_pos_action}:{caption_pos_ok}, "
                     f"remove_label={remove_label_ok}, prefix={prefix_ok}, "
                     f"remove_tail_space={remove_tail_space_ok}, "
                     f"suffix={suffix_ok}, caption_style={style_ok}, 제목 {len(moved_text)}자"
