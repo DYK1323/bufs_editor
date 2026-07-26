@@ -42,17 +42,17 @@
 }
 
 .md-sidebar--primary .md-nav--primary .md-nav .md-nav {
-  margin-left: 0.55rem;
-  padding-left: 0.35rem;
+  margin-left: 0.3rem !important;
+  padding-left: 0.2rem !important;
   border-left: 1px solid var(--md-default-fg-color--lighter);
 }
 
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item--section > .md-nav {
-  margin-left: 0.6rem;
+  margin-left: 0.3rem !important;
 }
 
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item--section > .md-nav > .md-nav__list > .md-nav__item > .md-nav__link {
-  padding-left: 0.35rem;
+  padding-left: 0.2rem !important;
 }
 
 .md-sidebar--primary .md-nav--primary .md-nav .md-nav__item > .md-nav__link {
