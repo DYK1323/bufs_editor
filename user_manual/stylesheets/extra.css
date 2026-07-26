@@ -39,10 +39,6 @@
   padding-bottom: 0.18rem;
 }
 
-.md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav > .md-nav__list > .md-nav__item:first-child {
-  display: none;
-}
-
 .md-typeset h1,
 .md-typeset h2,
 .md-typeset h3 {
