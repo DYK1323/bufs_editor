@@ -306,6 +306,15 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertTrue(consume_numbering_entry(state, level_2))
         self.assertFalse(consume_numbering_entry(state, level_2))
 
+    def test_numbering_restart_state_restarts_first_lower_level_after_higher_level(self) -> None:
+        state = NumberingRunState()
+        level_1 = StyleEntry("body-outline-1", numbering_group="body", numbering_level=1, restart_after_higher_level=True)
+        level_2 = StyleEntry("body-outline-2", numbering_group="body", numbering_level=2, restart_after_higher_level=True)
+
+        self.assertFalse(consume_numbering_entry(state, level_1))
+        self.assertTrue(consume_numbering_entry(state, level_2))
+        self.assertFalse(consume_numbering_entry(state, level_2))
+
     def test_outline_rule_filters_duplicate_markers_by_table_context(self) -> None:
         style_set = StyleSet(
             "set",
@@ -507,7 +516,7 @@ class CellMatrixTransformTests(unittest.TestCase):
                     StyleSet(
                         "보고서용",
                         [
-                            StyleEntry("표내용-중간", table_style=True),
+                            StyleEntry("표내용-중간", table_style=True, template_file="templates/box-a.hwpx"),
                             StyleEntry("[표/그림] 캡션", caption_style=True),
                             StyleEntry(
                                 "본문-개요2",
@@ -529,6 +538,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(active_name, "보고서용")
         self.assertTrue(loaded_sets[0].paragraph_styles[0].table_style)
+        self.assertEqual(loaded_sets[0].paragraph_styles[0].template_file, "templates/box-a.hwpx")
         self.assertTrue(loaded_sets[0].paragraph_styles[1].caption_style)
         self.assertEqual(loaded_sets[0].paragraph_styles[2].outline_markers, ("ㅇ", "○"))
         self.assertEqual(loaded_sets[0].paragraph_styles[2].numbering_group, "body")
@@ -596,6 +606,14 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertTrue(style_set.paragraph_styles[0].table_style)
         self.assertTrue(style_set.paragraph_styles[1].caption_style)
         self.assertTrue(style_set.character_styles[0].table_style)
+
+    def test_style_set_from_records_assigns_template_to_title_number_box_entries(self) -> None:
+        records = [StyleRecord(1, 1, "PARA", "대제목")]
+
+        style_set = style_set_from_records("sample", records, Path("templates/sample.hwpx"))
+
+        self.assertEqual(style_set.role_configs.get("title_number_box", {}).get("template_file"), "templates/sample.hwpx")
+        self.assertEqual(style_set.paragraph_styles[0].template_file, "templates/sample.hwpx")
 
     def test_parse_style_marker_text_splits_commas_and_removes_duplicates(self) -> None:
         self.assertEqual(parse_style_marker_text("ㅇ, ○, 원기호, 원, ㅇ"), ["ㅇ", "○", "원기호", "원"])
@@ -698,8 +716,19 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertIn("사업 &lt;성과&gt; &amp; 계획", section)
         self.assertIn(">7<", section)
-        self.assertNotIn(">대제목<", section)
+        self.assertNotIn("{{header}}", section)
+        self.assertNotIn("{{no}}", section)
         self.assertIn("사업 <성과> & 계획", preview)
+        self.assertNotIn("{{header}}", preview)
+        self.assertNotIn("{{no}}", preview)
+
+    def test_create_filled_title_number_box_replaces_hidden_marker_when_series_marker_is_given(self) -> None:
+        target = create_filled_title_number_box_file("사업 계획", number=2, marker="{{bufs_title}}::series-a")
+        with zipfile.ZipFile(target) as zf:
+            section = zf.read("Contents/section0.xml").decode("utf-8")
+
+        self.assertIn("{{bufs_title}}::series-a", section)
+        self.assertNotIn("<hp:t>{{bufs_title}}</hp:t>", section)
 
     def test_create_title_number_box_hwpml_replaces_number_and_title(self) -> None:
         hwpml = create_title_number_box_hwpml("사업 <성과> & 계획", number=7)
@@ -707,7 +736,8 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertIn("사업 &lt;성과&gt; &amp; 계획", hwpml)
         self.assertIn(">7<", hwpml)
         self.assertIn("{{bufs_title}}", hwpml)
-        self.assertNotIn(">대제목<", hwpml)
+        self.assertNotIn("{{header}}", hwpml)
+        self.assertNotIn("{{no}}", hwpml)
 
     def test_create_cover_from_selected_lines_inserts_empty_cover_when_selection_is_missing(self) -> None:
         app = object.__new__(MvpApp)
@@ -792,6 +822,48 @@ class CellMatrixTransformTests(unittest.TestCase):
 """
         self.assertEqual(title_number_box_numbers_from_hwpml(hwpml), [1, 3])
 
+    def test_title_number_box_numbers_from_hwpml_filters_by_series_marker(self) -> None:
+        hwpml = """<?xml version="1.0" encoding="UTF-16"?>
+<HWPML xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:tbl rowCnt="1" colCnt="3">
+    <hp:tr>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>1</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>첫 제목</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>{{bufs_title}}::alpha</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+  <hp:tbl rowCnt="1" colCnt="3">
+    <hp:tr>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>2</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>둘째 제목</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>{{bufs_title}}::beta</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+</HWPML>
+"""
+        self.assertEqual(title_number_box_numbers_from_hwpml(hwpml, "{{bufs_title}}::alpha"), [1])
+        self.assertEqual(title_number_box_numbers_from_hwpml(hwpml, "{{bufs_title}}::beta"), [2])
+        self.assertEqual(title_number_box_numbers_from_hwpml(hwpml), [1, 2])
+
+    def test_title_number_box_numbers_from_hwpml_accepts_multi_row_number_box_template(self) -> None:
+        hwpml = """<?xml version="1.0" encoding="UTF-16"?>
+<HWPML xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:tbl rowCnt="2" colCnt="3">
+    <hp:tr>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>1</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>소제목 A</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>{{bufs_title}}::sub</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+    </hp:tr>
+    <hp:tr>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t>본문 설명</hp:t></hp:run></hp:p></hp:subList></hp:tc>
+      <hp:tc><hp:subList><hp:p><hp:run><hp:t></hp:t></hp:run></hp:p></hp:subList></hp:tc>
+    </hp:tr>
+  </hp:tbl>
+</HWPML>
+"""
+        self.assertEqual(title_number_box_numbers_from_hwpml(hwpml, "{{bufs_title}}::sub"), [1])
+
     def test_next_title_number_box_number_uses_current_document_max_plus_one(self) -> None:
         class FakeHwp:
             def GetTextFile(self, _format_name, _option):
@@ -820,6 +892,14 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(app.next_title_number_box_number(list_id=0, para=5), (2, [1, 2, 3]))
 
+    def test_next_title_number_box_number_uses_entry_specific_series(self) -> None:
+        app = object.__new__(MvpApp)
+        entry = StyleEntry("대제목A", roles=("title_number_box",), template_file="templates/title-a.hwpx")
+        app.current_title_number_box_numbers = lambda current_entry=None: [3, 4] if current_entry is entry else [1, 2, 3, 4, 9]
+        app.title_number_box_numbers_before_paragraph = lambda list_id, para, current_entry=None: [3] if current_entry is entry else [1, 2, 3]
+
+        self.assertEqual(app.next_title_number_box_number(list_id=0, para=5, entry=entry), (4, [3, 4]))
+
     def test_has_title_number_boxes_after_paragraph_only_checks_following_boxes(self) -> None:
         app = object.__new__(MvpApp)
         app.current_title_number_box_numbers = lambda: [1, 2, 3]
@@ -827,6 +907,14 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertFalse(app.has_title_number_boxes_after_paragraph(0, 5))
         self.assertTrue(app.has_title_number_boxes_after_paragraph(0, 0))
+
+    def test_has_title_number_boxes_after_paragraph_checks_same_series_when_entry_is_given(self) -> None:
+        app = object.__new__(MvpApp)
+        entry = StyleEntry("대제목B", roles=("title_number_box",), template_file="templates/title-b.hwpx")
+        app.current_title_number_box_numbers = lambda current_entry=None: [1, 2] if current_entry is entry else [1, 2, 8]
+        app.title_number_box_numbers_before_paragraph = lambda list_id, para, current_entry=None: [1, 2] if current_entry is entry else [1]
+
+        self.assertFalse(app.has_title_number_boxes_after_paragraph(0, 5, entry))
 
     def test_ai_prompt_for_style_set_uses_active_outline_markers(self) -> None:
         app = object.__new__(MvpApp)
@@ -952,7 +1040,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         try:
             hwp_style_mvp.create_filled_title_number_box_file = fake_create
             app = object.__new__(MvpApp)
-            app.title_number_box_settings = lambda: {"template_path": Path("C:/templates/title.hwpx")}
+            app.title_number_box_settings = lambda entry=None: {"template_path": Path("C:/templates/title.hwpx")}
             app.insert_file_at_cursor = lambda path, keep_section=0: calls.append(("insert_file", (path, keep_section))) or True
 
             self.assertTrue(app.insert_title_number_box_file_at_cursor("대제목 테스트", 4))
@@ -970,24 +1058,44 @@ class CellMatrixTransformTests(unittest.TestCase):
     def test_replace_paragraph_with_title_number_box_inserts_template_file(self) -> None:
         calls: list[tuple[str, object]] = []
         app = object.__new__(MvpApp)
+        entry = StyleEntry("대제목", roles=("title_number_box",), template_file="templates/box-a.hwpx")
         app.next_title_number_box_number = lambda **kwargs: calls.append(("number", kwargs)) or (4, [1, 3])
         app.read_current_paragraph_text = lambda list_id, para: "대제목 테스트"
         app.delete_hwp_text_range = lambda list_id, para, start, end: calls.append(("delete", (list_id, para, start, end))) or True
         app.set_hwp_pos = lambda pos: calls.append(("pos", pos)) or True
-        app.insert_title_number_box_file_at_cursor = lambda title, number: calls.append(("insert_file", (title, number))) or True
+        app.insert_title_number_box_file_at_cursor = (
+            lambda title, number, style_entry=None: calls.append(("insert_file", (title, number, style_entry.template_file if style_entry else ""))) or True
+        )
 
-        result = app.replace_paragraph_with_title_number_box(2, 5, "  대제목\r\n테스트  ")
+        result = app.replace_paragraph_with_title_number_box(2, 5, "  대제목\r\n테스트  ", entry)
 
         self.assertEqual(result, (True, 4, [1, 3]))
         self.assertEqual(
             calls,
             [
-                ("number", {"list_id": 2, "para": 5}),
+                ("number", {"list_id": 2, "para": 5, "entry": entry}),
                 ("delete", (2, 5, 0, len("대제목 테스트"))),
                 ("pos", (2, 5, 0)),
-                ("insert_file", ("대제목 테스트", 4)),
+                ("insert_file", ("대제목 테스트", 4, "templates/box-a.hwpx")),
             ],
         )
+
+    def test_title_number_box_settings_prefers_style_template_file_over_set_default(self) -> None:
+        app = object.__new__(MvpApp)
+        app.table_settings = {"title_number_box": {"template_file": "templates/global.hwpx"}}
+        app.active_style_set = lambda: StyleSet(
+            "set",
+            [StyleEntry("대제목", roles=("title_number_box",))],
+            [],
+            role_configs={"title_number_box": {"template_file": "templates/default.hwpx"}},
+        )
+
+        settings = app.title_number_box_settings(
+            StyleEntry("대제목A", roles=("title_number_box",), template_file="templates/custom.hwpx")
+        )
+
+        self.assertEqual(settings["template_file"], "templates/custom.hwpx")
+        self.assertEqual(settings["template_path"], hwp_style_mvp.ROOT / "templates/custom.hwpx")
 
     def test_find_outline_style_rule_prefers_longer_marker(self) -> None:
         style_set = StyleSet(
@@ -2714,13 +2822,15 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.style_sets = [
             StyleSet(
                 "set",
-                [StyleEntry("대제목", outline_markers=("대",), roles=("title_number_box",))],
+                [StyleEntry("대제목", outline_markers=("대",), roles=("title_number_box",), template_file="templates/title-a.hwpx")],
                 [],
             )
         ]
         app.read_current_paragraph_text = lambda _list_id, _para: "대 사업계획"
-        calls: list[tuple[int, int, str]] = []
-        app.replace_paragraph_with_title_number_box = lambda list_id, para, title: calls.append((list_id, para, title)) or (True, 3, [1, 2])
+        calls: list[tuple[int, int, str, str]] = []
+        app.replace_paragraph_with_title_number_box = (
+            lambda list_id, para, title, entry=None, forced_number=None: calls.append((list_id, para, title, entry.template_file if entry else "")) or (True, 3, [1, 2])
+        )
         app.find_current_doc_style_record = lambda name: self.fail("title_number_box role should not use paragraph style lookup")
         app.apply_inline_rules_to_paragraph = lambda *_args, **_kwargs: self.fail("title_number_box replacement should stop before inline rules")
         app.current_doc_style_reconnect_hint = lambda: ""
@@ -2732,9 +2842,69 @@ class CellMatrixTransformTests(unittest.TestCase):
         finally:
             hwp_style_mvp.messagebox.showwarning = original_showwarning
 
-        self.assertEqual(calls, [(0, 2, "사업계획")])
+        self.assertEqual(calls, [(0, 2, "사업계획", "templates/title-a.hwpx")])
         self.assertEqual(restored, ["original"])
         self.assertEqual(warnings, [])
+
+    def test_process_configured_style_paragraph_restarts_title_box_after_higher_level(self) -> None:
+        app = object.__new__(MvpApp)
+        texts = {
+            0: "대제목 배경 및 목적",
+            1: "소제목 일정 및 기간",
+            2: "소제목 이동 수단",
+        }
+        app.read_current_paragraph_text = lambda _list_id, para: texts[para]
+        app.is_hwp_paragraph_in_table = lambda _list_id, _para: False
+        app.is_title_number_box_entry = lambda entry: True
+        app.has_title_number_boxes_after_paragraph = lambda _list_id, _para, _entry=None: False
+        app.debug = lambda _message: None
+        calls: list[tuple[int, int, str, str, int | None]] = []
+        app.replace_paragraph_with_title_number_box = (
+            lambda list_id, para, title, entry=None, forced_number=None: (
+                calls.append((list_id, para, title, entry.name if entry else "", forced_number)) or (True, forced_number or 2, [])
+            )
+        )
+
+        active_set = StyleSet(
+            "set",
+            [
+                StyleEntry("대제목", outline_markers=("대제목",), roles=("title_number_box",), numbering_group="body", numbering_level=1),
+                StyleEntry(
+                    "소제목",
+                    outline_markers=("소제목",),
+                    roles=("title_number_box",),
+                    numbering_group="body",
+                    numbering_level=2,
+                    restart_after_higher_level=True,
+                ),
+            ],
+            [],
+        )
+        numbering_state = NumberingRunState()
+        missing_styles: set[str] = set()
+        missing_roles: set[str] = set()
+
+        self.assertEqual(
+            app.process_configured_style_paragraph("일괄처리", 0, 0, active_set, missing_styles, missing_roles, numbering_state=numbering_state),
+            (True, True, True, 0),
+        )
+        self.assertEqual(
+            app.process_configured_style_paragraph("일괄처리", 0, 1, active_set, missing_styles, missing_roles, numbering_state=numbering_state),
+            (True, True, True, 0),
+        )
+        self.assertEqual(
+            app.process_configured_style_paragraph("일괄처리", 0, 2, active_set, missing_styles, missing_roles, numbering_state=numbering_state),
+            (True, True, True, 0),
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                (0, 0, "배경 및 목적", "대제목", None),
+                (0, 1, "일정 및 기간", "소제목", 1),
+                (0, 2, "이동 수단", "소제목", None),
+            ],
+        )
 
     def test_configured_outline_style_bulk_falls_back_to_current_paragraph(self) -> None:
         class FakeHwp:
@@ -2761,17 +2931,19 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.style_sets = [
             StyleSet(
                 "set",
-                [StyleEntry("대제목", outline_markers=("대제목",), roles=("title_number_box",))],
+                [StyleEntry("대제목", outline_markers=("대제목",), roles=("title_number_box",), template_file="templates/title-b.hwpx")],
                 [],
             )
         ]
         app.read_current_paragraph_text = lambda _list_id, _para: "대제목 사업계획"
-        calls: list[tuple[int, int, str]] = []
-        app.replace_paragraph_with_title_number_box = lambda list_id, para, title: calls.append((list_id, para, title)) or (True, 1, [])
+        calls: list[tuple[int, int, str, str]] = []
+        app.replace_paragraph_with_title_number_box = (
+            lambda list_id, para, title, entry=None, forced_number=None: calls.append((list_id, para, title, entry.template_file if entry else "")) or (True, 1, [])
+        )
 
         app.apply_configured_outline_styles_to_selection()
 
-        self.assertEqual(calls, [(0, 5, "사업계획")])
+        self.assertEqual(calls, [(0, 5, "사업계획", "templates/title-b.hwpx")])
         self.assertTrue(any("현재 커서 문단" in message for message in logs))
         self.assertEqual(restored, ["original"])
 

@@ -111,6 +111,9 @@ LAST_HWP_CONNECTION_LOG: list[str] = []
 APP_VERSION = "1.0.3"
 APP_NAME = "BUFS-HWP-Editor"
 TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
+TITLE_NUMBER_BOX_MARKER_SEPARATOR = "::"
+TITLE_NUMBER_BOX_NUMBER_PLACEHOLDER = "{{no}}"
+TITLE_NUMBER_BOX_TITLE_PLACEHOLDER = "{{header}}"
 PROOF_TITLE_MARKER = "{{증빙제목}}"
 PROOF_IMAGE_MARKER = "{{증빙자료}}"
 HWPUNIT_PER_MM = 7200 / 25.4
@@ -139,8 +142,8 @@ DEFAULT_TITLE_NUMBER_BOX_SETTINGS = {
     "role": "title_number_box",
     "marker": TITLE_NUMBER_BOX_MARKER,
     "template_file": "templates/대제목_번호박스.hwpx",
-    "placeholder_title": "대제목",
-    "placeholder_number": "1",
+    "placeholder_title": TITLE_NUMBER_BOX_TITLE_PLACEHOLDER,
+    "placeholder_number": TITLE_NUMBER_BOX_NUMBER_PLACEHOLDER,
     "outside_margin": {
         "left": 0,
         "right": 0,
@@ -266,6 +269,7 @@ class StyleEntry:
     numbering_group: str = ""
     numbering_level: int = 0
     restart_after_higher_level: bool = False
+    template_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -285,6 +289,7 @@ class StyleSet:
     paragraph_styles: list[StyleEntry]
     character_styles: list[StyleEntry]
     inline_rules: list[InlineRule] = field(default_factory=list)
+    role_configs: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass
@@ -292,6 +297,7 @@ class NumberingRunState:
     seen_levels: dict[str, set[int]] = field(default_factory=dict)
     reset_levels: dict[str, set[int]] = field(default_factory=dict)
     continued_levels: dict[str, int] = field(default_factory=dict)
+    last_levels: dict[str, int] = field(default_factory=dict)
     restarted: int = 0
     restart_failed: int = 0
     continued: int = 0
@@ -740,6 +746,71 @@ def parse_role_text(text: str) -> list[str]:
     return unique_role_names(part for part in text.split(","))
 
 
+STYLE_ROLE_NONE_LABEL = "(없음)"
+PARAGRAPH_STYLE_ROLE_OPTIONS: tuple[str, ...] = ("title_number_box",)
+CHARACTER_STYLE_ROLE_OPTIONS: tuple[str, ...] = ("body_bold", "table_bold")
+
+
+def allowed_style_roles(style_type: str) -> tuple[str, ...]:
+    return PARAGRAPH_STYLE_ROLE_OPTIONS if style_type == "문단" else CHARACTER_STYLE_ROLE_OPTIONS
+
+
+def normalize_style_role_value(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text == STYLE_ROLE_NONE_LABEL:
+        return ""
+    return text
+
+
+def role_selection_values(style_type: str, current_role: object = "") -> list[str]:
+    values = [STYLE_ROLE_NONE_LABEL, *allowed_style_roles(style_type)]
+    current = normalize_style_role_value(current_role)
+    if current and current not in values:
+        values.append(current)
+    return values
+
+
+def style_roles_from_selection(value: object) -> tuple[str, ...]:
+    role = normalize_style_role_value(value)
+    return (role,) if role else ()
+
+
+def primary_style_role(roles: Iterable[object]) -> str:
+    names = unique_role_names(roles)
+    return names[0] if names else ""
+
+
+def normalize_config_path(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    path = Path(text)
+    try:
+        if path.is_absolute():
+            return str(path.relative_to(ROOT)).replace("\\", "/")
+    except ValueError:
+        return str(path)
+    return str(path).replace("\\", "/")
+
+
+def normalize_role_configs(item: object) -> dict[str, dict[str, object]]:
+    if not isinstance(item, dict):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for raw_role, raw_config in item.items():
+        role = str(raw_role or "").strip()
+        if not role:
+            continue
+        config = raw_config if isinstance(raw_config, dict) else {}
+        normalized: dict[str, object] = {}
+        template_file = normalize_config_path(config.get("template_file", ""))
+        if template_file:
+            normalized["template_file"] = template_file
+        if normalized:
+            result[role] = normalized
+    return result
+
+
 def normalize_numbering_level(value: object) -> int:
     try:
         return max(0, int(str(value).strip() or "0"))
@@ -822,6 +893,7 @@ def normalize_style_entry(item: object) -> StyleEntry | None:
             numbering_group=numbering_group,
             numbering_level=numbering_level,
             restart_after_higher_level=bool(item.restart_after_higher_level),
+            template_file=normalize_config_path(item.template_file),
         )
     if isinstance(item, dict):
         name = str(item.get("name", "")).strip()
@@ -848,6 +920,7 @@ def normalize_style_entry(item: object) -> StyleEntry | None:
             numbering_group=numbering_group,
             numbering_level=numbering_level,
             restart_after_higher_level=bool(restart_after_higher),
+            template_file=normalize_config_path(item.get("template_file", "")),
         )
     name = str(item).strip()
     if not name:
@@ -859,6 +932,7 @@ def normalize_style_entry(item: object) -> StyleEntry | None:
         numbering_group=inferred_numbering_group(name),
         numbering_level=numbering_level,
         restart_after_higher_level=bool(numbering_level),
+        template_file="",
     )
 
 
@@ -971,7 +1045,7 @@ def style_sets_from_records(records: list[StyleRecord]) -> list[StyleSet]:
         if record.style_type == "CHAR"
     ]
     return [
-        StyleSet("보고서용", unique_style_entries(paragraph_styles), unique_style_entries(character_styles), list(DEFAULT_INLINE_RULES)),
+        StyleSet("보고서용", unique_style_entries(paragraph_styles), unique_style_entries(character_styles), list(DEFAULT_INLINE_RULES), {}),
         StyleSet("일반보고용", [], []),
         StyleSet("공문용", [], []),
     ]
@@ -987,10 +1061,36 @@ def style_entry_from_record(record: StyleRecord) -> StyleEntry:
     )
 
 
-def style_set_from_records(name: str, records: list[StyleRecord]) -> StyleSet:
+def style_set_from_records(name: str, records: list[StyleRecord], source_path: Path | None = None) -> StyleSet:
     paragraph_styles = [style_entry_from_record(record) for record in records if record.style_type == "PARA"]
     character_styles = [style_entry_from_record(record) for record in records if record.style_type == "CHAR"]
-    return StyleSet(name, unique_style_entries(paragraph_styles), unique_style_entries(character_styles), list(DEFAULT_INLINE_RULES))
+    role_configs: dict[str, dict[str, object]] = {}
+    normalized_source = normalize_config_path(source_path) if source_path is not None else ""
+    has_title_role = any("title_number_box" in entry.roles for entry in paragraph_styles)
+    has_title_style = any(normalize_style_name(entry.name) == normalize_style_name("대제목") for entry in paragraph_styles)
+    if normalized_source and (has_title_role or has_title_style):
+        role_configs["title_number_box"] = {"template_file": normalized_source}
+        paragraph_styles = [
+            StyleEntry(
+                entry.name,
+                table_style=entry.table_style,
+                caption_style=entry.caption_style,
+                outline_markers=entry.outline_markers,
+                roles=entry.roles,
+                numbering_group=entry.numbering_group,
+                numbering_level=entry.numbering_level,
+                restart_after_higher_level=entry.restart_after_higher_level,
+                template_file=normalized_source if ("title_number_box" in entry.roles or normalize_style_name(entry.name) == normalize_style_name("대제목")) else entry.template_file,
+            )
+            for entry in paragraph_styles
+        ]
+    return StyleSet(
+        name,
+        unique_style_entries(paragraph_styles),
+        unique_style_entries(character_styles),
+        list(DEFAULT_INLINE_RULES),
+        role_configs,
+    )
 
 
 def normalize_style_set_item(item: object) -> StyleSet | None:
@@ -1002,7 +1102,14 @@ def normalize_style_set_item(item: object) -> StyleSet | None:
     paragraph_styles = unique_style_entries(item.get("paragraph_styles", []))
     character_styles = unique_style_entries(item.get("character_styles", []))
     inline_rules = unique_inline_rules(item.get("inline_rules", DEFAULT_INLINE_RULES))
-    return StyleSet(name=name, paragraph_styles=paragraph_styles, character_styles=character_styles, inline_rules=inline_rules)
+    role_configs = normalize_role_configs(item.get("role_configs", {}))
+    return StyleSet(
+        name=name,
+        paragraph_styles=paragraph_styles,
+        character_styles=character_styles,
+        inline_rules=inline_rules,
+        role_configs=role_configs,
+    )
 
 
 def migrate_title_number_box_roles(style_sets: list[StyleSet]) -> list[StyleSet]:
@@ -1027,6 +1134,7 @@ def migrate_title_number_box_roles(style_sets: list[StyleSet]) -> list[StyleSet]
                     numbering_group=entry.numbering_group,
                     numbering_level=entry.numbering_level,
                     restart_after_higher_level=entry.restart_after_higher_level,
+                    template_file=entry.template_file,
                 )
             )
         migrated_sets.append(
@@ -1035,9 +1143,38 @@ def migrate_title_number_box_roles(style_sets: list[StyleSet]) -> list[StyleSet]
                 migrated_entries,
                 style_set.character_styles,
                 style_set.inline_rules,
+                style_set.role_configs,
             )
         )
     return migrated_sets
+
+
+def migrate_title_number_box_role_configs(
+    style_sets: list[StyleSet],
+    template_file: str,
+) -> tuple[list[StyleSet], bool]:
+    migrated_sets: list[StyleSet] = []
+    changed = False
+    normalized_template = str(template_file or "").strip() or DEFAULT_TITLE_NUMBER_BOX_SETTINGS["template_file"]
+    for style_set in style_sets:
+        has_title_role = any("title_number_box" in entry.roles for entry in style_set.paragraph_styles)
+        role_configs = normalize_role_configs(style_set.role_configs)
+        if has_title_role:
+            title_config = dict(role_configs.get("title_number_box", {}))
+            if not str(title_config.get("template_file", "")).strip():
+                title_config["template_file"] = normalized_template
+                role_configs["title_number_box"] = title_config
+                changed = True
+        migrated_sets.append(
+            StyleSet(
+                style_set.name,
+                style_set.paragraph_styles,
+                style_set.character_styles,
+                style_set.inline_rules,
+                role_configs,
+            )
+        )
+    return migrated_sets, changed
 
 
 def default_style_sets() -> tuple[str, list[StyleSet]]:
@@ -1088,6 +1225,7 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
                         "caption_style": entry.caption_style,
                         "outline_markers": list(entry.outline_markers),
                         "roles": list(entry.roles),
+                        "template_file": entry.template_file,
                         "numbering": {
                             "group": entry.numbering_group,
                             "level": entry.numbering_level,
@@ -1103,6 +1241,7 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
                         "caption_style": entry.caption_style,
                         "outline_markers": list(entry.outline_markers),
                         "roles": list(entry.roles),
+                        "template_file": entry.template_file,
                         "numbering": {
                             "group": entry.numbering_group,
                             "level": entry.numbering_level,
@@ -1123,6 +1262,7 @@ def save_style_sets(active_name: str, style_sets: list[StyleSet]) -> None:
                     }
                     for rule in unique_inline_rules(item.inline_rules)
                 ],
+                "role_configs": normalize_role_configs(item.role_configs),
             }
             for item in style_sets
         ],
@@ -1716,6 +1856,14 @@ def collapse_cover_paragraph_after(section_xml: str, start: int) -> str:
     return section_xml[:lineseg_start] + collapsed + section_xml[lineseg_end:]
 
 
+def collapse_all_linesegarrays(section_xml: str) -> str:
+    collapsed = (
+        '<hp:linesegarray><hp:lineseg textpos="0" vertpos="0" vertsize="0" '
+        'textheight="0" baseline="0" spacing="0" horzpos="0" horzsize="0" flags="393216"/></hp:linesegarray>'
+    )
+    return re.sub(r"<hp:linesegarray>.*?</hp:linesegarray>", collapsed, section_xml, flags=re.DOTALL)
+
+
 def remove_confidential_cover_table(section_xml: str) -> str:
     needle = "대 외 비"
     index = section_xml.find(needle)
@@ -1827,22 +1975,49 @@ def element_text_content(element: ET.Element) -> str:
     return "".join(element.itertext()).strip()
 
 
-def title_number_box_numbers_from_hwpml(hwpml: str) -> list[int]:
+def title_number_box_series_source(entry: StyleEntry | None = None, settings: dict | None = None) -> str:
+    template_file = ""
+    if entry is not None:
+        template_file = normalize_config_path(entry.template_file)
+    if not template_file and isinstance(settings, dict):
+        template_file = normalize_config_path(settings.get("template_file", ""))
+    if template_file:
+        return template_file
+    if entry is not None and entry.name.strip():
+        return f"style:{entry.name.strip()}"
+    return ""
+
+
+def title_number_box_series_key(entry: StyleEntry | None = None, settings: dict | None = None) -> str:
+    source = title_number_box_series_source(entry, settings)
+    if not source:
+        return ""
+    return hashlib.sha1(source.encode("utf-8")).hexdigest()[:12]
+
+
+def build_title_number_box_marker(series_key: str = "") -> str:
+    key = str(series_key or "").strip()
+    if not key:
+        return TITLE_NUMBER_BOX_MARKER
+    return f"{TITLE_NUMBER_BOX_MARKER}{TITLE_NUMBER_BOX_MARKER_SEPARATOR}{key}"
+
+
+def title_number_box_numbers_from_hwpml(hwpml: str, marker: str | None = None) -> list[int]:
     try:
         root = ET.fromstring(strip_xml_encoding_declaration(hwpml))
     except Exception:
         return []
 
     numbers: list[int] = []
+    target_marker = None if marker is None else str(marker).strip()
     for table in root.iter():
         table_tag = xml_local_name(table.tag).lower()
         if table_tag != "tbl" and table_tag != "table":
             continue
-        row_count = table.get("rowCnt") or table.get("RowCount")
-        if row_count != "1":
-            continue
         table_text = element_text_content(table)
         if TITLE_NUMBER_BOX_MARKER not in table_text:
+            continue
+        if target_marker and target_marker not in table_text:
             continue
         cells = [child for child in table.iter() if xml_local_name(child.tag).lower() in {"tc", "cell"}]
         if len(cells) < 2:
@@ -1857,6 +2032,7 @@ def create_filled_title_number_box_file(
     title: str,
     number: int = 1,
     template: Path = TITLE_NUMBER_BOX_TEMPLATE_FILE,
+    marker: str = TITLE_NUMBER_BOX_MARKER,
 ) -> Path:
     if not template.exists():
         raise FileNotFoundError(f"대제목 번호박스 템플릿을 찾지 못했습니다: {template}")
@@ -1866,21 +2042,35 @@ def create_filled_title_number_box_file(
     TEST_OUTPUT_DIR.mkdir(exist_ok=True)
     target = TEST_OUTPUT_DIR / f"title-number-box-{datetime.now().strftime('%Y%m%d-%H%M%S')}.hwpx"
 
+    def replace_title_number_box_text(text: str, *, xml_mode: bool) -> str:
+        title_value = hwp_xml_text(title) if xml_mode else title
+        marker_value = hwp_xml_text(marker) if xml_mode else marker
+        text = text.replace(TITLE_NUMBER_BOX_MARKER, marker_value)
+        if TITLE_NUMBER_BOX_NUMBER_PLACEHOLDER in text:
+            text = text.replace(TITLE_NUMBER_BOX_NUMBER_PLACEHOLDER, number_text)
+        elif xml_mode:
+            text = re.sub(r"(<[^>]*:t>)1(</[^>]*:t>)", rf"\g<1>{hwp_xml_text(number_text)}\2", text, count=1)
+        else:
+            text = re.sub(r"^\s*1\b", number_text, text, count=1)
+        if title:
+            if TITLE_NUMBER_BOX_TITLE_PLACEHOLDER in text:
+                text = text.replace(TITLE_NUMBER_BOX_TITLE_PLACEHOLDER, title_value)
+            elif xml_mode:
+                text = text.replace(">대제목<", f">{title_value}<")
+            else:
+                text = text.replace("대제목", title)
+        return text
+
     with zipfile.ZipFile(template, "r") as src, zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as dst:
         for info in src.infolist():
             data = src.read(info.filename)
             if info.filename.endswith(".xml"):
-                text = data.decode("utf-8")
-                text = re.sub(r"(<[^>]*:t>)1(</[^>]*:t>)", rf"\g<1>{hwp_xml_text(number_text)}\2", text, count=1)
-                if title:
-                    text = text.replace(">대제목<", f">{hwp_xml_text(title)}<")
+                text = replace_title_number_box_text(data.decode("utf-8"), xml_mode=True)
+                if info.filename == "Contents/section0.xml":
+                    text = collapse_all_linesegarrays(text)
                 data = text.encode("utf-8")
             elif info.filename == "Preview/PrvText.txt":
-                text = data.decode("utf-8")
-                text = re.sub(r"^\s*1\b", number_text, text, count=1)
-                if title:
-                    text = text.replace("대제목", title)
-                data = text.encode("utf-8")
+                data = replace_title_number_box_text(data.decode("utf-8"), xml_mode=False).encode("utf-8")
             dst.writestr(info, data)
 
     return target
@@ -1890,6 +2080,7 @@ def create_title_number_box_hwpml(
     title: str,
     number: int = 1,
     template: Path = TITLE_NUMBER_BOX_TEMPLATE_FILE,
+    marker: str = TITLE_NUMBER_BOX_MARKER,
 ) -> str:
     if not template.exists():
         raise FileNotFoundError(f"대제목 번호박스 템플릿을 찾지 못했습니다: {template}")
@@ -1897,15 +2088,22 @@ def create_title_number_box_hwpml(
     title = normalize_title_box_text(title)
     number_text = str(max(1, int(number)))
     section_xml = read_zip_text(template, "Contents/section0.xml")
-    section_xml = re.sub(
-        r"(<[^>]*:t>)1(</[^>]*:t>)",
-        rf"\g<1>{hwp_xml_text(number_text)}\2",
-        section_xml,
-        count=1,
-    )
+    section_xml = section_xml.replace(TITLE_NUMBER_BOX_MARKER, hwp_xml_text(marker))
+    if TITLE_NUMBER_BOX_NUMBER_PLACEHOLDER in section_xml:
+        section_xml = section_xml.replace(TITLE_NUMBER_BOX_NUMBER_PLACEHOLDER, number_text)
+    else:
+        section_xml = re.sub(
+            r"(<[^>]*:t>)1(</[^>]*:t>)",
+            rf"\g<1>{hwp_xml_text(number_text)}\2",
+            section_xml,
+            count=1,
+        )
     if title:
-        section_xml = section_xml.replace(">대제목<", f">{hwp_xml_text(title)}<")
-    return section_xml
+        if TITLE_NUMBER_BOX_TITLE_PLACEHOLDER in section_xml:
+            section_xml = section_xml.replace(TITLE_NUMBER_BOX_TITLE_PLACEHOLDER, hwp_xml_text(title))
+        else:
+            section_xml = section_xml.replace(">대제목<", f">{hwp_xml_text(title)}<")
+    return collapse_all_linesegarrays(section_xml)
 
 
 def style_entry_has_role(entry: StyleEntry, role: str) -> bool:
@@ -2936,12 +3134,14 @@ def consume_numbering_entry(state: NumberingRunState | None, entry: StyleEntry) 
     level = entry.numbering_level
     reset_levels = state.reset_levels.setdefault(group, set())
     seen_levels = state.seen_levels.setdefault(group, set())
-    restart = entry.restart_after_higher_level and level in reset_levels
+    previous_level = state.last_levels.get(group, 0)
+    restart = entry.restart_after_higher_level and (level in reset_levels or (previous_level > 0 and previous_level < level))
     reset_levels.discard(level)
     for seen_level in seen_levels:
         if seen_level > level:
             reset_levels.add(seen_level)
     seen_levels.add(level)
+    state.last_levels[group] = level
     return restart
 
 
@@ -3255,6 +3455,7 @@ class MvpApp(tk.Tk):
         self.current_doc_style_map: dict[str, StyleRecord] = {}
         self.current_doc_style_norm_map: dict[str, StyleRecord] = {}
         self.table_settings = load_table_settings()
+        self.ensure_title_number_box_role_configs()
         self.update_settings = load_update_settings()
         self.special_chars = load_special_chars()
         self.palette = palette_from_settings(self.table_settings)
@@ -3389,12 +3590,25 @@ class MvpApp(tk.Tk):
 
         number_group = ttk.LabelFrame(frame, text="새 번호 개체", padding=8)
         number_group.pack(fill="x", pady=(12, 0))
-        for text, num_type in (("새 쪽 번호", 0), ("새 표 번호", 4), ("새 그림 번호", 3)):
+        for column in range(3):
+            number_group.grid_columnconfigure(column, weight=1)
+        for column, (text, num_type) in enumerate((("새 쪽 번호", 0), ("새 표 번호", 4), ("새 그림 번호", 3))):
             ttk.Button(
                 number_group,
                 text=text,
                 command=lambda value=num_type, label=text: self.insert_new_number_object(value, label),
-            ).pack(fill="x", pady=(0, 6))
+            ).grid(row=0, column=column, sticky="ew", padx=(0, 6 if column < 2 else 0), pady=(0, 6))
+
+        header_group = ttk.LabelFrame(frame, text="머리말 개체", padding=8)
+        header_group.pack(fill="x", pady=(12, 0))
+        for column in range(3):
+            header_group.grid_columnconfigure(column, weight=1)
+        for column, (text, header_type) in enumerate((("머리말 양쪽", 0), ("머리말 짝수쪽", 1), ("머리말 홀수쪽", 2))):
+            ttk.Button(
+                header_group,
+                text=text,
+                command=lambda value=header_type, label=text: self.insert_header_footer_object(0, value, label),
+            ).grid(row=0, column=column, sticky="ew", padx=(0, 6 if column < 2 else 0), pady=(0, 6))
 
     def _build_special_chars_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=8)
@@ -4920,6 +5134,7 @@ class MvpApp(tk.Tk):
         self.log(f"대제목 번호박스 파일: {TITLE_NUMBER_BOX_TEMPLATE_FILE.exists()} / {TITLE_NUMBER_BOX_TEMPLATE_FILE.relative_to(ROOT)}")
 
         self.active_style_set_name, self.style_sets = load_style_sets()
+        self.ensure_title_number_box_role_configs()
         self.style_set_var.set(self.active_style_set_name)
         self.refresh_style_set_combo()
         self.style_records = style_set_to_records(self.active_style_set())
@@ -4946,7 +5161,7 @@ class MvpApp(tk.Tk):
                 StyleEntry(record.name, table_style=normalize_style_name(record.name).startswith(normalize_style_name("표내용-")))
                 for record in records
                 if record.style_type == "CHAR"
-            ])
+            ], role_configs={})
         for style_set in self.style_sets:
             if style_set.name == self.active_style_set_name:
                 return style_set
@@ -4954,6 +5169,15 @@ class MvpApp(tk.Tk):
             _, self.style_sets = default_style_sets()
         self.active_style_set_name = self.style_sets[0].name
         return self.style_sets[0]
+
+    def ensure_title_number_box_role_configs(self) -> None:
+        raw = self.table_settings.get("title_number_box", {}) if isinstance(self.table_settings, dict) else {}
+        template_file = str(raw.get("template_file", DEFAULT_TITLE_NUMBER_BOX_SETTINGS["template_file"])).strip()
+        migrated, changed = migrate_title_number_box_role_configs(self.style_sets, template_file)
+        if changed:
+            self.style_sets = migrated
+            save_style_sets(self.active_style_set_name, self.style_sets)
+            self.debug(f"[style-sets] title_number_box role config migration applied: template={template_file}")
 
     def style_entries_for_ai_prompt(self, style_set: StyleSet | None = None) -> list[StyleEntry]:
         selected_set = style_set or self.active_style_set()
@@ -5136,6 +5360,7 @@ class MvpApp(tk.Tk):
                 list(item.paragraph_styles),
                 list(item.character_styles),
                 list(item.inline_rules),
+                normalize_role_configs(item.role_configs),
             )
             for item in self.style_sets
         ]
@@ -5146,6 +5371,8 @@ class MvpApp(tk.Tk):
         caption_style_var = tk.BooleanVar(value=False)
         outline_markers_var = tk.StringVar()
         roles_var = tk.StringVar()
+        title_box_template_var = tk.StringVar()
+        style_template_var = tk.StringVar()
         numbering_group_var = tk.StringVar()
         numbering_level_var = tk.StringVar()
         numbering_restart_var = tk.BooleanVar(value=False)
@@ -5169,6 +5396,9 @@ class MvpApp(tk.Tk):
         last_set_index: list[int | None] = [None]
         last_tab: list[str | None] = [None]
         rule_role_combo_ref: list[ttk.Combobox] = []
+        style_role_combo_ref: list[ttk.Combobox] = []
+        style_template_entry_ref: list[ttk.Entry] = []
+        style_template_button_ref: list[ttk.Button] = []
 
         body = ttk.Frame(window, padding=10)
         body.pack(fill="both", expand=True)
@@ -5309,6 +5539,44 @@ class MvpApp(tk.Tk):
                         seen.add(role)
             return roles
 
+        def selected_set_title_box_template() -> str:
+            role_configs = normalize_role_configs(selected_set().role_configs)
+            config = role_configs.get("title_number_box", {})
+            return str(config.get("template_file", "")).strip()
+
+        def refresh_title_box_template_form() -> None:
+            title_box_template_var.set(selected_set_title_box_template())
+
+        def style_uses_title_box_role(style_type: object | None = None, role_value: object | None = None) -> bool:
+            current_style_type = str(style_type if style_type is not None else style_type_var.get()).strip()
+            current_role = normalize_style_role_value(roles_var.get() if role_value is None else role_value)
+            return current_style_type == "문단" and current_role == "title_number_box"
+
+        def refresh_style_template_controls() -> None:
+            enabled = style_uses_title_box_role()
+            state = "normal" if enabled else "disabled"
+            for widget in style_template_entry_ref:
+                widget.configure(state=state)
+            for widget in style_template_button_ref:
+                widget.configure(state=state)
+            if not enabled:
+                style_template_var.set("")
+
+        def update_style_role_options(current_role: object | None = None) -> None:
+            if not style_role_combo_ref:
+                return
+            explicit_role = normalize_style_role_value(current_role) if current_role is not None else ""
+            values = role_selection_values(style_type_var.get(), explicit_role)
+            style_role_combo_ref[0].configure(values=values)
+            current_value = normalize_style_role_value(roles_var.get())
+            if current_value and current_value in values:
+                roles_var.set(current_value)
+            elif explicit_role and explicit_role in values:
+                roles_var.set(explicit_role)
+            elif roles_var.get() not in values:
+                roles_var.set(STYLE_ROLE_NONE_LABEL)
+            refresh_style_template_controls()
+
         def refresh_rule_role_options() -> None:
             if not rule_role_combo_ref:
                 return
@@ -5320,17 +5588,27 @@ class MvpApp(tk.Tk):
                 rule_role_var.set("")
 
         def validate_style_roles(style_type: str, roles: list[str], replace_index: int | None = None) -> bool:
-            if roles and style_type != "글자":
-                messagebox.showwarning("글자 역할 제한", "역할은 글자 스타일에만 지정할 수 있습니다.", parent=window)
+            allowed = set(allowed_style_roles(style_type))
+            invalid_roles = [role for role in roles if role not in allowed]
+            if invalid_roles:
+                allowed_text = ", ".join(allowed_style_roles(style_type)) or STYLE_ROLE_NONE_LABEL
+                messagebox.showwarning(
+                    "역할 제한",
+                    f"{style_type} 스타일에는 다음 역할만 지정할 수 있습니다.\n\n{allowed_text}",
+                    parent=window,
+                )
                 return False
+            target_entries = selected_set().character_styles if style_type == "글자" else selected_set().paragraph_styles
             for role in roles:
-                for index, entry in enumerate(selected_set().character_styles):
+                if style_type == "문단" and role == "title_number_box":
+                    continue
+                for index, entry in enumerate(target_entries):
                     if replace_index is not None and index == replace_index:
                         continue
                     if role in entry.roles:
                         messagebox.showwarning(
-                            "글자 역할 중복",
-                            f"'{role}' 역할은 이미 '{entry.name}' 글자 스타일에 지정되어 있습니다.",
+                            "역할 중복",
+                            f"'{role}' 역할은 이미 '{entry.name}' {style_type} 스타일에 지정되어 있습니다.",
                             parent=window,
                         )
                         return False
@@ -5344,6 +5622,7 @@ class MvpApp(tk.Tk):
                 caption_style_var.get(),
                 outline_markers_var.get(),
                 roles_var.get(),
+                style_template_var.get(),
                 numbering_group_var.get(),
                 numbering_level_var.get(),
                 numbering_restart_var.get(),
@@ -5402,6 +5681,72 @@ class MvpApp(tk.Tk):
             refresh_rule_role_options()
             self.debug(f"[style-sets] 즉시 저장: {STYLE_SETS_FILE}")
 
+        def replace_selected_set_role_configs(role_configs: dict[str, dict[str, object]]) -> None:
+            item = selected_set()
+            replace_selected_set(
+                StyleSet(
+                    item.name,
+                    item.paragraph_styles,
+                    item.character_styles,
+                    item.inline_rules,
+                    normalize_role_configs(role_configs),
+                )
+            )
+            persist_working_sets()
+
+        def browse_title_box_template() -> None:
+            current = title_box_template_var.get().strip()
+            initial_path = Path(current) if current else TITLE_NUMBER_BOX_TEMPLATE_FILE
+            if not initial_path.is_absolute():
+                initial_path = ROOT / initial_path
+            raw_path = filedialog.askopenfilename(
+                parent=window,
+                title="대제목 번호박스 템플릿 선택",
+                initialdir=str(initial_path.parent if initial_path.parent.exists() else TEMPLATE_DIR),
+                filetypes=[
+                    ("한글 문서", "*.hwpx *.hwp"),
+                    ("HWPX", "*.hwpx"),
+                    ("HWP", "*.hwp"),
+                    ("모든 파일", "*.*"),
+                ],
+            )
+            if not raw_path:
+                return
+            title_box_template_var.set(normalize_config_path(raw_path))
+
+        def browse_style_template() -> None:
+            current = style_template_var.get().strip() or title_box_template_var.get().strip()
+            initial_path = Path(current) if current else TITLE_NUMBER_BOX_TEMPLATE_FILE
+            if not initial_path.is_absolute():
+                initial_path = ROOT / initial_path
+            raw_path = filedialog.askopenfilename(
+                parent=window,
+                title="이 스타일의 대제목 번호박스 템플릿 선택",
+                initialdir=str(initial_path.parent if initial_path.parent.exists() else TEMPLATE_DIR),
+                filetypes=[
+                    ("한글 문서", "*.hwpx *.hwp"),
+                    ("HWPX", "*.hwpx"),
+                    ("HWP", "*.hwp"),
+                    ("모든 파일", "*.*"),
+                ],
+            )
+            if not raw_path:
+                return
+            style_template_var.set(normalize_config_path(raw_path))
+
+        def save_title_box_template() -> None:
+            template_file = normalize_config_path(title_box_template_var.get())
+            title_box_template_var.set(template_file)
+            role_configs = normalize_role_configs(selected_set().role_configs)
+            title_config = dict(role_configs.get("title_number_box", {}))
+            if template_file:
+                title_config["template_file"] = template_file
+                role_configs["title_number_box"] = title_config
+            else:
+                role_configs.pop("title_number_box", None)
+            replace_selected_set_role_configs(role_configs)
+            refresh_title_box_template_form()
+
         def select_set(_event=None) -> None:
             if set_selection_guard[0]:
                 return
@@ -5419,6 +5764,7 @@ class MvpApp(tk.Tk):
             refresh_style_tree()
             refresh_rule_tree()
             refresh_rule_role_options()
+            refresh_title_box_template_form()
             clear_style_form()
             clear_rule_form()
             last_set_index[0] = selected_set_index()
@@ -5443,7 +5789,7 @@ class MvpApp(tk.Tk):
             while name in existing:
                 name = f"{base} {suffix}"
                 suffix += 1
-            working_sets.append(StyleSet(name, [], [], list(DEFAULT_INLINE_RULES)))
+            working_sets.append(StyleSet(name, [], [], list(DEFAULT_INLINE_RULES), {}))
             refresh_set_list(name)
             refresh_style_tree()
             refresh_rule_tree()
@@ -5489,7 +5835,7 @@ class MvpApp(tk.Tk):
                 self.log(f"스타일 세트 불러오기: 스타일 없음, file={path}")
                 return
             name = unique_set_name(path.stem)
-            working_sets.append(style_set_from_records(name, records))
+            working_sets.append(style_set_from_records(name, records, path))
             refresh_set_list(name)
             refresh_style_tree()
             refresh_rule_tree()
@@ -5525,7 +5871,7 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning("세트 이름 중복", "이미 있는 세트 이름입니다.", parent=window)
                 return
             item = selected_set()
-            working_sets[index] = StyleSet(name, item.paragraph_styles, item.character_styles, item.inline_rules)
+            working_sets[index] = StyleSet(name, item.paragraph_styles, item.character_styles, item.inline_rules, item.role_configs)
             refresh_set_list(name)
             persist_working_sets()
 
@@ -5540,13 +5886,14 @@ class MvpApp(tk.Tk):
                 messagebox.showwarning("스타일 이름 중복", "같은 구분에 이미 있는 스타일 이름입니다.", parent=window)
                 return None
             markers = parse_style_marker_text(outline_markers_var.get())
-            roles = parse_role_text(roles_var.get())
-            if not validate_style_roles(style_type, roles, replace_index if style_type == "글자" else None):
+            roles = list(style_roles_from_selection(roles_var.get()))
+            if not validate_style_roles(style_type, roles, replace_index):
                 return None
             numbering_level = normalize_numbering_level(numbering_level_var.get())
             numbering_group = normalize_numbering_group(numbering_group_var.get())
             if numbering_level and not numbering_group:
                 numbering_group = "table" if table_style_var.get() else "body"
+            template_file = normalize_config_path(style_template_var.get()) if style_uses_title_box_role(style_type, roles_var.get()) else ""
             return StyleEntry(
                 name,
                 table_style_var.get(),
@@ -5556,6 +5903,7 @@ class MvpApp(tk.Tk):
                 numbering_group,
                 numbering_level,
                 numbering_restart_var.get(),
+                template_file,
             )
 
         def clear_style_form() -> None:
@@ -5563,7 +5911,9 @@ class MvpApp(tk.Tk):
             table_style_var.set(False)
             caption_style_var.set(False)
             outline_markers_var.set("")
-            roles_var.set("")
+            roles_var.set(STYLE_ROLE_NONE_LABEL)
+            update_style_role_options()
+            style_template_var.set("")
             numbering_group_var.set("")
             numbering_level_var.set("")
             numbering_restart_var.set(False)
@@ -5608,7 +5958,7 @@ class MvpApp(tk.Tk):
                     paragraph_styles[replace_index] = entry
                 else:
                     return
-            replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles, item.inline_rules))
+            replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles, item.inline_rules, item.role_configs))
             adding_style_var.set(False)
             clear_style_form()
             last_style_selection[0] = None
@@ -5650,13 +6000,16 @@ class MvpApp(tk.Tk):
             if remove:
                 del entries[index]
             else:
-                saved_roles = tuple(parse_role_text(roles_var.get())) if save_form else entry.roles
-                if save_form and not validate_style_roles(style_type, list(saved_roles), index if style_type == "글자" else None):
+                saved_roles = style_roles_from_selection(roles_var.get()) if save_form else entry.roles
+                if save_form and not validate_style_roles(style_type, list(saved_roles), index):
                     return
                 saved_numbering_level = normalize_numbering_level(numbering_level_var.get()) if save_form else entry.numbering_level
                 saved_numbering_group = normalize_numbering_group(numbering_group_var.get()) if save_form else entry.numbering_group
                 if save_form and saved_numbering_level and not saved_numbering_group:
                     saved_numbering_group = "table" if table_style_var.get() else "body"
+                saved_template_file = (
+                    normalize_config_path(style_template_var.get()) if save_form and style_uses_title_box_role(style_type, roles_var.get()) else ""
+                )
                 entries[index] = StyleEntry(
                     entry.name,
                     table_style=table_style_var.get() if save_form else entry.table_style,
@@ -5666,8 +6019,9 @@ class MvpApp(tk.Tk):
                     numbering_group=saved_numbering_group,
                     numbering_level=saved_numbering_level,
                     restart_after_higher_level=numbering_restart_var.get() if save_form else entry.restart_after_higher_level,
+                    template_file=saved_template_file if save_form else entry.template_file,
                 )
-            replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles, item.inline_rules))
+            replace_selected_set(StyleSet(item.name, paragraph_styles, character_styles, item.inline_rules, item.role_configs))
             persist_working_sets()
 
         def fill_form_from_selected_style(_event=None) -> None:
@@ -5697,7 +6051,9 @@ class MvpApp(tk.Tk):
             table_style_var.set(entry.table_style)
             caption_style_var.set(entry.caption_style)
             outline_markers_var.set(", ".join(entry.outline_markers))
-            roles_var.set(", ".join(entry.roles))
+            roles_var.set(primary_style_role(entry.roles) or STYLE_ROLE_NONE_LABEL)
+            update_style_role_options(primary_style_role(entry.roles))
+            style_template_var.set(entry.template_file)
             numbering_group_var.set(numbering_group_label(entry.numbering_group))
             numbering_level_var.set(str(entry.numbering_level) if entry.numbering_level else "")
             numbering_restart_var.set(entry.restart_after_higher_level)
@@ -5768,7 +6124,7 @@ class MvpApp(tk.Tk):
 
         def replace_inline_rules(rules: list[InlineRule]) -> None:
             item = selected_set()
-            replace_selected_set(StyleSet(item.name, item.paragraph_styles, item.character_styles, rules))
+            replace_selected_set(StyleSet(item.name, item.paragraph_styles, item.character_styles, rules, item.role_configs))
             persist_working_sets()
 
         def clear_rule_form() -> None:
@@ -5843,11 +6199,23 @@ class MvpApp(tk.Tk):
 
         set_form = ttk.Frame(body)
         set_form.grid(row=0, column=1, sticky="ew", pady=(0, 8))
-        ttk.Entry(set_form, textvariable=selected_set_var, width=18).pack(side="left", fill="x", expand=True)
-        ttk.Button(set_form, text="이름변경", command=rename_set).pack(side="left", padx=(6, 0))
-        ttk.Button(set_form, text="세트추가", command=add_set).pack(side="left", padx=(6, 0))
-        ttk.Button(set_form, text="파일에서 불러오기", command=import_style_set_from_file).pack(side="left", padx=(6, 0))
-        ttk.Button(set_form, text="세트삭제", command=remove_set).pack(side="left", padx=(6, 0))
+        set_form.grid_columnconfigure(0, weight=1)
+        set_toolbar = ttk.Frame(set_form)
+        set_toolbar.grid(row=0, column=0, sticky="ew")
+        set_toolbar.grid_columnconfigure(0, weight=1)
+        ttk.Entry(set_toolbar, textvariable=selected_set_var, width=18).grid(row=0, column=0, sticky="ew")
+        ttk.Button(set_toolbar, text="이름변경", command=rename_set).grid(row=0, column=1, padx=(6, 0))
+        ttk.Button(set_toolbar, text="세트추가", command=add_set).grid(row=0, column=2, padx=(6, 0))
+        ttk.Button(set_toolbar, text="파일에서 불러오기", command=import_style_set_from_file).grid(row=0, column=3, padx=(6, 0))
+        ttk.Button(set_toolbar, text="세트삭제", command=remove_set).grid(row=0, column=4, padx=(6, 0))
+
+        role_config_form = ttk.Frame(set_form)
+        role_config_form.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        role_config_form.grid_columnconfigure(1, weight=1)
+        ttk.Label(role_config_form, text="기본 title_number_box 템플릿").grid(row=0, column=0, sticky="w")
+        ttk.Entry(role_config_form, textvariable=title_box_template_var).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Button(role_config_form, text="찾아보기", command=browse_title_box_template).grid(row=0, column=2, padx=(6, 0))
+        ttk.Button(role_config_form, text="적용", command=save_title_box_template).grid(row=0, column=3, padx=(6, 0))
 
         add_form = ttk.Frame(style_tab)
         add_form.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -5861,7 +6229,15 @@ class MvpApp(tk.Tk):
         ttk.Label(marker_form, text="식별자").pack(side="left")
         ttk.Entry(marker_form, textvariable=outline_markers_var, width=22).pack(side="left", fill="x", expand=True, padx=(6, 0))
         ttk.Label(marker_form, text="역할").pack(side="left", padx=(8, 0))
-        ttk.Entry(marker_form, textvariable=roles_var, width=14).pack(side="left", padx=(6, 0))
+        style_role_combo = ttk.Combobox(
+            marker_form,
+            textvariable=roles_var,
+            values=role_selection_values(style_type_var.get()),
+            state="readonly",
+            width=16,
+        )
+        style_role_combo.pack(side="left", padx=(6, 0))
+        style_role_combo_ref.append(style_role_combo)
         ttk.Label(marker_form, text="번호그룹").pack(side="left", padx=(8, 0))
         ttk.Combobox(
             marker_form,
@@ -5874,8 +6250,18 @@ class MvpApp(tk.Tk):
         ttk.Entry(marker_form, textvariable=numbering_level_var, width=4).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(marker_form, text="상위 개요 뒤 새 번호", variable=numbering_restart_var).pack(side="left", padx=(8, 0))
 
+        style_template_form = ttk.Frame(style_tab)
+        style_template_form.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(style_template_form, text="이 스타일 번호박스 템플릿").pack(side="left")
+        style_template_entry = ttk.Entry(style_template_form, textvariable=style_template_var, width=32)
+        style_template_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
+        style_template_entry_ref.append(style_template_entry)
+        style_template_button = ttk.Button(style_template_form, text="찾아보기", command=browse_style_template)
+        style_template_button.pack(side="left", padx=(6, 0))
+        style_template_button_ref.append(style_template_button)
+
         item_buttons = ttk.Frame(style_tab)
-        item_buttons.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        item_buttons.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(item_buttons, text="추가", command=start_new_style).pack(side="left")
         ttk.Button(item_buttons, text="삭제", command=delete_selected_style).pack(side="left", padx=(6, 0))
         ttk.Button(item_buttons, text="저장", command=save_style_form).pack(side="right")
@@ -5929,11 +6315,14 @@ class MvpApp(tk.Tk):
         style_tree.bind("<<TreeviewSelect>>", fill_form_from_selected_style)
         rule_tree.bind("<<TreeviewSelect>>", fill_form_from_selected_rule)
         notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+        style_type_var.trace_add("write", lambda *_args: update_style_role_options())
+        roles_var.trace_add("write", lambda *_args: refresh_style_template_controls())
         window.protocol("WM_DELETE_WINDOW", close_window)
         refresh_set_list()
         refresh_style_tree()
         refresh_rule_tree()
         refresh_rule_role_options()
+        refresh_title_box_template_form()
         last_set_index[0] = selected_set_index()
         last_tab[0] = notebook.select()
         clear_style_form()
@@ -6059,6 +6448,7 @@ class MvpApp(tk.Tk):
             paragraph_styles=replacement.paragraph_styles,
             character_styles=replacement.character_styles,
             inline_rules=replacement.inline_rules,
+            role_configs=replacement.role_configs,
         )
         self.style_sets = [updated if item.name == target_name else item for item in self.style_sets]
 
@@ -6083,6 +6473,7 @@ class MvpApp(tk.Tk):
                     record.name,
                     table_style=normalize_style_name(record.name).startswith(normalize_style_name("표내용-")),
                 ),
+                template_file=old.template_file if old is not None else "",
             )
             if record.style_type == "CHAR":
                 character_styles.append(entry)
@@ -6090,7 +6481,7 @@ class MvpApp(tk.Tk):
                 paragraph_styles.append(entry)
         self.replace_style_set(
             self.active_style_set_name,
-            StyleSet(self.active_style_set_name, paragraph_styles, character_styles, old_set.inline_rules),
+            StyleSet(self.active_style_set_name, paragraph_styles, character_styles, old_set.inline_rules, old_set.role_configs),
         )
 
     def ensure_hwp(self) -> bool:
@@ -6256,6 +6647,43 @@ class MvpApp(tk.Tk):
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
+
+    def insert_header_footer_object(self, header_footer_ctrl_type: int, location_type: int, label: str) -> None:
+        if not self.ensure_hwp():
+            return
+        last_exc: Exception | None = None
+        for parameter_set_name in ("HHeaderFooter", "HeaderFooter"):
+            try:
+                self.activate_hwp_window()
+                default_ok, executed = self.execute_configured_hwp_action(
+                    "HeaderFooter",
+                    parameter_set_name,
+                    {
+                        "HeaderFooterCtrlType": header_footer_ctrl_type,
+                        "Type": location_type,
+                    },
+                )
+                self.log(
+                    f"{label}: parameter_set={parameter_set_name}, "
+                    f"HeaderFooterCtrlType={header_footer_ctrl_type}, Type={location_type}, "
+                    f"GetDefault={default_ok}, result={executed}"
+                )
+                if not executed:
+                    messagebox.showwarning(
+                        label,
+                        "한글이 머리말 개체 삽입을 실패로 반환했습니다. 본문 쪽에 커서를 둔 상태인지 확인하세요.",
+                    )
+                return
+            except AttributeError as exc:
+                last_exc = exc
+                self.debug(f"[header-footer] {parameter_set_name} 없음: {exc}")
+                continue
+            except Exception as exc:
+                last_exc = exc
+                self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+                break
+        if last_exc is not None:
+            messagebox.showerror(f"{label} 실패", str(last_exc))
 
     def insert_custom_square_composed_number(self) -> None:
         raw_value = self.compose_number_var.get().strip()
@@ -8210,17 +8638,23 @@ class MvpApp(tk.Tk):
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
 
-    def current_title_number_box_numbers(self) -> list[int]:
+    def title_number_box_marker(self, entry: StyleEntry | None = None) -> str | None:
+        if entry is None:
+            return None
+        settings = self.title_number_box_settings(entry)
+        return build_title_number_box_marker(title_number_box_series_key(entry, settings))
+
+    def current_title_number_box_numbers(self, entry: StyleEntry | None = None) -> list[int]:
         if self.hwp is None:
             return []
         try:
             hwpml = safe_str(self.hwp.GetTextFile("HWPML2X", ""))
-            return title_number_box_numbers_from_hwpml(hwpml)
+            return title_number_box_numbers_from_hwpml(hwpml, self.title_number_box_marker(entry))
         except Exception as exc:
             self.debug(f"[title-number-box] 현재 문서 번호 읽기 실패: {type(exc).__name__}: {exc}")
             return []
 
-    def title_number_box_numbers_before_paragraph(self, list_id: int, para: int) -> list[int] | None:
+    def title_number_box_numbers_before_paragraph(self, list_id: int, para: int, entry: StyleEntry | None = None) -> list[int] | None:
         if self.hwp is None:
             return None
         if para <= 0:
@@ -8232,7 +8666,7 @@ class MvpApp(tk.Tk):
                 self.debug(f"[title-number-box] 앞쪽 선택 실패 list={list_id}, para={para}")
                 return None
             hwpml = safe_str(self.hwp.GetTextFile("HWPML2X", "saveblock"))
-            return title_number_box_numbers_from_hwpml(hwpml)
+            return title_number_box_numbers_from_hwpml(hwpml, self.title_number_box_marker(entry))
         except Exception as exc:
             self.debug(f"[title-number-box] 앞쪽 번호 읽기 실패 list={list_id}, para={para}: {type(exc).__name__}: {exc}")
             return None
@@ -8241,10 +8675,20 @@ class MvpApp(tk.Tk):
             if original_pos is not None:
                 self.set_hwp_pos_by_set(original_pos)
 
-    def next_title_number_box_number(self, *, list_id: int | None = None, para: int | None = None) -> tuple[int, list[int]]:
-        numbers = self.current_title_number_box_numbers()
+    def next_title_number_box_number(
+        self,
+        *,
+        list_id: int | None = None,
+        para: int | None = None,
+        entry: StyleEntry | None = None,
+    ) -> tuple[int, list[int]]:
+        numbers = self.current_title_number_box_numbers(entry) if entry is not None else self.current_title_number_box_numbers()
         if list_id is not None and para is not None:
-            previous_numbers = self.title_number_box_numbers_before_paragraph(list_id, para)
+            previous_numbers = (
+                self.title_number_box_numbers_before_paragraph(list_id, para, entry)
+                if entry is not None
+                else self.title_number_box_numbers_before_paragraph(list_id, para)
+            )
             if previous_numbers is not None:
                 if previous_numbers:
                     return previous_numbers[-1] + 1, numbers
@@ -8253,19 +8697,30 @@ class MvpApp(tk.Tk):
             return 1, []
         return max(numbers) + 1, numbers
 
-    def has_title_number_boxes_after_paragraph(self, list_id: int, para: int) -> bool:
-        all_numbers = self.current_title_number_box_numbers()
+    def has_title_number_boxes_after_paragraph(self, list_id: int, para: int, entry: StyleEntry | None = None) -> bool:
+        all_numbers = self.current_title_number_box_numbers(entry) if entry is not None else self.current_title_number_box_numbers()
         if not all_numbers:
             return False
-        previous_numbers = self.title_number_box_numbers_before_paragraph(list_id, para + 1)
+        previous_numbers = (
+            self.title_number_box_numbers_before_paragraph(list_id, para + 1, entry)
+            if entry is not None
+            else self.title_number_box_numbers_before_paragraph(list_id, para + 1)
+        )
         if previous_numbers is None:
             return bool(all_numbers)
         return len(all_numbers) > len(previous_numbers)
 
-    def title_number_box_settings(self) -> dict:
+    def title_number_box_settings(self, entry: StyleEntry | None = None) -> dict:
         table_settings = self.__dict__.get("table_settings", {})
         raw = table_settings.get("title_number_box", {}) if isinstance(table_settings, dict) else {}
         settings = merge_dict(DEFAULT_TITLE_NUMBER_BOX_SETTINGS, raw if isinstance(raw, dict) else {})
+        template_override = normalize_config_path(entry.template_file) if entry is not None else ""
+        if not template_override:
+            style_set = self.active_style_set()
+            role_config = style_set.role_configs.get("title_number_box", {}) if isinstance(style_set.role_configs, dict) else {}
+            template_override = str(role_config.get("template_file", "")).strip() if isinstance(role_config, dict) else ""
+        if template_override:
+            settings["template_file"] = template_override
         template_file = str(settings.get("template_file") or DEFAULT_TITLE_NUMBER_BOX_SETTINGS["template_file"])
         template_path = Path(template_file)
         if not template_path.is_absolute():
@@ -8431,10 +8886,11 @@ class MvpApp(tk.Tk):
 
         return self.insert_hwp_text(text)
 
-    def insert_title_number_box_file_at_cursor(self, title: str, number: int) -> bool:
-        settings = self.title_number_box_settings()
+    def insert_title_number_box_file_at_cursor(self, title: str, number: int, entry: StyleEntry | None = None) -> bool:
+        settings = self.title_number_box_settings(entry)
         template_path = settings["template_path"]
-        insert_path = create_filled_title_number_box_file(title, number, template_path)
+        marker = self.title_number_box_marker(entry) or str(settings.get("marker") or TITLE_NUMBER_BOX_MARKER)
+        insert_path = create_filled_title_number_box_file(title, number, template_path, marker=marker)
         return self.insert_file_at_cursor(insert_path, keep_section=0)
 
     def is_title_number_box_entry(self, entry: StyleEntry) -> bool:
@@ -8508,11 +8964,15 @@ class MvpApp(tk.Tk):
         list_id: int,
         para: int,
         title: str,
+        entry: StyleEntry | None = None,
+        forced_number: int | None = None,
     ) -> tuple[bool, int, list[int]]:
         title = normalize_title_box_text(title)
         if not title:
             return False, 0, []
-        next_number, existing_numbers = self.next_title_number_box_number(list_id=list_id, para=para)
+        next_number, existing_numbers = self.next_title_number_box_number(list_id=list_id, para=para, entry=entry)
+        if forced_number is not None:
+            next_number = max(1, int(forced_number))
         paragraph_text = self.read_current_paragraph_text(list_id, para)
         if paragraph_text is None:
             return False, next_number, existing_numbers
@@ -8521,7 +8981,7 @@ class MvpApp(tk.Tk):
             return False, next_number, existing_numbers
         if not self.set_hwp_pos((list_id, para, 0)):
             return False, next_number, existing_numbers
-        insert_ok = self.insert_title_number_box_file_at_cursor(title, next_number)
+        insert_ok = self.insert_title_number_box_file_at_cursor(title, next_number, entry)
         return insert_ok, next_number, existing_numbers
 
     def insert_title_number_box_template(self) -> None:
@@ -9989,19 +10449,30 @@ class MvpApp(tk.Tk):
                 if in_table:
                     self.debug(f"[title-number-box-bulk] 표 내부 문단은 번호박스 치환 건너뜀 para={para}")
                 else:
-                    consume_numbering_entry(numbering_state, entry)
+                    should_restart_numbering = consume_numbering_entry(numbering_state, entry)
                     title = paragraph_text[prefix_length:]
                     insert_ok, next_number, existing_numbers = self.replace_paragraph_with_title_number_box(
                         list_id,
                         para,
                         title,
+                        entry,
+                        1 if should_restart_numbering else None,
                     )
                     changed = insert_ok
-                    if insert_ok and warn_on_existing_title_boxes and title_box_followup_styles is not None:
+                    if insert_ok and numbering_state is not None and should_restart_numbering and entry.numbering_group:
+                        numbering_state.restarted += 1
+                        numbering_state.continued_levels[entry.numbering_group] = entry.numbering_level
+                    if (
+                        insert_ok
+                        and warn_on_existing_title_boxes
+                        and title_box_followup_styles is not None
+                        and self.has_title_number_boxes_after_paragraph(list_id, para, entry)
+                    ):
                         title_box_followup_styles.add(entry.name)
                     self.debug(
                         f"[title-number-box-bulk] para={para}, number={next_number}, "
-                        f"existing={existing_numbers}, title={normalize_title_box_text(title)!r}, result={insert_ok}"
+                        f"existing={existing_numbers}, title={normalize_title_box_text(title)!r}, "
+                        f"restart={should_restart_numbering}, result={insert_ok}"
                     )
                     return True, matched, changed, 0
 
