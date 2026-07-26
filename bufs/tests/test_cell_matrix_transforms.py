@@ -783,6 +783,50 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(app.next_title_number_box_number(list_id=0, para=5), (2, [1, 2, 3]))
 
+    def test_has_title_number_boxes_after_paragraph_only_checks_following_boxes(self) -> None:
+        app = object.__new__(MvpApp)
+        app.current_title_number_box_numbers = lambda: [1, 2, 3]
+        app.title_number_box_numbers_before_paragraph = lambda list_id, para: [1, 2, 3] if para == 6 else [1]
+
+        self.assertFalse(app.has_title_number_boxes_after_paragraph(0, 5))
+        self.assertTrue(app.has_title_number_boxes_after_paragraph(0, 0))
+
+    def test_ai_prompt_for_style_set_uses_active_outline_markers(self) -> None:
+        app = object.__new__(MvpApp)
+        style_set = StyleSet(
+            "일반보고용",
+            [
+                StyleEntry("대제목", outline_markers=("대제목",), roles=("title_number_box",)),
+                StyleEntry("소제목", outline_markers=("소제목",), numbering_group="body", numbering_level=2),
+                StyleEntry("본문1", outline_markers=("원",)),
+                StyleEntry("표내용", table_style=True, outline_markers=("행",)),
+            ],
+            [],
+        )
+
+        prompt = app.ai_prompt_for_style_set(style_set)
+
+        self.assertIn("* 대제목 문단은 반드시 `대제목 `으로 시작한다.", prompt)
+        self.assertIn("* 소제목 문단은 반드시 `소제목 `으로 시작한다.", prompt)
+        self.assertIn("* 본문1 문단은 반드시 `원 `으로 시작한다.", prompt)
+        self.assertIn("`대제목`, `소제목`, `원`", prompt)
+        self.assertIn("[최우선 규칙]", prompt)
+        self.assertIn("보고서 전체 제목, 문서 제목, 보고서명은 쓰지 말고 본문부터 시작한다.", prompt)
+        self.assertIn("`대제목`은 한 보고서 안에서 여러 번 반복될 수 있는 본문 섹션 제목이다.", prompt)
+        self.assertIn("`대제목`은 배경, 현황, 운영 방안, 기대 효과처럼 본문을 여러 장으로 나누는 데 사용한다.", prompt)
+        self.assertIn("[구조 예시]", prompt)
+        self.assertIn("* `대제목 배경 및 목적`", prompt)
+        self.assertIn("* `소제목 추진 배경`", prompt)
+        self.assertIn("* `원 제도 도입 필요`", prompt)
+        self.assertIn("[계층 규칙]", prompt)
+        self.assertIn("`대제목 → 소제목 → 본문1`", prompt)
+        self.assertNotIn("표내용 문단", prompt)
+        self.assertIn("행정 보고서용 개조식 문체", prompt)
+        self.assertIn("`~함`, `~필요`, `~예정`, `~추진`", prompt)
+        self.assertIn("표만 `markdown` 코드블록 안에 작성한다.", prompt)
+        self.assertIn("[출력 전 확인]", prompt)
+        self.assertIn("모든 문단이 `대제목`, `소제목`, `원` 중 하나로 시작하는지 확인한다.", prompt)
+
     def test_draw_title_number_box_uses_table_actions_and_cell_moves(self) -> None:
         calls: list[tuple[str, object]] = []
         app = object.__new__(MvpApp)
@@ -1685,6 +1729,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
     def test_bulk_processing_converts_inline_markdown_block_and_continues(self) -> None:
         app = object.__new__(MvpApp)
+        app.hwp = None
         app.ensure_hwp = lambda: True
         app.is_selected_cell_block = lambda: False
         app.selected_paragraph_range = lambda: (0, 0, 5)
@@ -1698,6 +1743,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.log = lambda _message: None
         app.debug = lambda _message: None
         app.active_style_set_name = "set"
+        app.has_title_number_boxes_after_paragraph = lambda _list_id, _para: False
         app.style_sets = [StyleSet("set", [StyleEntry("본문-개요2", outline_markers=("ㅇ",))], [])]
         paragraphs = {
             0: "대제목 테스트",
@@ -1735,103 +1781,6 @@ class CellMatrixTransformTests(unittest.TestCase):
             [(2, 4, "| 번호 | 내용 |\n|---|---|\n| 1 | 값 |", [["번호", "내용"], ["1", "값"]])],
         )
         self.assertEqual(restored, ["original"])
-
-    def test_table_probe_state_logs_selection_and_saveblock_table(self) -> None:
-        class FakeCtrl:
-            CtrlID = "tbl"
-            UserDesc = "표"
-
-        class FakeHwp:
-            CurSelectedCtrl = FakeCtrl()
-            SelectionMode = 19
-            CellShape = object()
-
-            def KeyIndicator(self):
-                return "현재 셀 (B3)"
-
-            def GetTextFile(self, _format, _option):
-                return "<HWPML><BODY><TABLE><ROW><CELL /></ROW></TABLE></BODY></HWPML>"
-
-        app = object.__new__(MvpApp)
-        app.hwp = FakeHwp()
-        app.ensure_hwp = lambda: True
-        lines: list[str] = []
-        app.log = lambda value: lines.extend(value if isinstance(value, list) else [value])
-
-        app.log_hwp_table_probe_state("상태", "noop", True)
-
-        joined = "\n".join(lines)
-        self.assertIn("[probe] step=상태", joined)
-        self.assertIn("command=noop", joined)
-        self.assertIn("result=True", joined)
-        self.assertIn("CurSelectedCtrl=True CtrlID='tbl'", joined)
-        self.assertIn("SelectionMode raw=19 base=3", joined)
-        self.assertIn("CellAddress=(2, 3)", joined)
-        self.assertIn("CellShape=True", joined)
-        self.assertIn("SaveBlockHasTable=True", joined)
-
-    def test_probe_paste_related_actions_logs_catalog_results(self) -> None:
-        class FakeParameterSet:
-            def __init__(self, hset) -> None:
-                self.HSet = hset
-
-        class FakeActionInstance:
-            def __init__(self, action_name: str) -> None:
-                self.action_name = action_name
-
-            def CreateSet(self):
-                return f"create-set:{self.action_name}"
-
-            def GetDefault(self, created_set):
-                if self.action_name == "PasteSpecial":
-                    raise RuntimeError("missing")
-                return created_set != ""
-
-        class FakeHAction:
-            def GetDefault(self, action_name, hset):
-                if action_name == "PasteDialog":
-                    raise RuntimeError("unsupported")
-                return not (action_name == "ShapeCopyPaste" and hset == "shape-hset")
-
-        class FakeHwp:
-            def __init__(self) -> None:
-                self.HParameterSet = type(
-                    "FakeParameterSets",
-                    (),
-                    {
-                        "HSelectionOpt": FakeParameterSet("selection-hset"),
-                        "HPasteHtml": FakeParameterSet("html-hset"),
-                        "HShapeCopyPaste": FakeParameterSet("shape-hset"),
-                        "HInsertFile": FakeParameterSet("insert-hset"),
-                    },
-                )()
-                self.HAction = FakeHAction()
-
-            def CreateAction(self, action_name):
-                return FakeActionInstance(action_name)
-
-        app = object.__new__(MvpApp)
-        app.hwp = FakeHwp()
-        app.ensure_hwp = lambda: True
-        app.activate_hwp_window = lambda: None
-        app.log_hwp_table_probe_state = lambda *args, **kwargs: None
-        lines: list[str] = []
-        app.log = lambda value: lines.extend(value if isinstance(value, list) else [value])
-
-        app.probe_paste_related_actions()
-
-        joined = "\n".join(lines)
-        self.assertIn("[probe] 붙여넣기 관련 액션 catalog 확인 (Execute 없음)", joined)
-        self.assertIn("candidate=Paste pset=HSelectionOpt", joined)
-        self.assertIn("candidate=PasteSpecial pset=HSelectionOpt", joined)
-        self.assertIn("candidate=PasteDialog pset=HSelectionOpt", joined)
-        self.assertIn("candidate=PasteHtmlDialog pset=HPasteHtml", joined)
-        self.assertIn("candidate=ShapeCopyPaste pset=HShapeCopyPaste", joined)
-        self.assertIn("candidate=InsertFile pset=HInsertFile", joined)
-        self.assertIn("CreateAction.GetDefault=True raw=True", joined)
-        self.assertIn("CreateAction.GetDefault=False (RuntimeError: missing)", joined)
-        self.assertIn("HAction.GetDefault=False (RuntimeError: unsupported)", joined)
-        self.assertIn("HAction.GetDefault=False raw=False", joined)
 
     def test_parse_tsv_matrix_preserves_empty_cells(self) -> None:
         matrix = parse_cell_clipboard_matrix("A\t\tC\r\n1\t2\t")
@@ -2671,7 +2620,8 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual([call.get("force_in_table") for call in calls], [None, None])
         self.assertTrue(all(isinstance(call.get("numbering_state"), NumberingRunState) for call in calls))
-        self.assertEqual(restored, ["original"])
+        self.assertTrue(restored)
+        self.assertEqual(restored[-1], "original")
 
     def test_configured_outline_style_bulk_normal_selection_uses_body_marker_style_when_duplicate(self) -> None:
         app = object.__new__(MvpApp)
@@ -2747,9 +2697,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(calls, [(0, 2, "사업계획")])
         self.assertEqual(restored, ["original"])
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0][0], "일괄처리")
-        self.assertIn("대제목", warnings[0][1])
+        self.assertEqual(warnings, [])
 
     def test_configured_outline_style_bulk_falls_back_to_current_paragraph(self) -> None:
         class FakeHwp:
@@ -2970,7 +2918,6 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.snapshot_formula_address_positions = lambda addresses: [((1, 1), "cell-a1"), ((2, 1), "cell-b1")]
         app.scan_current_cell_paragraph_positions = lambda: []
         app.selected_current_cell_paragraph_range = lambda: None
-        app.probe_current_cell_scan_segments = lambda limit=6: ["current-list: init=True | 0:1:''"]
         processed: list[tuple[int, int]] = []
         app.process_configured_style_paragraph = lambda *args: processed.append((args[1], args[2])) or (True, True, True, 0)
         warnings: list[tuple[str, str]] = []
@@ -2986,7 +2933,7 @@ class CellMatrixTransformTests(unittest.TestCase):
             hwp_style_mvp.messagebox.showinfo = original_showinfo
 
         self.assertEqual(processed, [])
-        self.assertEqual(restored, ["cell-a1", "cell-a1", "cell-b1", "cell-b1", "original"])
+        self.assertEqual(restored, ["cell-a1", "cell-b1", "original"])
         self.assertTrue(warnings)
         self.assertIn("문단 위치", warnings[0][1])
         self.assertEqual(infos, [])

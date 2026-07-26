@@ -287,8 +287,11 @@ class StyleSet:
 class NumberingRunState:
     seen_levels: dict[str, set[int]] = field(default_factory=dict)
     reset_levels: dict[str, set[int]] = field(default_factory=dict)
+    continued_levels: dict[str, int] = field(default_factory=dict)
     restarted: int = 0
     restart_failed: int = 0
+    continued: int = 0
+    continue_failed: int = 0
 
 
 @dataclass
@@ -3355,7 +3358,7 @@ class MvpApp(tk.Tk):
         row3.pack(fill="x", pady=(5, 0))
         ttk.Button(row3, text="위로", command=lambda: self.move_selected_style(-1)).pack(side="left")
         ttk.Button(row3, text="아래로", command=lambda: self.move_selected_style(1)).pack(side="left", padx=(8, 0))
-        ttk.Button(row3, text="기본순서", command=self.reset_style_order).pack(side="left", padx=(8, 0))
+        ttk.Button(row3, text="프롬프트", command=self.copy_ai_prompt_for_active_style_set).pack(side="left", padx=(8, 0))
         ttk.Button(row3, text="글자스타일제거", command=self.clear_selected_character_style).pack(side="left", padx=(8, 0))
 
         cleanup_frame = ttk.Frame(frame)
@@ -4947,6 +4950,140 @@ class MvpApp(tk.Tk):
             _, self.style_sets = default_style_sets()
         self.active_style_set_name = self.style_sets[0].name
         return self.style_sets[0]
+
+    def style_entries_for_ai_prompt(self, style_set: StyleSet | None = None) -> list[StyleEntry]:
+        selected_set = style_set or self.active_style_set()
+        entries: list[StyleEntry] = []
+        for entry in selected_set.paragraph_styles:
+            if entry.table_style or entry.caption_style or not entry.outline_markers:
+                continue
+            entries.append(entry)
+        return entries
+
+    def primary_outline_marker(self, entry: StyleEntry) -> str:
+        return next((marker.strip() for marker in entry.outline_markers if str(marker).strip()), "")
+
+    def ai_prompt_outline_entries(self, style_set: StyleSet | None = None) -> list[tuple[StyleEntry, str]]:
+        outline_entries: list[tuple[StyleEntry, str]] = []
+        for entry in self.style_entries_for_ai_prompt(style_set):
+            marker = self.primary_outline_marker(entry)
+            if marker:
+                outline_entries.append((entry, marker))
+        return outline_entries
+
+    def format_ai_prompt_tokens(self, values: Iterable[str]) -> str:
+        return ", ".join(f"`{value}`" for value in values)
+
+    def ai_prompt_hierarchy_rule_lines(self, entries: list[tuple[StyleEntry, str]]) -> list[str]:
+        names = [entry.name for entry, _marker in entries]
+        if not names:
+            return []
+
+        lines = [f"* 문단 계층은 반드시 `{' → '.join(names)}` 순으로만 사용한다."]
+        if len(names) == 1:
+            lines.append(f"* {names[0]}만 사용한다.")
+            return lines
+
+        lines.append("* 상위 단계를 건너뛰고 하위 단계를 직접 사용할 수 없다.")
+        for index, name in enumerate(names):
+            if index == len(names) - 1:
+                lines.append(f"* {name}은 최하위 단계이며 {name} 아래에는 다른 계층을 사용할 수 없다.")
+                continue
+
+            allowed_children = [names[index + 1]]
+            if index < 2 and index + 2 < len(names):
+                allowed_children.append(names[index + 2])
+            if len(allowed_children) == 1:
+                lines.append(f"* {name} 아래에는 반드시 {allowed_children[0]}만 올 수 있다.")
+            else:
+                lines.append(f"* {name} 아래에는 반드시 {' 또는 '.join(allowed_children)}만 올 수 있다.")
+        lines.append("* 같은 상위 계층 안에서는 하위 계층을 사용한 후 다시 상위 계층으로 돌아갈 수 있다.")
+        lines.append("* 계층 구조를 임의로 생략하거나 역순으로 작성해서는 안 된다.")
+        return lines
+
+    def ai_prompt_for_style_set(self, style_set: StyleSet | None = None) -> str:
+        selected_set = style_set or self.active_style_set()
+        outline_entries = self.ai_prompt_outline_entries(selected_set)
+        if not outline_entries:
+            raise ValueError(f"현재 스타일 세트 '{selected_set.name}'에 식별자가 설정된 문단 스타일이 없습니다.")
+
+        identifier_lines: list[str] = []
+        important_markers: list[str] = []
+        style_names: list[str] = []
+        for entry, marker in outline_entries:
+            identifier_lines.append(f"* {entry.name} 문단은 반드시 `{marker} `으로 시작한다.")
+            if marker not in important_markers:
+                important_markers.append(marker)
+            style_names.append(entry.name)
+
+        if not identifier_lines:
+            raise ValueError(f"현재 스타일 세트 '{selected_set.name}'에 사용할 수 있는 대표 식별자가 없습니다.")
+
+        marker_text = self.format_ai_prompt_tokens(important_markers)
+        first_style_name = outline_entries[0][0].name
+        hierarchy_text = " → ".join(style_names)
+        first_marker = outline_entries[0][1]
+        second_marker = outline_entries[1][1] if len(outline_entries) > 1 else outline_entries[0][1]
+        third_marker = outline_entries[2][1] if len(outline_entries) > 2 else second_marker
+        return "\n".join(
+            [
+                "[최우선 규칙]",
+                "1. 설명문, 안내문, 메모 없이 최종 본문만 출력한다.",
+                "2. 보고서 전체 제목, 문서 제목, 보고서명은 쓰지 말고 본문부터 시작한다.",
+                f"3. `{first_style_name}`은 한 보고서 안에서 여러 번 반복될 수 있는 본문 섹션 제목이다.",
+                f"4. `{first_style_name}`은 배경, 현황, 운영 방안, 기대 효과처럼 본문을 여러 장으로 나누는 데 사용한다.",
+                f"5. 한 문서에는 `{first_style_name}`이 여러 개 나올 수 있으며, 첫 `{first_style_name}`이 문서 전체 제목을 대신하지 않는다.",
+                f"6. 모든 문단은 반드시 {marker_text} 중 하나로 시작한다.",
+                "7. `가.`, `나.`, `1.`, `2.`, `①`, `-`, `•` 같은 실제 번호나 기호는 직접 쓰지 않는다.",
+                "8. 코드블록, JSON, YAML, 마크다운 제목(#)은 쓰지 않는다. 단, 표만 `markdown` 코드블록 안에 작성한다.",
+                "9. 문단은 줄바꿈으로만 구분하고 문단 앞 공백이나 들여쓰기를 넣지 않는다.",
+                "",
+                "[구조 예시]",
+                f"* `{first_marker} 배경 및 목적`",
+                f"* `{second_marker} 추진 배경`",
+                f"* `{third_marker} 제도 도입 필요`",
+                f"* `{first_marker} 운영 방안`",
+                "",
+                "[스타일 식별자 규칙]",
+                *identifier_lines,
+                "",
+                "[계층 규칙]",
+                f"* 문단 계층은 `{hierarchy_text}` 순서만 사용한다.",
+                "* 상위 단계를 건너뛰고 하위 단계를 직접 쓰지 않는다.",
+                "* 같은 상위 문단 아래에서는 하위 단계를 쓴 뒤 다시 상위 단계로 돌아갈 수 있다.",
+                "",
+                "[문체 규칙]",
+                "- 전체 문장은 행정 보고서용 개조식 문체로 작성한다.",
+                "- 각 문단은 하나의 내용만 포함하도록 짧고 간결하게 작성한다.",
+                "- 종결 표현은 `~함`, `~필요`, `~예정`, `~추진`, `~검토`, `~기대`, `~강화`, `~지원` 등 개조식 표현을 우선 사용한다.",
+                "- `~합니다`, `~했습니다`, `~이다`, `~입니다` 등의 완결형 서술문은 사용하지 않는다.",
+                "- 중복 표현과 수식어는 최소화한다.",
+                "",
+                "[표 작성 규칙]",
+                "1. 표는 반드시 Markdown pipe table 형식으로 작성한다.",
+                "2. 모든 표는 반드시 `markdown` 코드블록 안에만 넣는다.",
+                "3. 표 앞뒤 설명은 일반 문단으로 분리한다.",
+                "4. 셀 안 줄바꿈이 필요하면 `<br>`를 사용한다.",
+                "5. 병합셀과 복잡한 중첩 표는 쓰지 않는다.",
+                "",
+                "[출력 전 확인]",
+                f"* 모든 문단이 {marker_text} 중 하나로 시작하는지 확인한다.",
+                f"* 계층이 `{hierarchy_text}` 순서를 어기지 않았는지 확인한다.",
+                "* 실제 번호나 글머리기호를 쓰지 않았는지 확인한다.",
+                "* 표가 있다면 모두 `markdown` 코드블록 안에 있는지 확인한다.",
+            ]
+        )
+
+    def copy_ai_prompt_for_active_style_set(self) -> None:
+        label = "AI 프롬프트 복사"
+        try:
+            prompt_text = self.ai_prompt_for_style_set()
+            self.set_clipboard_text(prompt_text)
+            self.log(f"{label}: set={self.active_style_set().name}, chars={len(prompt_text)}")
+            messagebox.showinfo(label, "현재 스타일 세트 기준 프롬프트를 클립보드에 복사했습니다.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showwarning(label, str(exc))
 
     def set_active_style_set(self, name: str) -> None:
         if name not in {style_set.name for style_set in self.style_sets}:
@@ -8091,6 +8228,15 @@ class MvpApp(tk.Tk):
             return 1, []
         return max(numbers) + 1, numbers
 
+    def has_title_number_boxes_after_paragraph(self, list_id: int, para: int) -> bool:
+        all_numbers = self.current_title_number_box_numbers()
+        if not all_numbers:
+            return False
+        previous_numbers = self.title_number_box_numbers_before_paragraph(list_id, para + 1)
+        if previous_numbers is None:
+            return bool(all_numbers)
+        return len(all_numbers) > len(previous_numbers)
+
     def title_number_box_settings(self) -> dict:
         table_settings = self.__dict__.get("table_settings", {})
         raw = table_settings.get("title_number_box", {}) if isinstance(table_settings, dict) else {}
@@ -9568,6 +9714,24 @@ class MvpApp(tk.Tk):
             if original_pos is not None:
                 self.set_hwp_pos_by_set(original_pos)
 
+    def put_continued_para_number_at_paragraph(self, list_id: int, para: int, *, clear_heading: bool = False) -> bool:
+        original_pos = self.get_hwp_pos_by_set()
+        try:
+            self.clear_hwp_selection()
+            if not self.set_hwp_pos((list_id, para, 0)):
+                return False
+            if clear_heading and self.get_current_heading_string():
+                self.clear_current_paragraph_heading()
+            default_ok, executed = self.execute_put_para_number()
+            self.debug(f"[para-number] PutParaNumber para={para}, default={default_ok}, result={executed}")
+            return executed
+        except Exception as exc:
+            self.debug(f"[para-number] PutParaNumber 실패 para={para}: {type(exc).__name__}: {exc}")
+            return False
+        finally:
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+
     def put_new_paragraph_number_at_cursor(self) -> None:
         label = "문단 새 번호"
         if not self.ensure_hwp():
@@ -9770,6 +9934,7 @@ class MvpApp(tk.Tk):
         force_in_table: bool | None = None,
         numbering_state: NumberingRunState | None = None,
         title_box_followup_styles: set[str] | None = None,
+        warn_on_existing_title_boxes: bool = False,
     ) -> tuple[bool, bool, bool, int]:
         paragraph_text = self.read_current_paragraph_text(list_id, para)
         if paragraph_text is None:
@@ -9783,6 +9948,12 @@ class MvpApp(tk.Tk):
         if rule is not None:
             entry, prefix_length = rule
             matched = True
+            continuation_level = 0
+            if numbering_state is not None and entry.numbering_group and entry.numbering_level > 0:
+                continuation_level = numbering_state.continued_levels.get(entry.numbering_group, 0)
+                if continuation_level and entry.numbering_level < continuation_level:
+                    numbering_state.continued_levels.pop(entry.numbering_group, None)
+                    continuation_level = 0
             if self.is_title_number_box_entry(entry):
                 if in_table:
                     self.debug(f"[title-number-box-bulk] 표 내부 문단은 번호박스 치환 건너뜀 para={para}")
@@ -9795,7 +9966,7 @@ class MvpApp(tk.Tk):
                         title,
                     )
                     changed = insert_ok
-                    if insert_ok and existing_numbers and title_box_followup_styles is not None:
+                    if insert_ok and warn_on_existing_title_boxes and title_box_followup_styles is not None:
                         title_box_followup_styles.add(entry.name)
                     self.debug(
                         f"[title-number-box-bulk] para={para}, number={next_number}, "
@@ -9818,8 +9989,18 @@ class MvpApp(tk.Tk):
                     if should_restart_numbering and numbering_state is not None:
                         if self.put_new_para_number_at_paragraph(list_id, para):
                             numbering_state.restarted += 1
+                            numbering_state.continued_levels[entry.numbering_group] = entry.numbering_level
                         else:
                             numbering_state.restart_failed += 1
+                    elif (
+                        numbering_state is not None
+                        and continuation_level
+                        and continuation_level == entry.numbering_level
+                    ):
+                        if self.put_continued_para_number_at_paragraph(list_id, para, clear_heading=True):
+                            numbering_state.continued += 1
+                        else:
+                            numbering_state.continue_failed += 1
                 self.debug(
                     f"[outline-style] para={para}, marker={paragraph_text[:prefix_length]!r}, "
                     f"style={entry.name}, delete={delete_ok}, style_ok={style_ok}, "
@@ -9904,50 +10085,6 @@ class MvpApp(tk.Tk):
                 self.set_hwp_pos_by_set(original_pos)
         self.debug(f"[bulk-cell-style] scan paragraph positions={positions}")
         return positions
-
-    def probe_current_cell_scan_segments(self, limit: int = 8) -> list[str]:
-        original_pos = self.get_hwp_pos_by_set()
-        variants = [
-            ("current-para", 0, 0x0003),
-            ("current-list", 0, 0x0005),
-            ("list-list", 0, 0x0050 | 0x0005),
-            ("char-current-list", 0x0001, 0x0005),
-        ]
-        lines: list[str] = []
-        for name, option, scan_range in variants:
-            if original_pos is not None:
-                self.set_hwp_pos_by_set(original_pos)
-            init_ok = self.init_hwp_scan(option, scan_range)
-            if not init_ok:
-                lines.append(f"{name}: InitScan failed")
-                continue
-            items: list[str] = [f"{name}: init={init_ok}"]
-            try:
-                for index in range(limit):
-                    status, text = self.parse_hwp_get_text_result(self.hwp.GetText())
-                    preview = text.replace("\r", "\\r").replace("\n", "\\n")
-                    if len(preview) > 40:
-                        preview = preview[:40] + "..."
-                    try:
-                        moved = self.move_hwp_pos(201)
-                        pos = self.hwp.GetPos()
-                    except Exception as exc:
-                        moved = f"{type(exc).__name__}: {exc}"
-                        pos = None
-                    items.append(f"{index}:{status}:{preview!r}:move={moved}:pos={pos!r}")
-                    if status in (0, 1, 101, 102):
-                        break
-            except Exception as exc:
-                items.append(f"GetText failed {type(exc).__name__}: {exc}")
-            finally:
-                try:
-                    self.hwp.ReleaseScan()
-                except Exception:
-                    pass
-            lines.append(" | ".join(items))
-        if original_pos is not None:
-            self.set_hwp_pos_by_set(original_pos)
-        return lines
 
     def reselect_hwp_text(self, start: tuple[int, int, int], text: str) -> bool:
         if not text or not self.set_hwp_pos(start):
@@ -10591,442 +10728,6 @@ class MvpApp(tk.Tk):
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
 
-    def log_hwp_table_probe_state(
-        self,
-        step: str,
-        command: str | None = None,
-        result: bool | tuple | None = None,
-    ) -> None:
-        if not self.ensure_hwp():
-            return
-
-        lines = [f"[probe] step={step}"]
-        if command is not None:
-            lines.append(f"command={command}")
-        if result is not None:
-            lines.append(f"result={result}")
-
-        try:
-            ctrl = self.hwp.CurSelectedCtrl
-            ctrl_id = safe_str(getattr(ctrl, "CtrlID", ""))
-            user_desc = safe_str(getattr(ctrl, "UserDesc", ""))
-            lines.append(f"CurSelectedCtrl={ctrl is not None} CtrlID={ctrl_id!r} UserDesc={user_desc!r}")
-        except Exception as exc:
-            lines.append(f"CurSelectedCtrl 확인 실패: {type(exc).__name__}: {exc}")
-
-        try:
-            raw = int(getattr(self.hwp, "SelectionMode"))
-            lines.append(f"SelectionMode raw={raw} base={raw & 0x0F}")
-        except Exception as exc:
-            lines.append(f"SelectionMode 확인 실패: {type(exc).__name__}: {exc}")
-
-        try:
-            indicator = safe_str(self.hwp.KeyIndicator())
-            address = parse_cell_address_from_keyindicator(indicator)
-            lines.append(f"KeyIndicator={indicator!r}")
-            lines.append(f"CellAddress={address}")
-        except Exception as exc:
-            lines.append(f"KeyIndicator 확인 실패: {type(exc).__name__}: {exc}")
-
-        try:
-            getattr(self.hwp, "CellShape")
-            lines.append("CellShape=True")
-        except Exception as exc:
-            lines.append(f"CellShape=False ({type(exc).__name__}: {exc})")
-
-        try:
-            block_xml = safe_str(self.hwp.GetTextFile("HWPML2X", "saveblock"))
-            upper_xml = block_xml.upper()
-            lines.append(f"SaveBlockLen={len(block_xml)} SaveBlockHasTable={'<TABLE' in upper_xml or '<HP:TBL' in upper_xml}")
-        except Exception as exc:
-            lines.append(f"SaveBlock 확인 실패: {type(exc).__name__}: {exc}")
-
-        self.log(lines)
-
-    def probe_run_hwp_command(self, command: str, label: str) -> None:
-        if not self.ensure_hwp():
-            return
-        self.activate_hwp_window()
-        time.sleep(0.03)
-        ok = self.run_hwp_command(command)
-        time.sleep(0.05)
-        self.log_hwp_table_probe_state(label, command, ok)
-
-    def probe_select_current_table_object(self) -> None:
-        if not self.ensure_hwp():
-            return
-        ok = self.select_current_table_object()
-        self.log_hwp_table_probe_state("표개체", "SelectCtrlReverse", ok)
-
-    def probe_select_selected_table_first_cell(self) -> None:
-        if not self.ensure_hwp():
-            return
-        ok = self.select_selected_table_first_cell()
-        self.log_hwp_table_probe_state("첫셀", "ShapeObjTableSelCell", ok)
-
-    def probe_select_current_table_all_cells(self) -> None:
-        if not self.ensure_hwp():
-            return
-        ok = self.select_current_table_all_cells()
-        self.log_hwp_table_probe_state("전체셀", "select_current_table_all_cells", ok)
-
-    def probe_bulk_cell_addresses(self) -> None:
-        if not self.ensure_hwp():
-            return
-        self.log_hwp_table_probe_state("일괄-주소전")
-        cell_range = self.get_selected_cell_range_by_formula()
-        if cell_range is None:
-            self.log("[bulk-probe] 주소 확인 실패: TableFormula 주소 없음")
-            return
-        addresses = list(cell_range.get("addresses") or [])
-        self.log(
-            [
-                "[bulk-probe] 주소 확인",
-                f"command={cell_range.get('command')!r}",
-                f"addresses={addresses}",
-                f"first=({cell_range.get('first_col')}, {cell_range.get('first_row')})",
-                f"last=({cell_range.get('last_col')}, {cell_range.get('last_row')})",
-                f"size={cell_range.get('cols')}x{cell_range.get('rows')}, cells={cell_range.get('cells')}",
-            ]
-        )
-
-    def probe_bulk_cell_position_snapshot(self) -> None:
-        if not self.ensure_hwp():
-            return
-        original_pos = self.get_hwp_pos_by_set()
-        try:
-            cell_range = self.get_selected_cell_range_by_formula()
-            addresses = [] if cell_range is None else list(cell_range.get("addresses") or [])
-            if not addresses:
-                self.log("[bulk-probe] 위치 스냅샷 실패: 주소 없음")
-                return
-            address_positions = self.snapshot_formula_address_positions(addresses)
-            if address_positions is None:
-                self.log("[bulk-probe] 위치 스냅샷 실패")
-                return
-            lines = [f"[bulk-probe] 위치 스냅샷 성공: {len(address_positions)}/{len(addresses)}"]
-            for index, (address, pos) in enumerate(address_positions[:20], start=1):
-                lines.append(f"{index}. address={address}, pos={pos!r}")
-            if len(address_positions) > 20:
-                lines.append(f"... {len(address_positions) - 20}개 생략")
-            self.log(lines)
-        finally:
-            if original_pos is not None:
-                self.set_hwp_pos_by_set(original_pos)
-
-    def probe_bulk_cell_position_restore(self) -> None:
-        if not self.ensure_hwp():
-            return
-        original_pos = self.get_hwp_pos_by_set()
-        try:
-            cell_range = self.get_selected_cell_range_by_formula()
-            addresses = [] if cell_range is None else list(cell_range.get("addresses") or [])
-            if not addresses:
-                self.log("[bulk-probe] 복원 검증 실패: 주소 없음")
-                return
-            address_positions = self.snapshot_formula_address_positions(addresses)
-            if address_positions is None:
-                self.log("[bulk-probe] 복원 검증 실패: 위치 스냅샷 실패")
-                return
-            lines = [f"[bulk-probe] 복원 검증 시작: {len(address_positions)}개"]
-            for index, (expected_address, pos) in enumerate(address_positions, start=1):
-                restore_ok = self.set_hwp_pos_by_set(pos)
-                actual_address = self.get_current_cell_address() if restore_ok else None
-                lines.append(
-                    f"{index}. expected={expected_address}, restore={restore_ok}, actual={actual_address}, match={actual_address == expected_address}"
-                )
-            self.log(lines)
-        finally:
-            if original_pos is not None:
-                self.set_hwp_pos_by_set(original_pos)
-
-    def probe_current_cell_scan(self) -> None:
-        if not self.ensure_hwp():
-            return
-        self.log_hwp_table_probe_state("현재셀-스캔전")
-        positions = self.scan_current_cell_paragraph_positions()
-        lines = [f"[bulk-probe] 현재 셀 scan_current_cell_paragraph_positions={positions}"]
-        if not positions:
-            paragraph_range = self.selected_current_cell_paragraph_range()
-            lines.append(f"selected_current_cell_paragraph_range={paragraph_range}")
-        self.log(lines)
-        for line in self.probe_current_cell_scan_segments(limit=8):
-            self.log(f"[bulk-probe] {line}")
-        self.log_hwp_table_probe_state("현재셀-스캔후")
-
-    def probe_bulk_cell_iteration_pipeline(self) -> None:
-        if not self.ensure_hwp():
-            return
-        original_pos = self.get_hwp_pos_by_set()
-        try:
-            cell_range = self.get_selected_cell_range_by_formula()
-            addresses = [] if cell_range is None else list(cell_range.get("addresses") or [])
-            if not addresses:
-                self.log("[bulk-probe] 순회 전체 실패: 주소 없음")
-                return
-            address_positions = self.snapshot_formula_address_positions(addresses)
-            if address_positions is None:
-                self.log("[bulk-probe] 순회 전체 실패: 위치 스냅샷 실패")
-                return
-
-            lines = [f"[bulk-probe] 순회 전체 시작: addresses={len(addresses)}, positions={len(address_positions)}"]
-            for index, (expected_address, pos) in enumerate(address_positions, start=1):
-                restore_ok = self.set_hwp_pos_by_set(pos)
-                actual_address = self.get_current_cell_address() if restore_ok else None
-                paragraph_positions = self.scan_current_cell_paragraph_positions() if restore_ok else []
-                selected_range = None
-                if restore_ok and not paragraph_positions:
-                    selected_range = self.selected_current_cell_paragraph_range()
-                lines.append(
-                    f"{index}. expected={expected_address}, actual={actual_address}, "
-                    f"restore={restore_ok}, scan={paragraph_positions}, fallback_range={selected_range}"
-                )
-            self.log(lines)
-        finally:
-            if original_pos is not None:
-                self.set_hwp_pos_by_set(original_pos)
-
-    def probe_select_table_all_cells_variant(
-        self,
-        label: str,
-        *,
-        horizontal_first: bool,
-        extend_command: str = "TableCellBlockExtend",
-    ) -> None:
-        if not self.ensure_hwp():
-            return
-        try:
-            ok, steps = self.select_current_table_all_cells_by_variant(
-                horizontal_first=horizontal_first,
-                extend_command=extend_command,
-            )
-            for step in steps:
-                self.log(f"[probe] {label} 단계: {step}")
-        except Exception as exc:
-            ok = False
-            self.log(f"[probe] {label} 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state(label, f"variant({extend_command})", ok)
-
-    def probe_select_table_all_cells_row_col(self) -> None:
-        if not self.ensure_hwp():
-            return
-        steps: list[str] = []
-        try:
-            if not self.has_selected_object():
-                steps.append(f"SelectCtrlReverse={self.select_current_table_object()}")
-            steps.append(f"ShapeObjTableSelCell={self.select_selected_table_first_cell()}")
-            block = self.run_hwp_command("TableCellBlock")
-            ready = bool(block or self.is_selected_cell_block())
-            steps.append(f"TableCellBlock={block}, ready={ready}")
-            row = ready and self.run_hwp_command("TableCellBlockRow")
-            steps.append(f"TableCellBlockRow={row}")
-            col = bool(row) and self.run_hwp_command("TableCellBlockCol")
-            steps.append(f"TableCellBlockCol={col}")
-            extend = bool(col) and self.run_hwp_command("TableCellBlockExtend")
-            steps.append(f"TableCellBlockExtend={extend}")
-            ok = bool(extend)
-            for step in steps:
-                self.log(f"[probe] 행열 단계: {step}")
-        except Exception as exc:
-            ok = False
-            self.log(f"[probe] 행열 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("행열", "TableCellBlockRow+Col+Extend", ok)
-
-    def probe_select_all_from_table_cell(self) -> None:
-        if not self.ensure_hwp():
-            return
-        steps: list[str] = []
-        try:
-            if not self.has_selected_object():
-                steps.append(f"SelectCtrlReverse={self.select_current_table_object()}")
-            steps.append(f"ShapeObjTableSelCell={self.select_selected_table_first_cell()}")
-            select_all = self.run_hwp_command("SelectAll")
-            steps.append(f"SelectAll={select_all}")
-            ok = bool(select_all)
-            for step in steps:
-                self.log(f"[probe] 전체All 단계: {step}")
-        except Exception as exc:
-            ok = False
-            self.log(f"[probe] 전체All 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("전체All", "SelectAll", ok)
-
-    def probe_apply_default_table_border(self) -> None:
-        if not self.ensure_hwp():
-            return
-        try:
-            result = self.set_table_border_preset("thin_top_bottom")
-        except Exception as exc:
-            result = ("예외", False)
-            self.log(f"[probe] 기본선 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("기본선", "set_table_border_preset(thin_top_bottom)", result)
-
-    def probe_select_current_table_first_row(self) -> None:
-        if not self.ensure_hwp():
-            return
-        try:
-            ok, steps = self.select_current_table_first_row()
-            for step in steps:
-                self.log(f"[probe] 첫줄 단계: {step}")
-        except Exception as exc:
-            ok = False
-            self.log(f"[probe] 첫줄 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("첫줄", "select_current_table_first_row", ok)
-
-    def probe_set_title_header(self) -> None:
-        if not self.ensure_hwp():
-            return
-        try:
-            result = self.set_selected_cells_as_header()
-        except Exception as exc:
-            result = ("예외", False, False)
-            self.log(f"[probe] 제목속성 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("제목속성", "set_selected_cells_as_header", result)
-
-    def probe_apply_title_paragraph_style(self) -> None:
-        if not self.ensure_hwp():
-            return
-        style_name = self.table_settings["title_cell"].get("paragraph_style", "")
-        try:
-            ok = bool(style_name) and self.apply_style_by_name(style_name)
-        except Exception as exc:
-            ok = False
-            self.log(f"[probe] 제목문단 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("제목문단", f"apply_style_by_name({style_name})", ok)
-
-    def probe_apply_title_character_style(self) -> None:
-        if not self.ensure_hwp():
-            return
-        style_name = self.table_settings["title_cell"].get("character_style", "")
-        if not style_name or style_name == "(적용 안 함)":
-            self.log_hwp_table_probe_state("제목글자", "character_style skipped", True)
-            return
-        try:
-            ok = self.apply_style_by_name(style_name)
-        except Exception as exc:
-            ok = False
-            self.log(f"[probe] 제목글자 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("제목글자", f"apply_style_by_name({style_name})", ok)
-
-    def probe_apply_title_borders(self) -> None:
-        if not self.ensure_hwp():
-            return
-        try:
-            result = self.set_title_cell_borders()
-        except Exception as exc:
-            result = ("예외", False)
-            self.log(f"[probe] 제목테두리 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("제목테두리", "set_title_cell_borders", result)
-
-    def probe_apply_title_background(self) -> None:
-        if not self.ensure_hwp():
-            return
-        color_name = self.table_settings["title_cell"].get("background_color", "")
-        try:
-            result = self.set_cell_fill_color(self.palette_color(color_name))
-        except Exception as exc:
-            result = ("예외", False, False)
-            self.log(f"[probe] 제목배경 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("제목배경", f"set_cell_fill_color({color_name})", result)
-
-    def probe_apply_title_text_color(self) -> None:
-        if not self.ensure_hwp():
-            return
-        color_name = self.table_settings["title_cell"].get("text_color", "")
-        try:
-            result = self.set_text_color(self.palette_color(color_name))
-        except Exception as exc:
-            result = (False, False)
-            self.log(f"[probe] 제목색 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("제목색", f"set_text_color({color_name})", result)
-
-    def probe_apply_table_cell_margins(self) -> None:
-        if not self.ensure_hwp():
-            return
-        try:
-            result = self.set_table_cell_margins()
-        except Exception as exc:
-            result = ("예외", False)
-            self.log(f"[probe] 셀여백만 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("셀여백만", "set_table_cell_margins", result)
-
-    def probe_apply_thin_top_bottom_border(self) -> None:
-        if not self.ensure_hwp():
-            return
-        try:
-            result = self.set_table_border_preset("thin_top_bottom")
-        except Exception as exc:
-            result = ("예외", False)
-            self.log(f"[probe] 얇은상하만 실패: {type(exc).__name__}: {exc}")
-        self.log_hwp_table_probe_state("얇은상하만", "set_table_border_preset(thin_top_bottom)", result)
-
-    def probe_paste_related_actions(self) -> None:
-        if not self.ensure_hwp():
-            return
-        self.activate_hwp_window()
-        time.sleep(0.03)
-        candidates = (
-            ("Paste", "HSelectionOpt"),
-            ("PasteSpecial", "HSelectionOpt"),
-            ("PasteDialog", "HSelectionOpt"),
-            ("PasteHtmlDialog", "HPasteHtml"),
-            ("ShapeCopyPaste", "HShapeCopyPaste"),
-            ("InsertFile", "HInsertFile"),
-        )
-        self.log_hwp_table_probe_state("붙여넣기액션-전")
-        lines = ["[probe] 붙여넣기 관련 액션 catalog 확인 (Execute 없음)"]
-        for action_name, parameter_name in candidates:
-            details = [f"candidate={action_name} pset={parameter_name}"]
-            hset = None
-            try:
-                parameter_sets = getattr(self.hwp, "HParameterSet")
-                parameter_set = getattr(parameter_sets, parameter_name)
-                hset = getattr(parameter_set, "HSet", parameter_set)
-                details.append("pset=True")
-            except Exception as exc:
-                details.append(f"pset=False ({type(exc).__name__}: {exc})")
-            try:
-                action = self.hwp.CreateAction(action_name)
-                created_set = action.CreateSet()
-                create_result = action.GetDefault(created_set)
-                create_ok = create_result is not False and create_result != 0
-                details.append(f"CreateAction.GetDefault={create_ok} raw={create_result!r}")
-            except Exception as exc:
-                details.append(f"CreateAction.GetDefault=False ({type(exc).__name__}: {exc})")
-            if hset is not None:
-                try:
-                    default_result = self.hwp.HAction.GetDefault(action_name, hset)
-                    default_ok = default_result is not False and default_result != 0
-                    details.append(f"HAction.GetDefault={default_ok} raw={default_result!r}")
-                except Exception as exc:
-                    details.append(f"HAction.GetDefault=False ({type(exc).__name__}: {exc})")
-            lines.append("[probe] " + " | ".join(details))
-        self.log(lines)
-
-    def probe_markdown_table_paste_only(self) -> None:
-        label = "Markdown 표 붙여넣기 probe"
-        if not self.ensure_hwp():
-            return
-        try:
-            copy_ok = self.run_hwp_command("Copy")
-            time.sleep(0.08)
-            text = self.get_clipboard_text()
-            if not copy_ok or not text:
-                messagebox.showwarning(label, "변환할 markdown 표 텍스트를 먼저 선택하세요.")
-                self.log_hwp_table_probe_state("MD붙여넣기만-선택없음", "Copy", copy_ok)
-                return
-            rows = parse_markdown_table(text)
-            if rows is None:
-                messagebox.showwarning(label, "markdown 표를 찾지 못했습니다.")
-                self.log_hwp_table_probe_state("MD붙여넣기만-인식실패", "parse_markdown_table", False)
-                return
-            self.set_clipboard_html_table(markdown_rows_to_html_table(rows), rows_to_tsv(rows))
-            paste_ok = self.paste_html_original_format()
-            self.log(f"[probe] {label}: rows={len(rows)}, cols={len(rows[0])}, Paste={paste_ok}")
-            self.log_hwp_table_probe_state("MD붙여넣기만", "paste_html_original_format", paste_ok)
-        except Exception as exc:
-            self.log(f"[probe] {label} 실패: {type(exc).__name__}: {exc}")
-            messagebox.showerror(f"{label} 실패", str(exc))
-
     def convert_selected_markdown_table(self) -> None:
         self.draw_selected_markdown_table(label="Markdown 표 → 한글 표")
 
@@ -11377,6 +11078,7 @@ class MvpApp(tk.Tk):
             list_id, first_para, last_para = paragraph_range
             original_pos = self.get_hwp_pos_by_set()
             self.clear_hwp_selection()
+            warn_on_existing_title_boxes = self.has_title_number_boxes_after_paragraph(list_id, last_para)
             visited = 0
             matched = 0
             changed = 0
@@ -11425,6 +11127,7 @@ class MvpApp(tk.Tk):
                     missing_roles,
                     numbering_state=numbering_state,
                     title_box_followup_styles=title_box_followup_styles,
+                    warn_on_existing_title_boxes=warn_on_existing_title_boxes,
                 )
                 if not processed:
                     continue
@@ -11502,10 +11205,10 @@ class MvpApp(tk.Tk):
         cells_visited = 0
         cells_restore_failed = 0
         cells_range_failed = 0
-        scan_probe_logged = 0
         missing_styles: set[str] = set()
         missing_roles: set[str] = set()
         numbering_state = NumberingRunState()
+        warn_on_existing_title_boxes = bool(self.current_title_number_box_numbers())
 
         for address, cell_pos in address_positions:
             if not self.set_hwp_pos_by_set(cell_pos):
@@ -11521,12 +11224,6 @@ class MvpApp(tk.Tk):
             if not paragraph_positions:
                 cells_range_failed += 1
                 self.debug(f"[bulk-cell-style] 셀 문단 범위 확인 실패: address={address}")
-                if scan_probe_logged < 3:
-                    if self.set_hwp_pos_by_set(cell_pos):
-                        self.log(f"{label}: 셀 스캔 진단 address={address}")
-                        for line in self.probe_current_cell_scan_segments(limit=6):
-                            self.log(f"[bulk-cell-style] {line}")
-                    scan_probe_logged += 1
                 continue
             cells_visited += 1
             for list_id, para in paragraph_positions:
@@ -11540,6 +11237,7 @@ class MvpApp(tk.Tk):
                     missing_roles,
                     force_in_table=True,
                     numbering_state=numbering_state,
+                    warn_on_existing_title_boxes=warn_on_existing_title_boxes,
                 )
                 if not processed:
                     continue
