@@ -1,4 +1,7 @@
-document.addEventListener("DOMContentLoaded", () => {
+(() => {
+  let initialized = false;
+
+  const initAccordion = () => {
   const sidebar = document.querySelector(".md-sidebar--primary");
   if (!sidebar) {
     return;
@@ -49,12 +52,38 @@ document.addEventListener("DOMContentLoaded", () => {
 
     setExpanded(section, section === activeSection);
 
-    label.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const shouldExpand = !toggle.checked;
-      closeOthers(section);
-      setExpanded(section, shouldExpand);
-    });
+    if (!section.dataset.accordionBound) {
+      label.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const shouldExpand = !toggle.checked;
+        closeOthers(section);
+        setExpanded(section, shouldExpand);
+      });
+      section.dataset.accordionBound = "true";
+    }
   }
-});
+
+    if (!activeSection) {
+      closeOthers(null);
+    }
+
+    initialized = true;
+  };
+
+  const runAccordion = () => {
+    initAccordion();
+    window.requestAnimationFrame(initAccordion);
+    window.setTimeout(initAccordion, 0);
+    window.setTimeout(initAccordion, 150);
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", runAccordion, { once: true });
+  } else {
+    runAccordion();
+  }
+
+  window.addEventListener("load", runAccordion);
+  window.addEventListener("pageshow", runAccordion);
+})();

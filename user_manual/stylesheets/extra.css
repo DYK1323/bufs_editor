@@ -17,14 +17,14 @@
 
 .md-sidebar--primary .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link {
   font-weight: 700 !important;
-  font-size: 0.95rem;
+  font-size: 0.75rem;
   padding-top: 0.4rem;
   padding-bottom: 0.4rem;
 }
 
 .md-sidebar--primary .md-nav--primary .md-nav .md-nav__link {
   font-weight: 400 !important;
-  font-size: 0.86rem;
+  font-size: 0.60rem;
   color: var(--md-default-fg-color);
 }
 
