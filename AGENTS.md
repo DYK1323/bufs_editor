@@ -93,6 +93,7 @@ bufs\.venv\Scripts\python.exe bufs\hwp_style_mvp.py --smoke
 
 ## 작업 지침
 
+- 모든 작업은 UTF-8을 기준으로 한다. 특히 Powershell 커맨드 결과물에서 UTF-8이 적용되지 않아 인코딩이 깨진 것을 파일 자체의 인코딩이 깨진 것으로 오인하지 않는다.
 - `hwp_style_mvp.py`는 UTF-8로 유지한다. 한글 UI 문자열, HWPX placeholder, 스타일명은 의미 있는 데이터이므로 임의로 영문화하거나 치환하지 않는다.
 - GUI 이벤트 핸들러나 COM 호출부를 직접 바꾸기 전에, 가능하면 순수 유틸 함수와 테스트를 먼저 추가/수정한다.
 - HWP COM 호출은 기존 래퍼를 우선 재사용한다: `run_hwp_command`, `execute_first_hwp_action`, `set_com_attr`, `set_hset_item`, `set_parameter_item`.

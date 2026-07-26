@@ -2663,6 +2663,33 @@ def parse_markdown_table(text: str) -> list[list[str]] | None:
     return rows if len(rows) >= 2 else None
 
 
+def find_markdown_table_block(paragraphs: list[str], start_index: int = 0) -> tuple[int, int, list[list[str]]] | None:
+    if start_index < 0 or start_index >= len(paragraphs):
+        return None
+    candidate_lines: list[str] = []
+    best_match: tuple[int, int, list[list[str]]] | None = None
+    for index in range(start_index, len(paragraphs)):
+        stripped = paragraphs[index].strip()
+        if not stripped or not stripped.startswith("|"):
+            break
+        candidate_lines.append(stripped)
+        rows = parse_markdown_table("\n".join(candidate_lines))
+        if rows is not None:
+            best_match = (start_index, index, rows)
+    return best_match
+
+
+def normalize_markdown_table_cell_text(text: str) -> str:
+    normalized = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    normalized = normalized.replace(r"\n", "\n")
+    return normalized.replace("\n", "\r\n")
+
+
+def markdown_table_cell_html(text: str) -> str:
+    parts = normalize_markdown_table_cell_text(text).replace("\r\n", "\n").split("\n")
+    return "<br/>".join(escape(part) for part in parts)
+
+
 def markdown_rows_to_html_table(rows: list[list[str]]) -> str:
     header, body = rows[0], rows[1:]
     parts = [
@@ -2670,11 +2697,11 @@ def markdown_rows_to_html_table(rows: list[list[str]]) -> str:
         'style="border-collapse:collapse;">',
         "<thead><tr>",
     ]
-    parts.extend(f"<th>{escape(cell)}</th>" for cell in header)
+    parts.extend(f"<th>{markdown_table_cell_html(cell)}</th>" for cell in header)
     parts.append("</tr></thead><tbody>")
     for row in body:
         parts.append("<tr>")
-        parts.extend(f"<td>{escape(cell)}</td>" for cell in row)
+        parts.extend(f"<td>{markdown_table_cell_html(cell)}</td>" for cell in row)
         parts.append("</tr>")
     parts.append("</tbody></table>")
     return "".join(parts)
@@ -3916,9 +3943,6 @@ class MvpApp(tk.Tk):
         bottom_frame = ttk.Frame(frame)
         bottom_frame.pack(side="bottom", fill="x")
         ttk.Button(bottom_frame, text="markdown 표 → 한글 표", command=self.convert_selected_markdown_table).pack(
-            fill="x", pady=(0, 6), ipady=8
-        )
-        ttk.Button(bottom_frame, text="붙여넣기 액션 probe", command=self.probe_paste_related_actions).pack(
             fill="x", pady=(0, 6), ipady=8
         )
         ttk.Button(bottom_frame, text="표 설정", command=self.open_table_settings_window).pack(fill="x", ipady=8)
@@ -8024,15 +8048,45 @@ class MvpApp(tk.Tk):
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
 
-    def next_title_number_box_number(self) -> tuple[int, list[int]]:
-        numbers: list[int] = []
+    def current_title_number_box_numbers(self) -> list[int]:
         if self.hwp is None:
-            return 1, numbers
+            return []
         try:
             hwpml = safe_str(self.hwp.GetTextFile("HWPML2X", ""))
-            numbers = title_number_box_numbers_from_hwpml(hwpml)
+            return title_number_box_numbers_from_hwpml(hwpml)
         except Exception as exc:
             self.debug(f"[title-number-box] 현재 문서 번호 읽기 실패: {type(exc).__name__}: {exc}")
+            return []
+
+    def title_number_box_numbers_before_paragraph(self, list_id: int, para: int) -> list[int] | None:
+        if self.hwp is None:
+            return None
+        if para <= 0:
+            return []
+        original_pos = self.get_hwp_pos_by_set()
+        try:
+            self.clear_hwp_selection()
+            if not self.select_hwp_text_block(list_id, 0, 0, para, 0):
+                self.debug(f"[title-number-box] 앞쪽 선택 실패 list={list_id}, para={para}")
+                return None
+            hwpml = safe_str(self.hwp.GetTextFile("HWPML2X", "saveblock"))
+            return title_number_box_numbers_from_hwpml(hwpml)
+        except Exception as exc:
+            self.debug(f"[title-number-box] 앞쪽 번호 읽기 실패 list={list_id}, para={para}: {type(exc).__name__}: {exc}")
+            return None
+        finally:
+            self.clear_hwp_selection()
+            if original_pos is not None:
+                self.set_hwp_pos_by_set(original_pos)
+
+    def next_title_number_box_number(self, *, list_id: int | None = None, para: int | None = None) -> tuple[int, list[int]]:
+        numbers = self.current_title_number_box_numbers()
+        if list_id is not None and para is not None:
+            previous_numbers = self.title_number_box_numbers_before_paragraph(list_id, para)
+            if previous_numbers is not None:
+                if previous_numbers:
+                    return previous_numbers[-1] + 1, numbers
+                return 1, numbers
         if not numbers:
             return 1, []
         return max(numbers) + 1, numbers
@@ -8287,7 +8341,7 @@ class MvpApp(tk.Tk):
         title = normalize_title_box_text(title)
         if not title:
             return False, 0, []
-        next_number, existing_numbers = self.next_title_number_box_number()
+        next_number, existing_numbers = self.next_title_number_box_number(list_id=list_id, para=para)
         paragraph_text = self.read_current_paragraph_text(list_id, para)
         if paragraph_text is None:
             return False, next_number, existing_numbers
@@ -9715,6 +9769,7 @@ class MvpApp(tk.Tk):
         missing_roles: set[str],
         force_in_table: bool | None = None,
         numbering_state: NumberingRunState | None = None,
+        title_box_followup_styles: set[str] | None = None,
     ) -> tuple[bool, bool, bool, int]:
         paragraph_text = self.read_current_paragraph_text(list_id, para)
         if paragraph_text is None:
@@ -9740,6 +9795,8 @@ class MvpApp(tk.Tk):
                         title,
                     )
                     changed = insert_ok
+                    if insert_ok and existing_numbers and title_box_followup_styles is not None:
+                        title_box_followup_styles.add(entry.name)
                     self.debug(
                         f"[title-number-box-bulk] para={para}, number={next_number}, "
                         f"existing={existing_numbers}, title={normalize_title_box_text(title)!r}, result={insert_ok}"
@@ -10971,51 +11028,181 @@ class MvpApp(tk.Tk):
             messagebox.showerror(f"{label} 실패", str(exc))
 
     def convert_selected_markdown_table(self) -> None:
-        label = "Markdown 표 → 한글 표"
-        if not self.ensure_hwp():
-            return
-        try:
-            copy_ok = self.run_hwp_command("Copy")
-            time.sleep(0.08)
-            text = self.get_clipboard_text()
-            if not copy_ok or not text:
+        self.draw_selected_markdown_table(label="Markdown 표 → 한글 표")
+
+    def read_selected_markdown_table(self, label: str, *, warn_if_missing: bool = True) -> tuple[str, list[list[str]]] | None:
+        selected_positions = self.get_selected_text_positions()
+        copy_ok = self.run_hwp_command("Copy")
+        time.sleep(0.08)
+        text = self.get_clipboard_text()
+        if selected_positions is None or not copy_ok or not text:
+            if warn_if_missing:
                 messagebox.showwarning(label, "변환할 markdown 표 텍스트를 먼저 선택하세요.")
                 self.log(f"{label}: 선택 텍스트 없음")
-                return
-            rows = parse_markdown_table(text)
-            if rows is None:
+            return None
+        rows = parse_markdown_table(text)
+        if rows is None:
+            if warn_if_missing:
                 messagebox.showwarning(
                     label,
                     "markdown 표를 찾지 못했습니다.\n\n"
                     "예: | 항목 | 값 | 형식과 그 아래 |---|---| 구분선까지 함께 선택하세요.",
                 )
                 self.log(f"{label}: markdown 표 인식 실패")
-                return
-            html_table = markdown_rows_to_html_table(rows)
-            fallback = rows_to_tsv(rows)
-            self.set_clipboard_html_table(html_table, fallback)
-            paste_ok = self.paste_html_original_format()
-            if paste_ok:
+            return None
+        return text, rows
+
+    def draw_selected_markdown_table(self, *, label: str = "Markdown 표 → 표 그리기", warn_if_missing: bool = True) -> str:
+        if not self.ensure_hwp():
+            return "failed"
+        try:
+            payload = self.read_selected_markdown_table(label, warn_if_missing=warn_if_missing)
+            if payload is None:
+                return "not_markdown"
+            text, rows = payload
+            delete_ok = self.run_hwp_command("Delete")
+            if not delete_ok:
+                if warn_if_missing:
+                    messagebox.showwarning(label, "선택한 markdown 표 텍스트를 삭제하지 못했습니다. 선택 영역을 다시 확인하세요.")
+                self.log(f"{label}: 선택 영역 삭제 실패")
+                return "failed"
+            action_name, table_ok = self.create_table_at_cursor(len(rows), len(rows[0]))
+            if not table_ok:
+                self.set_clipboard_text(text)
+                restore_ok = self.run_hwp_command("Paste")
+                if warn_if_missing:
+                    messagebox.showwarning(
+                        label,
+                        "표 만들기 명령이 실패했습니다.\n\n"
+                        f"원문 복구: {restore_ok}",
+                    )
+                self.log(f"{label}: 표 생성 실패, action={action_name}, restored={restore_ok}")
+                return "failed"
+            fill_ok = self.fill_current_table_with_rows(rows)
+            if fill_ok:
                 format_results = self.apply_markdown_table_post_formatting(label, len(rows), len(rows[0]))
                 self.activate_hwp_window()
             else:
                 format_results = []
             self.log(
                 f"{label}: rows={len(rows)}, cols={len(rows[0])}, "
-                f"Paste={paste_ok}, PasteHtmlFormat=0, post_format={format_results}"
+                f"action={action_name}, fill={fill_ok}, post_format={format_results}"
             )
-            if not paste_ok:
-                messagebox.showwarning(label, "HTML 표를 클립보드에 넣었지만 한글 붙여넣기가 실패했습니다.")
+            if not fill_ok:
+                if warn_if_missing:
+                    messagebox.showwarning(
+                        label,
+                        "표 틀은 만들었지만 셀 채우기에 실패했습니다.\n\n"
+                        "한글에서 Ctrl+Z로 되돌린 뒤 다시 시도하세요.",
+                    )
+                return "failed"
             elif format_results and not all(ok for _name, ok in format_results):
                 failed = ", ".join(name for name, ok in format_results if not ok)
-                messagebox.showwarning(
-                    label,
-                    "표는 만들었지만 일부 후처리 적용에 실패했습니다.\n\n"
-                    f"실패 항목: {failed}",
-                )
+                if warn_if_missing:
+                    messagebox.showwarning(
+                        label,
+                        "표는 만들었지만 일부 후처리 적용에 실패했습니다.\n\n"
+                        f"실패 항목: {failed}",
+                    )
+            return "converted"
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
-            messagebox.showerror(f"{label} 실패", str(exc))
+            if warn_if_missing:
+                messagebox.showerror(f"{label} 실패", str(exc))
+            return "failed"
+
+    def read_markdown_table_block(
+        self,
+        list_id: int,
+        start_para: int,
+        last_para: int,
+    ) -> tuple[int, str, list[list[str]]] | None:
+        paragraphs: list[str] = []
+        para_numbers: list[int] = []
+        for para in range(start_para, last_para + 1):
+            paragraph_text = self.read_current_paragraph_text(list_id, para)
+            if paragraph_text is None:
+                break
+            stripped = paragraph_text.strip()
+            if not paragraphs and (not stripped or not stripped.startswith("|")):
+                return None
+            paragraphs.append(paragraph_text)
+            para_numbers.append(para)
+            if not stripped or not stripped.startswith("|"):
+                break
+        block = find_markdown_table_block(paragraphs)
+        if block is None:
+            return None
+        _start_index, end_index, rows = block
+        block_text = "\n".join(paragraphs[: end_index + 1])
+        return para_numbers[end_index], block_text, rows
+
+    def select_hwp_text_block(
+        self,
+        list_id: int,
+        start_para: int,
+        start_pos: int,
+        end_para: int,
+        end_pos: int,
+    ) -> bool:
+        if end_para == start_para:
+            return self.select_hwp_text_range(list_id, start_para, start_pos, end_pos)
+        self.clear_hwp_selection()
+        actual_start, _ = self.actual_hwp_text_range(list_id, start_para, start_pos, start_pos)
+        _actual_end_start, actual_end = self.actual_hwp_text_range(list_id, end_para, end_pos, end_pos)
+        try:
+            if not self.set_hwp_pos((list_id, start_para, actual_start)):
+                return False
+            if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(start_para, actual_start, end_para, actual_end):
+                return True
+        except Exception as exc:
+            self.debug(
+                f"[markdown-table-block] SelectText 실패 start={start_para}:{actual_start}, "
+                f"end={end_para}:{actual_end}, error={type(exc).__name__}: {exc}"
+            )
+        return False
+
+    def replace_markdown_table_block(
+        self,
+        label: str,
+        list_id: int,
+        start_para: int,
+        end_para: int,
+        source_text: str,
+        rows: list[list[str]],
+    ) -> str:
+        end_text = self.read_current_paragraph_text(list_id, end_para)
+        if end_text is None:
+            self.log(f"{label}: markdown 표 끝 문단 읽기 실패 para={end_para}")
+            return "failed"
+        if not self.select_hwp_text_block(list_id, start_para, 0, end_para, len(end_text)):
+            self.log(f"{label}: markdown 표 블록 선택 실패 paras={start_para}-{end_para}")
+            return "failed"
+        if not self.run_hwp_command("Delete"):
+            self.log(f"{label}: markdown 표 블록 삭제 실패 paras={start_para}-{end_para}")
+            return "failed"
+        action_name, table_ok = self.create_table_at_cursor(len(rows), len(rows[0]))
+        if not table_ok:
+            self.set_clipboard_text(source_text)
+            restore_ok = self.run_hwp_command("Paste")
+            self.log(
+                f"{label}: markdown 표 생성 실패 paras={start_para}-{end_para}, "
+                f"action={action_name}, restored={restore_ok}"
+            )
+            return "failed"
+        fill_ok = self.fill_current_table_with_rows(rows)
+        format_results = self.apply_markdown_table_post_formatting(label, len(rows), len(rows[0])) if fill_ok else []
+        self.activate_hwp_window()
+        self.log(
+            f"{label}: markdown 표 블록 변환 paras={start_para}-{end_para}, "
+            f"rows={len(rows)}, cols={len(rows[0])}, action={action_name}, "
+            f"fill={fill_ok}, post_format={format_results}"
+        )
+        if not fill_ok:
+            return "failed"
+        if format_results and not all(ok for _name, ok in format_results):
+            return "partial"
+        return "converted"
 
     def apply_markdown_table_post_formatting(
         self,
@@ -11026,8 +11213,8 @@ class MvpApp(tk.Tk):
         results: list[tuple[str, bool]] = []
 
         cells_selected = self.select_current_table_all_cells(row_count, col_count)
+        markdown_style_name = self.table_settings.get("markdown_table", {}).get("paragraph_style", "(적용 안 함)")
         if cells_selected:
-            markdown_style_name = self.table_settings.get("markdown_table", {}).get("paragraph_style", "(적용 안 함)")
             if markdown_style_name and markdown_style_name != "(적용 안 함)":
                 style_ok = self.apply_style_by_name(markdown_style_name)
             else:
@@ -11036,7 +11223,6 @@ class MvpApp(tk.Tk):
             table_style_preset = self.table_settings.get("markdown_table", {}).get("table_style_preset", "thin_top_bottom")
             table_style_results, table_style_ok, _table_style_warning = self.apply_table_style_preset_steps(table_style_preset)
         else:
-            markdown_style_name = self.table_settings.get("markdown_table", {}).get("paragraph_style", "(적용 안 함)")
             style_ok = False if markdown_style_name and markdown_style_name != "(적용 안 함)" else True
             cell_margin_action, cell_margin_ok = "셀선택", False
             table_style_preset = self.table_settings.get("markdown_table", {}).get("table_style_preset", "thin_top_bottom")
@@ -11063,6 +11249,32 @@ class MvpApp(tk.Tk):
             f"outside={outside_action}:{outside_ok}, width={width_action}:{width_ok}"
         )
         return results
+
+    def fill_current_table_with_rows(self, rows: list[list[str]]) -> bool:
+        if not rows or not rows[0]:
+            return False
+        col_count = len(rows[0])
+        entered_first_cell = self.is_in_table_cell()
+        if not entered_first_cell:
+            entered_first_cell = self.select_current_table_object() and self.select_selected_table_first_cell()
+            if entered_first_cell:
+                self.clear_hwp_selection()
+        if not entered_first_cell:
+            return False
+
+        for row_index, row in enumerate(rows):
+            if row_index > 0:
+                if not self.move_table_cell("TableLowerCell"):
+                    return False
+                if col_count > 1 and not self.move_table_cell("TableLeftCell", col_count - 1):
+                    return False
+            for col_index, cell_text in enumerate(row):
+                if col_index > 0 and not self.move_table_cell("TableRightCell"):
+                    return False
+                self.clear_hwp_selection()
+                if not self.insert_hwp_text(normalize_markdown_table_cell_text(cell_text)):
+                    return False
+        return True
 
     def clean_selected_line_breaks(self) -> None:
         self.transform_selected_text(
@@ -11169,13 +11381,41 @@ class MvpApp(tk.Tk):
             matched = 0
             changed = 0
             inline_applied = 0
+            markdown_converted = 0
             missing_styles: set[str] = set()
             missing_roles: set[str] = set()
+            title_box_followup_styles: set[str] = set()
             numbering_state = NumberingRunState()
 
-            for para in range(first_para, last_para + 1):
+            para = first_para
+            while para <= last_para:
                 self.clear_hwp_selection()
                 visited += 1
+                markdown_block = self.read_markdown_table_block(list_id, para, last_para)
+                if markdown_block is not None:
+                    markdown_end_para, markdown_text, markdown_rows = markdown_block
+                    markdown_result = self.replace_markdown_table_block(
+                        label,
+                        list_id,
+                        para,
+                        markdown_end_para,
+                        markdown_text,
+                        markdown_rows,
+                    )
+                    consumed_paragraphs = markdown_end_para - para + 1
+                    if markdown_result in {"converted", "partial"}:
+                        markdown_converted += 1
+                        changed += 1
+                        last_para -= max(0, consumed_paragraphs - 1)
+                        para += 1
+                        continue
+                    self.log(
+                        f"{label}: markdown 표 변환 건너뜀 paras={para}-{markdown_end_para}, "
+                        f"result={markdown_result}"
+                    )
+                    para = markdown_end_para + 1
+                    continue
+
                 processed, para_matched, para_changed, para_inline_applied = self.process_configured_style_paragraph(
                     label,
                     list_id,
@@ -11184,6 +11424,7 @@ class MvpApp(tk.Tk):
                     missing_styles,
                     missing_roles,
                     numbering_state=numbering_state,
+                    title_box_followup_styles=title_box_followup_styles,
                 )
                 if not processed:
                     continue
@@ -11192,6 +11433,7 @@ class MvpApp(tk.Tk):
                 if para_changed:
                     changed += 1
                 inline_applied += para_inline_applied
+                para += 1
 
             if original_pos is not None:
                 self.set_hwp_pos_by_set(original_pos)
@@ -11200,18 +11442,26 @@ class MvpApp(tk.Tk):
                 f"{label}: 문단 순회 완료, set={active_set.name}, "
                 f"outline_rules={rule_count}, inline_rules={inline_rule_count}, "
                 f"visited={visited}, matched={matched}, changed={changed}, inline_applied={inline_applied}, "
+                f"title_box_followup_styles={sorted(title_box_followup_styles)}, "
+                f"markdown_converted={markdown_converted}, "
                 f"numbering_restarted={numbering_state.restarted}, "
                 f"numbering_restart_failed={numbering_state.restart_failed}"
             )
-            if missing_styles or missing_roles:
+            if missing_styles or missing_roles or title_box_followup_styles:
                 parts = []
                 if missing_styles:
                     parts.append("현재 문서에 같은 이름의 문단 스타일이 없어 건너뜀:\n" + "\n".join(sorted(missing_styles)))
                 if missing_roles:
                     parts.append("현재 세트/문서에서 글자 역할을 찾지 못해 건너뜀:\n" + "\n".join(sorted(missing_roles)))
+                if title_box_followup_styles:
+                    style_names = ", ".join(sorted(title_box_followup_styles))
+                    parts.append(
+                        f"기존 {style_names} 항목이 있는 문서에 새 {style_names} 항목을 넣었습니다.\n"
+                        f"문서 중간에 삽입한 경우 뒤쪽 {style_names} 번호를 확인하고 필요하면 수정하세요."
+                    )
                 messagebox.showwarning(
                     label,
-                    "일부 규칙을 건너뛰었습니다.\n\n"
+                    ("일부 규칙을 건너뛰었습니다.\n\n" if (missing_styles or missing_roles) else "")
                     + "\n\n".join(parts)
                     + self.current_doc_style_reconnect_hint(),
                 )

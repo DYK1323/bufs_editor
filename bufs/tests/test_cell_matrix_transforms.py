@@ -50,6 +50,8 @@ from hwp_style_mvp import (  # noqa: E402
     scale_decimal_numbers_for_unit_conversion,
     split_table_caption_parts,
     merge_dict,
+    markdown_rows_to_html_table,
+    find_markdown_table_block,
     DEFAULT_TABLE_SETTINGS,
     SuspiciousDecimalNumberError,
     UnsafeUnitConversionNumberError,
@@ -774,6 +776,13 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(app.next_title_number_box_number(), (6, [2, 5]))
         self.assertTrue(is_standard_regulation_wrapper("｢규정명｣"))
 
+    def test_next_title_number_box_number_uses_previous_title_when_context_is_given(self) -> None:
+        app = object.__new__(MvpApp)
+        app.current_title_number_box_numbers = lambda: [1, 2, 3]
+        app.title_number_box_numbers_before_paragraph = lambda list_id, para: [1]
+
+        self.assertEqual(app.next_title_number_box_number(list_id=0, para=5), (2, [1, 2, 3]))
+
     def test_draw_title_number_box_uses_table_actions_and_cell_moves(self) -> None:
         calls: list[tuple[str, object]] = []
         app = object.__new__(MvpApp)
@@ -880,7 +889,7 @@ class CellMatrixTransformTests(unittest.TestCase):
     def test_replace_paragraph_with_title_number_box_inserts_template_file(self) -> None:
         calls: list[tuple[str, object]] = []
         app = object.__new__(MvpApp)
-        app.next_title_number_box_number = lambda: (4, [1, 3])
+        app.next_title_number_box_number = lambda **kwargs: calls.append(("number", kwargs)) or (4, [1, 3])
         app.read_current_paragraph_text = lambda list_id, para: "대제목 테스트"
         app.delete_hwp_text_range = lambda list_id, para, start, end: calls.append(("delete", (list_id, para, start, end))) or True
         app.set_hwp_pos = lambda pos: calls.append(("pos", pos)) or True
@@ -892,6 +901,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
+                ("number", {"list_id": 2, "para": 5}),
                 ("delete", (2, 5, 0, len("대제목 테스트"))),
                 ("pos", (2, 5, 0)),
                 ("insert_file", ("대제목 테스트", 4)),
@@ -1577,15 +1587,89 @@ class CellMatrixTransformTests(unittest.TestCase):
             ],
         )
 
-    def test_convert_markdown_table_applies_post_formatting_after_html_paste(self) -> None:
+    def test_fill_current_table_with_rows_moves_row_by_row(self) -> None:
+        app = object.__new__(MvpApp)
+        moves: list[tuple[str, int]] = []
+        inserted: list[str] = []
+        app.is_in_table_cell = lambda: True
+        app.select_current_table_object = lambda: self.fail("table object selection should not run")
+        app.select_selected_table_first_cell = lambda: self.fail("first-cell selection should not run")
+        app.clear_hwp_selection = lambda: True
+        app.move_table_cell = lambda command, count=1: moves.append((command, count)) or True
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
+
+        ok = app.fill_current_table_with_rows([["A", "B"], ["1", "2"]])
+
+        self.assertTrue(ok)
+        self.assertEqual(inserted, ["A", "B", "1", "2"])
+        self.assertEqual(
+            moves,
+            [
+                ("TableRightCell", 1),
+                ("TableLowerCell", 1),
+                ("TableLeftCell", 1),
+                ("TableRightCell", 1),
+            ],
+        )
+
+    def test_fill_current_table_with_rows_converts_newline_tokens(self) -> None:
+        app = object.__new__(MvpApp)
+        inserted: list[str] = []
+        app.is_in_table_cell = lambda: True
+        app.select_current_table_object = lambda: True
+        app.select_selected_table_first_cell = lambda: True
+        app.clear_hwp_selection = lambda: True
+        app.move_table_cell = lambda _command, count=1: True
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
+
+        ok = app.fill_current_table_with_rows([["첫줄<br>둘째줄", r"가\n나"]])
+
+        self.assertTrue(ok)
+        self.assertEqual(inserted, ["첫줄\r\n둘째줄", "가\r\n나"])
+
+    def test_markdown_rows_to_html_table_converts_newline_tokens_to_br(self) -> None:
+        html = markdown_rows_to_html_table([["항목", "내용"], ["A", "첫줄<br>둘째줄"], ["B", r"가\n나"]])
+
+        self.assertIn("<td>첫줄<br/>둘째줄</td>", html)
+        self.assertIn("<td>가<br/>나</td>", html)
+
+    def test_find_markdown_table_block_returns_longest_contiguous_block(self) -> None:
+        block = find_markdown_table_block(
+            [
+                "| 번호 | 내용 |",
+                "|---|---|",
+                "| 1 | 첫 줄 |",
+                "| 2 | 둘째 줄 |",
+                "다음 문단",
+            ]
+        )
+
+        self.assertEqual(block, (0, 3, [["번호", "내용"], ["1", "첫 줄"], ["2", "둘째 줄"]]))
+
+    def test_convert_markdown_table_delegates_to_draw_path(self) -> None:
+        app = object.__new__(MvpApp)
+        calls: list[tuple[str, bool]] = []
+        app.draw_selected_markdown_table = (
+            lambda *, label="Markdown 표 → 표 그리기", warn_if_missing=True: calls.append((label, warn_if_missing)) or "converted"
+        )
+
+        app.convert_selected_markdown_table()
+
+        self.assertEqual(calls, [("Markdown 표 → 한글 표", True)])
+
+    def test_draw_selected_markdown_table_creates_table_after_delete(self) -> None:
         app = object.__new__(MvpApp)
         app.ensure_hwp = lambda: True
-        app.run_hwp_command = lambda command: command == "Copy"
+        commands: list[str] = []
+        app.get_selected_text_positions = lambda: ((0, 2, 0), (0, 4, 0))
+        app.run_hwp_command = lambda command: commands.append(command) or command in {"Copy", "Delete"}
         app.get_clipboard_text = lambda: "| A | B |\n|---|---|\n| 1 | 2 |"
-        app.set_clipboard_html_table = lambda _html, _fallback: None
-        app.paste_html_original_format = lambda: True
         app.activate_hwp_window = lambda: None
         app.log = lambda _message: None
+        app.debug = lambda _message: None
+        app.set_clipboard_text = lambda _text: self.fail("restore should not run")
+        app.create_table_at_cursor = lambda rows, cols: ("TableCreate", rows == 2 and cols == 2)
+        app.fill_current_table_with_rows = lambda rows: rows == [["A", "B"], ["1", "2"]]
         formatted: list[str] = []
         app.apply_markdown_table_post_formatting = lambda label, rows, cols: formatted.append((label, rows, cols)) or [
             ("셀여백", True),
@@ -1594,9 +1678,63 @@ class CellMatrixTransformTests(unittest.TestCase):
             ("너비맞추기", True),
         ]
 
-        app.convert_selected_markdown_table()
+        app.draw_selected_markdown_table()
 
-        self.assertEqual(formatted, [("Markdown 표 → 한글 표", 2, 2)])
+        self.assertEqual(commands, ["Copy", "Delete"])
+        self.assertEqual(formatted, [("Markdown 표 → 표 그리기", 2, 2)])
+
+    def test_bulk_processing_converts_inline_markdown_block_and_continues(self) -> None:
+        app = object.__new__(MvpApp)
+        app.ensure_hwp = lambda: True
+        app.is_selected_cell_block = lambda: False
+        app.selected_paragraph_range = lambda: (0, 0, 5)
+        app.current_paragraph_range = lambda: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.get_hwp_pos_by_set = lambda: "original"
+        restored: list[object] = []
+        app.set_hwp_pos_by_set = restored.append
+        app.clear_hwp_selection = lambda: True
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.debug = lambda _message: None
+        app.active_style_set_name = "set"
+        app.style_sets = [StyleSet("set", [StyleEntry("본문-개요2", outline_markers=("ㅇ",))], [])]
+        paragraphs = {
+            0: "대제목 테스트",
+            1: "소제목 테스트",
+            2: "| 번호 | 내용 |",
+            3: "|---|---|",
+            4: "| 1 | 값 |",
+            5: "ㅇ 마지막 문단",
+        }
+        app.read_current_paragraph_text = lambda _list_id, para: paragraphs.get(para)
+        replaced: list[tuple[int, int, str, list[list[str]]]] = []
+
+        def replace_markdown_table_block(label, list_id, start_para, end_para, source_text, rows):
+            replaced.append((start_para, end_para, source_text, rows))
+            paragraphs[2] = "[TABLE]"
+            paragraphs[3] = "ㅇ 마지막 문단"
+            paragraphs.pop(4, None)
+            paragraphs.pop(5, None)
+            return "converted"
+
+        app.replace_markdown_table_block = replace_markdown_table_block
+        processed: list[int] = []
+
+        def fake_process(_label, _list_id, para, _active_set, _missing_styles, _missing_roles, **_kwargs):
+            processed.append(para)
+            return True, para == 3, para == 3, 0
+
+        app.process_configured_style_paragraph = fake_process
+
+        app.apply_configured_outline_styles_to_selection()
+
+        self.assertEqual(processed, [0, 1, 3])
+        self.assertEqual(
+            replaced,
+            [(2, 4, "| 번호 | 내용 |\n|---|---|\n| 1 | 값 |", [["번호", "내용"], ["1", "값"]])],
+        )
+        self.assertEqual(restored, ["original"])
 
     def test_table_probe_state_logs_selection_and_saveblock_table(self) -> None:
         class FakeCtrl:
@@ -2598,11 +2736,20 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.replace_paragraph_with_title_number_box = lambda list_id, para, title: calls.append((list_id, para, title)) or (True, 3, [1, 2])
         app.find_current_doc_style_record = lambda name: self.fail("title_number_box role should not use paragraph style lookup")
         app.apply_inline_rules_to_paragraph = lambda *_args, **_kwargs: self.fail("title_number_box replacement should stop before inline rules")
-
-        app.apply_configured_outline_styles_to_selection()
+        app.current_doc_style_reconnect_hint = lambda: ""
+        warnings: list[tuple[str, str]] = []
+        original_showwarning = hwp_style_mvp.messagebox.showwarning
+        hwp_style_mvp.messagebox.showwarning = lambda title, message: warnings.append((title, message))
+        try:
+            app.apply_configured_outline_styles_to_selection()
+        finally:
+            hwp_style_mvp.messagebox.showwarning = original_showwarning
 
         self.assertEqual(calls, [(0, 2, "사업계획")])
         self.assertEqual(restored, ["original"])
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0][0], "일괄처리")
+        self.assertIn("대제목", warnings[0][1])
 
     def test_configured_outline_style_bulk_falls_back_to_current_paragraph(self) -> None:
         class FakeHwp:
