@@ -7,16 +7,25 @@ bufs/.venv/
 __pycache__/
 **/__pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Generated test documents
-bufs/test-output/*.hwpx
-bufs/test-output/logo-thumbs/*.png
+# Editor / OS local files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Generated test documents / previews
+bufs/test-output/
 
 # Build artifacts
 build/
 dist/
 site/
-*.spec
 
 # Local/reference-only Hancom API materials
 HancomDev/
