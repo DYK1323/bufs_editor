@@ -39,8 +39,10 @@ from hwp_style_mvp import (  # noqa: E402
     parse_update_info,
     create_filled_title_number_box_file,
     create_title_number_box_hwpml,
+    resolve_config_path,
     migrate_title_number_box_roles,
     normalize_title_box_text,
+    sync_builtin_templates,
     style_entry_has_role,
     title_number_box_numbers_from_hwpml,
     remove_manual_outline_prefixes,
@@ -97,6 +99,50 @@ from hwp_style_mvp import (  # noqa: E402
 
 
 class CellMatrixTransformTests(unittest.TestCase):
+    def test_sync_builtin_templates_overwrites_builtin_and_preserves_custom(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            bundled = root / "bundled"
+            builtin = root / "config" / "templates" / "builtin"
+            custom = root / "config" / "templates" / "custom"
+            bundled.mkdir()
+            builtin.mkdir(parents=True)
+            custom.mkdir(parents=True)
+            (bundled / "base.hwpx").write_text("new builtin", encoding="utf-8")
+            (builtin / "base.hwpx").write_text("old builtin", encoding="utf-8")
+            (custom / "base.hwpx").write_text("custom file", encoding="utf-8")
+
+            sync_builtin_templates(bundled, builtin, custom)
+
+            self.assertEqual((builtin / "base.hwpx").read_text(encoding="utf-8"), "new builtin")
+            self.assertEqual((custom / "base.hwpx").read_text(encoding="utf-8"), "custom file")
+
+    def test_sync_builtin_templates_adds_new_nested_builtin_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            bundled = root / "bundled"
+            builtin = root / "config" / "templates" / "builtin"
+            custom = root / "config" / "templates" / "custom"
+            (bundled / "nested").mkdir(parents=True)
+            (bundled / "nested" / "new.hwpx").write_text("new", encoding="utf-8")
+
+            sync_builtin_templates(bundled, builtin, custom)
+
+            self.assertEqual((builtin / "nested" / "new.hwpx").read_text(encoding="utf-8"), "new")
+            self.assertTrue(custom.exists())
+
+    def test_resolve_config_path_maps_legacy_templates_path_to_builtin(self) -> None:
+        self.assertEqual(
+            resolve_config_path("templates/legacy.hwpx"),
+            hwp_style_mvp.BUILTIN_TEMPLATE_DIR / "legacy.hwpx",
+        )
+
+    def test_resolve_config_path_keeps_custom_templates_path_in_user_config(self) -> None:
+        self.assertEqual(
+            resolve_config_path("templates/custom/my.hwpx"),
+            hwp_style_mvp.CONFIG_ROOT / "templates" / "custom" / "my.hwpx",
+        )
+
     def test_today_ymd_text_uses_unpadded_year_month_day(self) -> None:
         self.assertEqual(today_ymd_text(hwp_style_mvp.datetime(2026, 7, 2)), "2026. 7. 2.")
 
@@ -1033,8 +1079,8 @@ class CellMatrixTransformTests(unittest.TestCase):
         calls: list[tuple[str, object]] = []
         original = hwp_style_mvp.create_filled_title_number_box_file
 
-        def fake_create(title: str, number: int, template):
-            calls.append(("create_file", (title, number, template)))
+        def fake_create(title: str, number: int, template, **kwargs):
+            calls.append(("create_file", (title, number, template, kwargs)))
             return Path("C:/temp/title-box.hwpx")
 
         try:
@@ -1050,7 +1096,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("create_file", ("대제목 테스트", 4, Path("C:/templates/title.hwpx"))),
+                ("create_file", ("대제목 테스트", 4, Path("C:/templates/title.hwpx"), {"marker": hwp_style_mvp.TITLE_NUMBER_BOX_MARKER})),
                 ("insert_file", (Path("C:/temp/title-box.hwpx"), 0)),
             ],
         )
@@ -1095,7 +1141,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         )
 
         self.assertEqual(settings["template_file"], "templates/custom.hwpx")
-        self.assertEqual(settings["template_path"], hwp_style_mvp.ROOT / "templates/custom.hwpx")
+        self.assertEqual(settings["template_path"], hwp_style_mvp.BUILTIN_TEMPLATE_DIR / "custom.hwpx")
 
     def test_find_outline_style_rule_prefers_longer_marker(self) -> None:
         style_set = StyleSet(

@@ -67,6 +67,36 @@ if Path.cwd().resolve() != ROOT:
     # Python 3.11 가상환경의 pywin32 로딩과 충돌할 수 있다.
     os.chdir(ROOT)
 
+CONFIG_ROOT = user_config_root()
+BUNDLED_TEMPLATE_DIR = ROOT / "templates"
+USER_TEMPLATE_ROOT = CONFIG_ROOT / "templates"
+BUILTIN_TEMPLATE_DIR = USER_TEMPLATE_ROOT / "builtin"
+CUSTOM_TEMPLATE_DIR = USER_TEMPLATE_ROOT / "custom"
+
+
+def sync_builtin_templates(
+    bundled_dir: Path = BUNDLED_TEMPLATE_DIR,
+    builtin_dir: Path = BUILTIN_TEMPLATE_DIR,
+    custom_dir: Path = CUSTOM_TEMPLATE_DIR,
+) -> None:
+    try:
+        builtin_dir.mkdir(parents=True, exist_ok=True)
+        custom_dir.mkdir(parents=True, exist_ok=True)
+        if not bundled_dir.exists():
+            return
+        for source in bundled_dir.rglob("*"):
+            if not source.is_file():
+                continue
+            relative = source.relative_to(bundled_dir)
+            target = builtin_dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    except Exception:
+        pass
+
+
+sync_builtin_templates()
+
 try:
     import tkinter as tk
     import tkinter.font as tkfont
@@ -89,7 +119,7 @@ except Exception:
 
 
 INSTALL_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
-TEMPLATE_DIR = ROOT / "templates"
+TEMPLATE_DIR = BUILTIN_TEMPLATE_DIR
 STYLE_FILE = TEMPLATE_DIR / "보고서 본문 서식.hwpx"
 COVER_FILE = TEMPLATE_DIR / "표지.hwpx"
 GENERAL_REPORT_TEMPLATE_FILE = TEMPLATE_DIR / "일반보고_양식.hwpx"
@@ -97,7 +127,6 @@ TITLE_NUMBER_BOX_TEMPLATE_FILE = TEMPLATE_DIR / "대제목_번호박스.hwpx"
 PROOF_TEMPLATE_FILE = TEMPLATE_DIR / "증빙_양식.hwpx"
 LOGO_DIR = ROOT / "logos"
 TEST_OUTPUT_DIR = ROOT / "test-output"
-CONFIG_ROOT = user_config_root()
 BUNDLED_STYLE_ORDER_FILE = ROOT / "style-order.json"
 BUNDLED_STYLE_SETS_FILE = ROOT / "style-sets.json"
 BUNDLED_TABLE_SETTINGS_FILE = ROOT / "table-settings.json"
@@ -141,7 +170,7 @@ DEFAULT_TITLE_NUMBER_BOX_SETTINGS = {
     "enabled": True,
     "role": "title_number_box",
     "marker": TITLE_NUMBER_BOX_MARKER,
-    "template_file": "templates/대제목_번호박스.hwpx",
+    "template_file": "templates/builtin/대제목_번호박스.hwpx",
     "placeholder_title": TITLE_NUMBER_BOX_TITLE_PLACEHOLDER,
     "placeholder_number": TITLE_NUMBER_BOX_NUMBER_PLACEHOLDER,
     "outside_margin": {
@@ -787,10 +816,39 @@ def normalize_config_path(value: object) -> str:
     path = Path(text)
     try:
         if path.is_absolute():
+            return str(path.relative_to(CONFIG_ROOT)).replace("\\", "/")
+    except ValueError:
+        pass
+    try:
+        if path.is_absolute():
             return str(path.relative_to(ROOT)).replace("\\", "/")
     except ValueError:
         return str(path)
     return str(path).replace("\\", "/")
+
+
+def resolve_config_path(value: object, base: Path = ROOT) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        return base
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    parts = path.parts
+    if parts and parts[0] == "templates":
+        if len(parts) >= 2 and parts[1] in ("builtin", "custom"):
+            return CONFIG_ROOT / path
+        return BUILTIN_TEMPLATE_DIR.joinpath(*parts[1:])
+    return base / path
+
+
+def display_path(path: Path) -> str:
+    for base in (CONFIG_ROOT, ROOT):
+        try:
+            return str(path.relative_to(base))
+        except ValueError:
+            continue
+    return str(path)
 
 
 def normalize_role_configs(item: object) -> dict[str, dict[str, object]]:
@@ -5129,9 +5187,10 @@ class MvpApp(tk.Tk):
         self.log(f"스타일 세트 파일: {STYLE_SETS_FILE.exists()} / {STYLE_SETS_FILE}")
         self.log(f"특수문자 설정 파일: {SPECIAL_CHARS_FILE.exists()} / {SPECIAL_CHARS_FILE}")
         self.log(f"기본 스타일 세트 파일: {BUNDLED_STYLE_SETS_FILE.exists()} / {BUNDLED_STYLE_SETS_FILE.name}")
-        self.log(f"표지 파일: {COVER_FILE.exists()} / {COVER_FILE.relative_to(ROOT)}")
-        self.log(f"보고양식 파일: {GENERAL_REPORT_TEMPLATE_FILE.exists()} / {GENERAL_REPORT_TEMPLATE_FILE.relative_to(ROOT)}")
-        self.log(f"대제목 번호박스 파일: {TITLE_NUMBER_BOX_TEMPLATE_FILE.exists()} / {TITLE_NUMBER_BOX_TEMPLATE_FILE.relative_to(ROOT)}")
+        self.log(f"템플릿 폴더: 기본={BUILTIN_TEMPLATE_DIR}, 사용자={CUSTOM_TEMPLATE_DIR}")
+        self.log(f"표지 파일: {COVER_FILE.exists()} / {display_path(COVER_FILE)}")
+        self.log(f"보고양식 파일: {GENERAL_REPORT_TEMPLATE_FILE.exists()} / {display_path(GENERAL_REPORT_TEMPLATE_FILE)}")
+        self.log(f"대제목 번호박스 파일: {TITLE_NUMBER_BOX_TEMPLATE_FILE.exists()} / {display_path(TITLE_NUMBER_BOX_TEMPLATE_FILE)}")
 
         self.active_style_set_name, self.style_sets = load_style_sets()
         self.ensure_title_number_box_role_configs()
@@ -5696,9 +5755,7 @@ class MvpApp(tk.Tk):
 
         def browse_title_box_template() -> None:
             current = title_box_template_var.get().strip()
-            initial_path = Path(current) if current else TITLE_NUMBER_BOX_TEMPLATE_FILE
-            if not initial_path.is_absolute():
-                initial_path = ROOT / initial_path
+            initial_path = resolve_config_path(current) if current else TITLE_NUMBER_BOX_TEMPLATE_FILE
             raw_path = filedialog.askopenfilename(
                 parent=window,
                 title="대제목 번호박스 템플릿 선택",
@@ -5716,9 +5773,7 @@ class MvpApp(tk.Tk):
 
         def browse_style_template() -> None:
             current = style_template_var.get().strip() or title_box_template_var.get().strip()
-            initial_path = Path(current) if current else TITLE_NUMBER_BOX_TEMPLATE_FILE
-            if not initial_path.is_absolute():
-                initial_path = ROOT / initial_path
+            initial_path = resolve_config_path(current) if current else TITLE_NUMBER_BOX_TEMPLATE_FILE
             raw_path = filedialog.askopenfilename(
                 parent=window,
                 title="이 스타일의 대제목 번호박스 템플릿 선택",
@@ -8722,10 +8777,7 @@ class MvpApp(tk.Tk):
         if template_override:
             settings["template_file"] = template_override
         template_file = str(settings.get("template_file") or DEFAULT_TITLE_NUMBER_BOX_SETTINGS["template_file"])
-        template_path = Path(template_file)
-        if not template_path.is_absolute():
-            template_path = ROOT / template_path
-        settings["template_path"] = template_path
+        settings["template_path"] = resolve_config_path(template_file)
         return settings
 
     def title_number_box_cell_specs(self) -> list[dict]:
