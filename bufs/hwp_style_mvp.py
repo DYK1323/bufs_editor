@@ -3170,8 +3170,12 @@ class MvpApp(tk.Tk):
         ttk.Button(row3, text="프롬프트", command=self.copy_ai_prompt_for_active_style_set).pack(side="left", padx=(8, 0))
         ttk.Button(row3, text="글자스타일제거", command=self.clear_selected_character_style).pack(side="left", padx=(8, 0))
 
+        paragraph_tab_frame = ttk.Frame(frame)
+        paragraph_tab_frame.grid(row=1, column=0, sticky="ew")
+        self.build_paragraph_tab_controls(paragraph_tab_frame)
+
         cleanup_frame = ttk.Frame(frame)
-        cleanup_frame.grid(row=1, column=0, sticky="ew")
+        cleanup_frame.grid(row=2, column=0, sticky="ew")
         self.build_cleanup_controls(cleanup_frame)
 
     def _build_table_tab(self) -> None:
@@ -4342,6 +4346,22 @@ class MvpApp(tk.Tk):
         buttons.pack(fill="x", pady=(14, 0))
         ttk.Button(buttons, text="저장", command=save_and_close).pack(side="left")
         ttk.Button(buttons, text="취소", command=window.destroy).pack(side="left", padx=(8, 0))
+
+    def build_paragraph_tab_controls(self, parent: ttk.Frame) -> None:
+        tab_group = ttk.LabelFrame(parent, text="문단 탭", padding=8)
+        tab_group.pack(fill="x", pady=(8, 0))
+        tab_group.grid_columnconfigure(0, weight=1, uniform="paragraph-tab")
+        tab_group.grid_columnconfigure(1, weight=1, uniform="paragraph-tab")
+        ttk.Button(
+            tab_group,
+            text="오른쪽 자동탭",
+            command=self.apply_auto_right_paragraph_tab,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6), ipady=8)
+        ttk.Button(
+            tab_group,
+            text="점선 오른쪽탭",
+            command=self.apply_dotted_right_paragraph_tab,
+        ).grid(row=0, column=1, sticky="ew", ipady=8)
 
     def build_cleanup_controls(self, parent: ttk.Frame) -> None:
         cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=8)
@@ -9778,6 +9798,136 @@ class MvpApp(tk.Tk):
         except Exception as exc:
             self.debug(f"[paragraph-heading] 제거 실패: {type(exc).__name__}: {exc}")
             return False
+
+    def read_int_parameter_item(self, target, item: str, default: int = 0) -> int:
+        value = self.get_parameter_item_value(target, item)
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    def current_paragraph_horizontal_margins(self, pset) -> int:
+        left = self.read_int_parameter_item(pset, "LeftMargin")
+        right = self.read_int_parameter_item(pset, "RightMargin")
+        return max(0, left) + max(0, right)
+
+    def current_cell_horizontal_margins(self) -> tuple[int, str]:
+        candidates: list[tuple[str, object]] = []
+        try:
+            cell_shape = self.hwp.CellShape
+            cell = self.get_parameter_child(cell_shape, "Cell", "paragraph-tab-cellshape")
+            if cell is not None:
+                candidates.append(("CellShape.Cell", cell))
+            candidates.append(("CellShape", cell_shape))
+        except Exception as exc:
+            self.debug(f"[paragraph-tab] CellShape 여백 읽기 실패: {type(exc).__name__}: {exc}")
+
+        try:
+            pset = self.hwp.HParameterSet.HShapeObject
+            default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", pset.HSet))
+            shape_cell = self.get_parameter_child(pset, "ShapeTableCell", "paragraph-tab-table-dialog")
+            if shape_cell is not None:
+                candidates.append((f"TablePropertyDialog.ShapeTableCell(default={default_ok})", shape_cell))
+        except Exception as exc:
+            self.debug(f"[paragraph-tab] TablePropertyDialog 여백 읽기 실패: {type(exc).__name__}: {exc}")
+
+        for source, candidate in candidates:
+            left = self.read_int_parameter_item(candidate, "MarginLeft")
+            right = self.read_int_parameter_item(candidate, "MarginRight")
+            if left or right:
+                return max(0, left) + max(0, right), source
+            default_left = self.read_int_parameter_item(candidate, "CellMarginLeft")
+            default_right = self.read_int_parameter_item(candidate, "CellMarginRight")
+            if default_left or default_right:
+                return max(0, default_left) + max(0, default_right), source
+        return 0, "none"
+
+    def current_cell_inner_text_width(self) -> tuple[int, str] | None:
+        if self.get_current_cell_address() is None:
+            return None
+        cell_size = self.read_current_table_cell_size("paragraph-tab")
+        if cell_size is None:
+            return None
+        width, _height, width_source = cell_size
+        margins, margin_source = self.current_cell_horizontal_margins()
+        return max(0, width - margins), f"셀({width_source}, margin={margin_source})"
+
+    def current_paragraph_tab_width(self, pset) -> tuple[int, str]:
+        paragraph_margins = self.current_paragraph_horizontal_margins(pset)
+        cell_width = self.current_cell_inner_text_width()
+        if cell_width is not None:
+            width, source = cell_width
+            tab_width = width - paragraph_margins
+            if tab_width > 0:
+                return tab_width, f"{source}, para_margin={paragraph_margins}"
+        page_width = self.current_page_text_width()
+        return max(1, page_width - paragraph_margins), f"쪽, para_margin={paragraph_margins}"
+
+    def set_tab_item_value(self, tab_items, index: int, value: int) -> bool:
+        try:
+            tab_items.SetItem(index, value)
+            return True
+        except Exception:
+            pass
+        try:
+            tab_items.Item(index, value)
+            return True
+        except Exception as exc:
+            self.debug(f"[paragraph-tab] TabItem[{index}]={value} 설정 실패: {type(exc).__name__}: {exc}")
+            return False
+
+    def set_paragraph_auto_right_tab(self) -> tuple[str, bool]:
+        pset = self.hwp.HParameterSet.HParaShape
+        default_ok = bool(self.hwp.HAction.GetDefault("ParagraphShape", pset.HSet))
+        pset.TabDef.AutoTabRight = 1
+        executed = bool(self.hwp.HAction.Execute("ParagraphShape", pset.HSet))
+        self.debug(f"[paragraph-tab] auto-right default={default_ok}, result={executed}")
+        return "ParagraphShape.AutoTabRight", executed
+
+    def set_paragraph_dotted_right_tab(self) -> tuple[str, bool, int, str]:
+        pset = self.hwp.HParameterSet.HParaShape
+        default_ok = bool(self.hwp.HAction.GetDefault("ParagraphShape", pset.HSet))
+        tab_position, source = self.current_paragraph_tab_width(pset)
+        tab_def = pset.TabDef
+        tab_def.CreateItemArray("TabItem", 3)
+        tab_items = tab_def.TabItem
+        item_ok = (
+            self.set_tab_item_value(tab_items, 0, tab_position)
+            and self.set_tab_item_value(tab_items, 1, 7)
+            and self.set_tab_item_value(tab_items, 2, 1)
+        )
+        executed = item_ok and bool(self.hwp.HAction.Execute("ParagraphShape", pset.HSet))
+        self.debug(
+            f"[paragraph-tab] dotted-right default={default_ok}, source={source}, "
+            f"tab={tab_position}, item_ok={item_ok}, result={executed}"
+        )
+        return "ParagraphShape.TabDef.TabItem", executed, tab_position, source
+
+    def apply_auto_right_paragraph_tab(self) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            action, ok = self.set_paragraph_auto_right_tab()
+            self.log(f"오른쪽 자동탭: action={action}, result={ok}")
+            if not ok:
+                messagebox.showwarning("오른쪽 자동탭", "현재 문단 또는 선택 영역에 문단 탭 설정을 적용하지 못했습니다.")
+        except Exception as exc:
+            self.log(f"오른쪽 자동탭 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("오른쪽 자동탭 실패", str(exc))
+
+    def apply_dotted_right_paragraph_tab(self) -> None:
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            action, ok, tab_position, source = self.set_paragraph_dotted_right_tab()
+            self.log(f"점선 오른쪽탭: 기준={source}, 위치={tab_position}, action={action}, result={ok}")
+            if not ok:
+                messagebox.showwarning("점선 오른쪽탭", "현재 문단 또는 선택 영역에 문단 탭 설정을 적용하지 못했습니다.")
+        except Exception as exc:
+            self.log(f"점선 오른쪽탭 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("점선 오른쪽탭 실패", str(exc))
 
     def execute_put_new_para_number(self) -> tuple[bool, bool]:
         pset = self.hwp.HParameterSet.HParaShape

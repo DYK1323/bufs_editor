@@ -3217,6 +3217,130 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(positions, [(0, 2, 9), (0, 2, 5)])
         self.assertEqual(inserted, ["｣", "｢"])
 
+    def test_paragraph_auto_right_tab_sets_auto_tab_right(self) -> None:
+        class FakeTabDef:
+            AutoTabRight = 0
+
+        class FakeParaShape:
+            HSet = None
+
+            def __init__(self) -> None:
+                self.HSet = self
+                self.TabDef = FakeTabDef()
+
+        class FakeAction:
+            def __init__(self) -> None:
+                self.actions: list[str] = []
+
+            def GetDefault(self, action, _hset):
+                self.actions.append(f"default:{action}")
+                return True
+
+            def Execute(self, action, _hset):
+                self.actions.append(f"execute:{action}")
+                return True
+
+        para = FakeParaShape()
+        action = FakeAction()
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"HParameterSet": type("Sets", (), {"HParaShape": para})(), "HAction": action})()
+        app.debug = lambda _message: None
+
+        action_name, ok = app.set_paragraph_auto_right_tab()
+
+        self.assertEqual(action_name, "ParagraphShape.AutoTabRight")
+        self.assertTrue(ok)
+        self.assertEqual(para.TabDef.AutoTabRight, 1)
+        self.assertEqual(action.actions, ["default:ParagraphShape", "execute:ParagraphShape"])
+
+    def test_paragraph_dotted_right_tab_uses_page_text_width(self) -> None:
+        class FakeTabItem:
+            def __init__(self) -> None:
+                self.values: dict[int, int] = {}
+
+            def SetItem(self, index, value):
+                self.values[index] = value
+
+        class FakeTabDef:
+            def __init__(self) -> None:
+                self.TabItem = FakeTabItem()
+                self.array_spec: tuple[str, int] | None = None
+
+            def CreateItemArray(self, name, size):
+                self.array_spec = (name, size)
+
+        class FakeParaShape:
+            HSet = None
+            LeftMargin = 100
+            RightMargin = 200
+
+            def __init__(self) -> None:
+                self.HSet = self
+                self.TabDef = FakeTabDef()
+
+        class FakeAction:
+            def GetDefault(self, _action, _hset):
+                return True
+
+            def Execute(self, _action, _hset):
+                return True
+
+        para = FakeParaShape()
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"HParameterSet": type("Sets", (), {"HParaShape": para})(), "HAction": FakeAction()})()
+        app.debug = lambda _message: None
+        app.get_current_cell_address = lambda: None
+        app.current_page_text_width = lambda: 5000
+
+        action_name, ok, tab_position, source = app.set_paragraph_dotted_right_tab()
+
+        self.assertEqual(action_name, "ParagraphShape.TabDef.TabItem")
+        self.assertTrue(ok)
+        self.assertEqual(tab_position, 4700)
+        self.assertIn("쪽", source)
+        self.assertEqual(para.TabDef.array_spec, ("TabItem", 3))
+        self.assertEqual(para.TabDef.TabItem.values, {0: 4700, 1: 7, 2: 1})
+
+    def test_paragraph_dotted_right_tab_uses_cell_inner_width(self) -> None:
+        class FakeParaShape:
+            HSet = None
+            LeftMargin = 100
+            RightMargin = 200
+
+            def __init__(self) -> None:
+                self.HSet = self
+
+        app = object.__new__(MvpApp)
+        app.debug = lambda _message: None
+        app.get_current_cell_address = lambda: (1, 1)
+        app.read_current_table_cell_size = lambda _prefix: (5000, 1000, "fake-cell")
+        app.current_cell_horizontal_margins = lambda: (600, "fake-margin")
+
+        width, source = app.current_paragraph_tab_width(FakeParaShape())
+
+        self.assertEqual(width, 4100)
+        self.assertIn("셀", source)
+
+    def test_paragraph_dotted_right_tab_falls_back_to_page_width_when_cell_width_fails(self) -> None:
+        class FakeParaShape:
+            HSet = None
+            LeftMargin = 100
+            RightMargin = 200
+
+            def __init__(self) -> None:
+                self.HSet = self
+
+        app = object.__new__(MvpApp)
+        app.debug = lambda _message: None
+        app.get_current_cell_address = lambda: (1, 1)
+        app.read_current_table_cell_size = lambda _prefix: None
+        app.current_page_text_width = lambda: 5000
+
+        width, source = app.current_paragraph_tab_width(FakeParaShape())
+
+        self.assertEqual(width, 4700)
+        self.assertIn("쪽", source)
+
 
 if __name__ == "__main__":
     unittest.main()
