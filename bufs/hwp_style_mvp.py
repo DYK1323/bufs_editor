@@ -9843,8 +9843,6 @@ class MvpApp(tk.Tk):
         return 0, "none"
 
     def current_cell_inner_text_width(self) -> tuple[int, str] | None:
-        if self.get_current_cell_address() is None:
-            return None
         cell_size = self.read_current_table_cell_size("paragraph-tab")
         if cell_size is None:
             return None

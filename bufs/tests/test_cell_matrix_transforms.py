@@ -3289,7 +3289,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app = object.__new__(MvpApp)
         app.hwp = type("FakeHwp", (), {"HParameterSet": type("Sets", (), {"HParaShape": para})(), "HAction": FakeAction()})()
         app.debug = lambda _message: None
-        app.get_current_cell_address = lambda: None
+        app.read_current_table_cell_size = lambda _prefix: None
         app.current_page_text_width = lambda: 5000
 
         action_name, ok, tab_position, source = app.set_paragraph_dotted_right_tab()
@@ -3312,7 +3312,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
-        app.get_current_cell_address = lambda: (1, 1)
+        app.get_current_cell_address = lambda: None
         app.read_current_table_cell_size = lambda _prefix: (5000, 1000, "fake-cell")
         app.current_cell_horizontal_margins = lambda: (600, "fake-margin")
 
@@ -3332,7 +3332,6 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
-        app.get_current_cell_address = lambda: (1, 1)
         app.read_current_table_cell_size = lambda _prefix: None
         app.current_page_text_width = lambda: 5000
 
