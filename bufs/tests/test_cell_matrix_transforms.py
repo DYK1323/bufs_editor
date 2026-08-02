@@ -3289,6 +3289,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app = object.__new__(MvpApp)
         app.hwp = type("FakeHwp", (), {"HParameterSet": type("Sets", (), {"HParaShape": para})(), "HAction": FakeAction()})()
         app.debug = lambda _message: None
+        app.is_in_table_cell = lambda: False
         app.read_current_table_cell_size = lambda _prefix: None
         app.current_page_text_width = lambda: 5000
 
@@ -3312,6 +3313,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
+        app.is_in_table_cell = lambda: False
         app.get_current_cell_address = lambda: None
         app.read_current_table_cell_size = lambda _prefix: (5000, 1000, "fake-cell")
         app.current_cell_horizontal_margins = lambda: (600, "fake-margin")
@@ -3319,6 +3321,25 @@ class CellMatrixTransformTests(unittest.TestCase):
         width, source = app.current_paragraph_tab_width(FakeParaShape())
 
         self.assertEqual(width, 4100)
+        self.assertIn("셀", source)
+
+    def test_paragraph_dotted_right_tab_uses_api_max_inside_table_cell(self) -> None:
+        class FakeParaShape:
+            HSet = None
+            LeftMargin = 100
+            RightMargin = 200
+
+            def __init__(self) -> None:
+                self.HSet = self
+
+        app = object.__new__(MvpApp)
+        app.debug = lambda _message: None
+        app.is_in_table_cell = lambda: True
+        app.read_current_table_cell_size = lambda _prefix: (_ for _ in ()).throw(AssertionError("cell width should not be read"))
+
+        width, source = app.current_paragraph_tab_width(FakeParaShape())
+
+        self.assertEqual(width, 96360)
         self.assertIn("셀", source)
 
     def test_paragraph_dotted_right_tab_falls_back_to_page_width_when_cell_width_fails(self) -> None:
@@ -3332,6 +3353,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
+        app.is_in_table_cell = lambda: False
         app.read_current_table_cell_size = lambda _prefix: None
         app.current_page_text_width = lambda: 5000
 

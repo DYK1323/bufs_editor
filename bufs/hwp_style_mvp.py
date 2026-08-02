@@ -174,6 +174,7 @@ PROOF_IMAGE_FIRST_CELL_HEIGHT = 63566
 PROOF_IMAGE_FULL_CELL_HEIGHT = 70016
 PROOF_IMAGE_CELL_MARGIN_X = 510
 PROOF_IMAGE_CELL_MARGIN_Y = 141
+PARAGRAPH_TAB_CELL_RIGHT_POSITION = 96360
 PROOF_DEFAULT_DPI = 300
 PROOF_JPEG_QUALITY = 92
 DEFAULT_UPDATE_SETTINGS = {
@@ -7114,7 +7115,7 @@ class MvpApp(tk.Tk):
         return False
 
     def is_in_table_cell(self) -> bool:
-        return self.get_current_cell_address() is not None
+        return self.current_field_is_table_cell() or self.get_current_cell_address() is not None
 
     def move_to_nearby_table_cell(self) -> bool:
         if self.is_in_table_cell():
@@ -9511,6 +9512,13 @@ class MvpApp(tk.Tk):
 
     def get_current_cell_address(self) -> tuple[int, int] | None:
         try:
+            first = int(self.hwp.GetTableCellAddr(0))
+            second = int(self.hwp.GetTableCellAddr(1))
+            if first >= 0 and second >= 0:
+                return first, second
+        except Exception as exc:
+            self.debug(f"[cell-address] GetTableCellAddr 실패: {type(exc).__name__}: {exc}")
+        try:
             indicator = self.hwp.KeyIndicator()
         except Exception as exc:
             self.debug(f"[cell-address] KeyIndicator 실패: {type(exc).__name__}: {exc}")
@@ -9669,6 +9677,16 @@ class MvpApp(tk.Tk):
             return True
         self.debug(f"[selection-mode] 셀 선택 아님: raw={raw}, base={base}")
         return False
+
+    def current_field_is_table_cell(self) -> bool:
+        try:
+            state = int(getattr(self.hwp, "CurFieldState"))
+        except Exception as exc:
+            self.debug(f"[cell-field-state] CurFieldState 확인 실패: {type(exc).__name__}: {exc}")
+            return False
+        in_cell = (state & 0x0F) == 1
+        self.debug(f"[cell-field-state] CurFieldState={state}, in_cell={in_cell}")
+        return in_cell
 
     def get_selected_text_positions(self) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
         try:
@@ -9852,6 +9870,8 @@ class MvpApp(tk.Tk):
 
     def current_paragraph_tab_width(self, pset) -> tuple[int, str]:
         paragraph_margins = self.current_paragraph_horizontal_margins(pset)
+        if self.is_in_table_cell():
+            return PARAGRAPH_TAB_CELL_RIGHT_POSITION, "셀(API CurFieldState/GetTableCellAddr), tab=max"
         cell_width = self.current_cell_inner_text_width()
         if cell_width is not None:
             width, source = cell_width
