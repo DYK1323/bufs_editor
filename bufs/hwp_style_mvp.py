@@ -3171,12 +3171,8 @@ class MvpApp(tk.Tk):
         ttk.Button(row3, text="프롬프트", command=self.copy_ai_prompt_for_active_style_set).pack(side="left", padx=(8, 0))
         ttk.Button(row3, text="글자스타일제거", command=self.clear_selected_character_style).pack(side="left", padx=(8, 0))
 
-        paragraph_tab_frame = ttk.Frame(frame)
-        paragraph_tab_frame.grid(row=1, column=0, sticky="ew")
-        self.build_paragraph_tab_controls(paragraph_tab_frame)
-
         cleanup_frame = ttk.Frame(frame)
-        cleanup_frame.grid(row=2, column=0, sticky="ew")
+        cleanup_frame.grid(row=1, column=0, sticky="ew")
         self.build_cleanup_controls(cleanup_frame)
 
     def _build_table_tab(self) -> None:
@@ -4357,12 +4353,12 @@ class MvpApp(tk.Tk):
             tab_group,
             text="오른쪽 자동탭",
             command=self.apply_auto_right_paragraph_tab,
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 6), ipady=8)
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(
             tab_group,
             text="점선 오른쪽탭",
             command=self.apply_dotted_right_paragraph_tab,
-        ).grid(row=0, column=1, sticky="ew", ipady=8)
+        ).grid(row=0, column=1, sticky="ew")
 
     def build_cleanup_controls(self, parent: ttk.Frame) -> None:
         cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=8)
@@ -4542,6 +4538,8 @@ class MvpApp(tk.Tk):
         ttk.Button(year_buttons, text="'00년", command=lambda: self.normalize_years_to_selection("apostrophe", "'00년")).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
+
+        self.build_paragraph_tab_controls(parent)
 
         table_group = ttk.LabelFrame(parent, text="표 정리/되돌리기", padding=8)
         table_group.pack(fill="x", pady=(8, 0))
