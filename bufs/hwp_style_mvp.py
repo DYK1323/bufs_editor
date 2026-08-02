@@ -3037,6 +3037,7 @@ class MvpApp(tk.Tk):
         self._build_page_tab()
         self._build_special_chars_tab()
         self._build_cover_logo_tab()
+        self._build_debug_tab()
         self._build_status_tab()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.bind_all("<Control-z>", self.on_global_undo)
@@ -3128,6 +3129,26 @@ class MvpApp(tk.Tk):
 
         self.status_text = tk.Text(frame, height=30, wrap="word")
         self.status_text.pack(fill="both", expand=True)
+
+    def _build_debug_tab(self) -> None:
+        frame = self.create_scrollable_tab("디버그")
+
+        paragraph_group = ttk.LabelFrame(frame, text="문단 탭 진단", padding=8)
+        paragraph_group.pack(fill="x", pady=(0, 10))
+        for column in range(3):
+            paragraph_group.grid_columnconfigure(column, weight=1)
+        debug_buttons = (
+            ("위치 진단", self.debug_paragraph_tab_position),
+            ("폭 진단", self.debug_paragraph_tab_width),
+            ("계산값 적용", self.debug_apply_calculated_paragraph_tab),
+        )
+        for index, (text, command) in enumerate(debug_buttons):
+            ttk.Button(paragraph_group, text=text, command=command).grid(
+                row=0,
+                column=index,
+                sticky="ew",
+                padx=(0 if index == 0 else 6, 0),
+            )
 
     def _build_styles_tab(self) -> None:
         frame = self.create_scrollable_tab("스타일/정리")
@@ -9889,6 +9910,167 @@ class MvpApp(tk.Tk):
         width, _height, width_source = cell_size
         margins, margin_source = self.current_cell_horizontal_margins()
         return max(0, width - margins), f"셀({width_source}, margin={margin_source})"
+
+    def format_hwp_width_debug(self, value) -> str:
+        try:
+            width = int(value)
+        except Exception:
+            return repr(value)
+        return f"{width} ({hwpunit_to_mm(width):.2f}mm)"
+
+    def paragraph_tab_position_debug_lines(self) -> list[str]:
+        lines: list[str] = ["[paragraph-tab-debug] 위치 진단"]
+        try:
+            pos = self.hwp.GetPos()
+        except Exception as exc:
+            pos = f"{type(exc).__name__}: {exc}"
+        try:
+            pos_by_set = self.get_hwp_pos_by_set()
+        except Exception as exc:
+            pos_by_set = f"{type(exc).__name__}: {exc}"
+        try:
+            selected_pos = self.hwp.GetSelectedPos()
+        except Exception as exc:
+            selected_pos = f"{type(exc).__name__}: {exc}"
+        try:
+            selection_mode = getattr(self.hwp, "SelectionMode")
+        except Exception as exc:
+            selection_mode = f"{type(exc).__name__}: {exc}"
+        try:
+            field_state = int(getattr(self.hwp, "CurFieldState"))
+            field_kind = field_state & 0x0F
+        except Exception as exc:
+            field_state = f"{type(exc).__name__}: {exc}"
+            field_kind = None
+        try:
+            address = self.get_current_cell_address()
+        except Exception as exc:
+            address = f"{type(exc).__name__}: {exc}"
+        try:
+            key_indicator = self.hwp.KeyIndicator()
+        except Exception as exc:
+            key_indicator = f"{type(exc).__name__}: {exc}"
+        lines.extend(
+            [
+                f"GetPos={pos!r}",
+                f"GetPosBySet={pos_by_set!r}",
+                f"GetSelectedPos={selected_pos!r}",
+                f"SelectionMode={selection_mode!r}",
+                f"CurFieldState={field_state!r}, field_kind={field_kind!r}, in_cell={self.is_in_table_cell()}",
+                f"GetTableCellAddr/KeyIndicator address={address!r}",
+                f"KeyIndicator={key_indicator!r}",
+            ]
+        )
+        return lines
+
+    def parameter_width_debug_lines(self, label: str, target) -> list[str]:
+        lines: list[str] = []
+        for item in ("Width", "Height", "MarginLeft", "MarginRight", "CellMarginLeft", "CellMarginRight"):
+            value = self.get_parameter_item_value(target, item)
+            lines.append(f"{label}.{item}={self.format_hwp_width_debug(value)}")
+        return lines
+
+    def paragraph_tab_width_debug_lines(self) -> list[str]:
+        lines: list[str] = ["[paragraph-tab-debug] 폭 진단"]
+        try:
+            page_width = self.current_page_text_width()
+            lines.append(f"page_text_width={self.format_hwp_width_debug(page_width)}")
+        except Exception as exc:
+            lines.append(f"page_text_width 실패={type(exc).__name__}: {exc}")
+
+        try:
+            pset = self.hwp.HParameterSet.HParaShape
+            default_ok = bool(self.hwp.HAction.GetDefault("ParagraphShape", pset.HSet))
+            paragraph_margins = self.current_paragraph_horizontal_margins(pset)
+            lines.append(f"ParagraphShape.GetDefault={default_ok}")
+            lines.append(f"HParaShape.LeftMargin={self.format_hwp_width_debug(self.read_int_parameter_item(pset, 'LeftMargin'))}")
+            lines.append(f"HParaShape.RightMargin={self.format_hwp_width_debug(self.read_int_parameter_item(pset, 'RightMargin'))}")
+            lines.append(f"paragraph_horizontal_margins={self.format_hwp_width_debug(paragraph_margins)}")
+        except Exception as exc:
+            pset = None
+            lines.append(f"ParagraphShape 진단 실패={type(exc).__name__}: {exc}")
+
+        try:
+            cell_shape = self.hwp.CellShape
+            cell = self.get_parameter_child(cell_shape, "Cell", "paragraph-tab-debug-cellshape")
+            if cell is not None:
+                lines.extend(self.parameter_width_debug_lines("CellShape.Cell", cell))
+            lines.extend(self.parameter_width_debug_lines("CellShape", cell_shape))
+        except Exception as exc:
+            lines.append(f"CellShape 진단 실패={type(exc).__name__}: {exc}")
+
+        try:
+            shape_pset = self.hwp.HParameterSet.HShapeObject
+            default_ok = bool(self.hwp.HAction.GetDefault("TablePropertyDialog", shape_pset.HSet))
+            lines.append(f"TablePropertyDialog.GetDefault={default_ok}")
+            shape_cell = self.get_parameter_child(shape_pset, "ShapeTableCell", "paragraph-tab-debug-table-dialog")
+            if shape_cell is not None:
+                lines.extend(self.parameter_width_debug_lines("ShapeTableCell", shape_cell))
+            else:
+                lines.append("ShapeTableCell=None")
+        except Exception as exc:
+            lines.append(f"TablePropertyDialog 진단 실패={type(exc).__name__}: {exc}")
+
+        try:
+            cell_size = self.read_current_table_cell_size("paragraph-tab-debug")
+            lines.append(f"read_current_table_cell_size={cell_size!r}")
+        except Exception as exc:
+            lines.append(f"read_current_table_cell_size 실패={type(exc).__name__}: {exc}")
+        try:
+            cell_margins = self.current_cell_horizontal_margins()
+            lines.append(f"current_cell_horizontal_margins={cell_margins!r}")
+        except Exception as exc:
+            lines.append(f"current_cell_horizontal_margins 실패={type(exc).__name__}: {exc}")
+        try:
+            cell_inner = self.current_cell_inner_text_width()
+            lines.append(f"current_cell_inner_text_width={cell_inner!r}")
+        except Exception as exc:
+            lines.append(f"current_cell_inner_text_width 실패={type(exc).__name__}: {exc}")
+        try:
+            if pset is None:
+                pset = self.hwp.HParameterSet.HParaShape
+                self.hwp.HAction.GetDefault("ParagraphShape", pset.HSet)
+            tab_width, source = self.current_paragraph_tab_width(pset)
+            lines.append(f"final_tab={self.format_hwp_width_debug(tab_width)}, source={source}")
+        except Exception as exc:
+            lines.append(f"final_tab 계산 실패={type(exc).__name__}: {exc}")
+        return lines
+
+    def debug_paragraph_tab_position(self) -> None:
+        label = "문단 탭 위치 진단"
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            self.log(self.paragraph_tab_position_debug_lines())
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def debug_paragraph_tab_width(self) -> None:
+        label = "문단 탭 폭 진단"
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            self.log(self.paragraph_tab_width_debug_lines())
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
+    def debug_apply_calculated_paragraph_tab(self) -> None:
+        label = "문단 탭 계산값 적용"
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            action, ok, tab_position, source = self.set_paragraph_dotted_right_tab()
+            self.log(f"{label}: 기준={source}, 위치={tab_position}, action={action}, result={ok}")
+            if not ok:
+                messagebox.showwarning(label, "계산된 문단 탭 설정을 적용하지 못했습니다.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
 
     def current_paragraph_tab_width(self, pset) -> tuple[int, str]:
         paragraph_margins = self.current_paragraph_horizontal_margins(pset)
