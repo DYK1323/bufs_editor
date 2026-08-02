@@ -174,7 +174,6 @@ PROOF_IMAGE_FIRST_CELL_HEIGHT = 63566
 PROOF_IMAGE_FULL_CELL_HEIGHT = 70016
 PROOF_IMAGE_CELL_MARGIN_X = 510
 PROOF_IMAGE_CELL_MARGIN_Y = 141
-PARAGRAPH_TAB_CELL_RIGHT_POSITION = 96360
 PROOF_DEFAULT_DPI = 300
 PROOF_JPEG_QUALITY = 92
 DEFAULT_UPDATE_SETTINGS = {
@@ -9894,7 +9893,12 @@ class MvpApp(tk.Tk):
     def current_paragraph_tab_width(self, pset) -> tuple[int, str]:
         paragraph_margins = self.current_paragraph_horizontal_margins(pset)
         if self.is_in_table_cell():
-            return PARAGRAPH_TAB_CELL_RIGHT_POSITION, "셀(API CurFieldState/GetTableCellAddr), tab=max"
+            cell_width = self.current_cell_inner_text_width()
+            if cell_width is not None:
+                width, source = cell_width
+                if width > 0:
+                    return width, f"{source}, para_margin={paragraph_margins}"
+            self.debug("[paragraph-tab] 셀 내부로 감지했지만 셀 폭을 읽지 못해 쪽 본문 폭 기준으로 계산")
         page_width = self.current_page_text_width()
         return max(1, page_width), f"쪽, para_margin={paragraph_margins}"
 
