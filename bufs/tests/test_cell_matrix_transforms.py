@@ -822,6 +822,61 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(created, [("", "", "", False)])
         self.assertEqual(inserted, [cover_path])
 
+    def test_insert_general_report_template_inserts_plain_template_when_selection_is_missing(self) -> None:
+        app = object.__new__(MvpApp)
+        app.ensure_hwp = lambda: True
+        app.ensure_open_hwp_document = lambda _label: True
+        app.get_selected_text_positions = lambda: None
+        commands: list[str] = []
+
+        def fake_run(command: str) -> bool:
+            commands.append(command)
+            self.fail(f"빈 보고양식 삽입에서는 {command} 명령을 호출하지 않아야 합니다")
+
+        app.run_hwp_command = fake_run
+        app.get_clipboard_text = lambda: ""
+        inserted: list[tuple[Path, int]] = []
+        app.insert_file_at_cursor = lambda path, keep_section=0: inserted.append((path, keep_section)) or True
+        app.apply_page_settings = lambda settings, apply_to=3: ("apply", True, "detail")
+        app.refresh_current_doc_style_map = lambda force=False: None
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        original_template = hwp_style_mvp.GENERAL_REPORT_TEMPLATE_FILE
+        original_read_styles = hwp_style_mvp.read_style_records
+        original_read_page = hwp_style_mvp.read_hwpx_page_settings
+        with tempfile.TemporaryDirectory() as temp_name:
+            template_path = Path(temp_name) / "plain-report.hwpx"
+            template_path.write_bytes(b"template")
+            try:
+                hwp_style_mvp.GENERAL_REPORT_TEMPLATE_FILE = template_path
+                hwp_style_mvp.read_style_records = lambda _path: []
+                hwp_style_mvp.read_hwpx_page_settings = lambda _path: None
+                app.insert_general_report_template()
+            finally:
+                hwp_style_mvp.GENERAL_REPORT_TEMPLATE_FILE = original_template
+                hwp_style_mvp.read_style_records = original_read_styles
+                hwp_style_mvp.read_hwpx_page_settings = original_read_page
+
+            self.assertEqual(commands, [])
+            self.assertEqual(inserted, [(template_path, 0)])
+
+    def test_insert_general_report_template_stops_before_parsing_when_hwp_is_unavailable(self) -> None:
+        app = object.__new__(MvpApp)
+        app.ensure_hwp = lambda: False
+        app.run_hwp_command = lambda _command: self.fail("한글 연결 실패 시 Copy를 호출하지 않아야 합니다")
+        app.get_clipboard_text = lambda: self.fail("한글 연결 실패 시 클립보드를 읽지 않아야 합니다")
+
+        app.insert_general_report_template()
+
+    def test_insert_general_report_template_stops_before_parsing_when_document_is_missing(self) -> None:
+        app = object.__new__(MvpApp)
+        app.ensure_hwp = lambda: True
+        app.ensure_open_hwp_document = lambda _label: False
+        app.run_hwp_command = lambda _command: self.fail("문서 없음 시 Copy를 호출하지 않아야 합니다")
+        app.get_clipboard_text = lambda: self.fail("문서 없음 시 클립보드를 읽지 않아야 합니다")
+
+        app.insert_general_report_template()
+
     def test_style_entry_has_title_number_box_role(self) -> None:
         entry = StyleEntry("대제목", roles=("title_number_box",))
 

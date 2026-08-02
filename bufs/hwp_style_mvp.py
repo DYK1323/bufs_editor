@@ -6136,6 +6136,23 @@ class MvpApp(tk.Tk):
             messagebox.showerror("한글 연결 실패", str(exc))
             return False
 
+    def open_hwp_document_count(self) -> int:
+        if self.hwp is None:
+            return 0
+        try:
+            return int(self.hwp.XHwpDocuments.Count)
+        except Exception as exc:
+            self.debug(f"[hwp] 문서 수 확인 실패: {type(exc).__name__}: {exc}")
+            return 0
+
+    def ensure_open_hwp_document(self, label: str) -> bool:
+        count = self.open_hwp_document_count()
+        if count > 0:
+            return True
+        self.log(f"{label}: 열린 한글 문서 없음")
+        messagebox.showwarning(label, "연결된 한글 문서가 없습니다.\n\n한글에서 문서를 연 뒤 다시 실행하세요.")
+        return False
+
     def ensure_current_doc_style_cache(self) -> None:
         if self.__dict__.get("current_doc_style_map"):
             return
@@ -8191,6 +8208,8 @@ class MvpApp(tk.Tk):
         label = "보고양식 불러오기"
         if not self.ensure_hwp():
             return
+        if not self.ensure_open_hwp_document(label):
+            return
         template_path = GENERAL_REPORT_TEMPLATE_FILE
         original_text = ""
         try:
@@ -8200,14 +8219,18 @@ class MvpApp(tk.Tk):
                 return
             style_count = len(read_style_records(template_path))
 
-            copy_ok = self.run_hwp_command("Copy")
-            time.sleep(0.08)
-            original_text = self.get_clipboard_text() if copy_ok else ""
+            selected_positions = self.get_selected_text_positions()
+            copy_ok = False
+            if selected_positions is not None:
+                copy_ok = self.run_hwp_command("Copy")
+                time.sleep(0.08)
+                original_text = self.get_clipboard_text() if copy_ok else ""
             filled_fields = None
             insert_path = template_path
             self.log(
                 f"{label}: 시작, template={template_path.name}, exists={template_path.exists()}, "
-                f"styles={style_count}, copy={copy_ok}, input_len={len(original_text.strip())}"
+                f"styles={style_count}, selected={selected_positions is not None}, "
+                f"copy={copy_ok}, input_len={len(original_text.strip())}"
             )
             if original_text.strip():
                 try:
