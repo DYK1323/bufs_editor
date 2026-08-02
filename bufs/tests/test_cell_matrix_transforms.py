@@ -3352,10 +3352,10 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(action_name, "ParagraphShape.TabDef.TabItem")
         self.assertTrue(ok)
-        self.assertEqual(tab_position, 5000)
+        self.assertEqual(tab_position, 10000)
         self.assertIn("쪽", source)
         self.assertEqual(para.TabDef.array_spec, ("TabItem", 3))
-        self.assertEqual(para.TabDef.TabItem.values, {0: 5000, 1: 7, 2: 1})
+        self.assertEqual(para.TabDef.TabItem.values, {0: 10000, 1: 7, 2: 1})
 
     def test_paragraph_dotted_right_tab_uses_page_width_even_if_cell_shape_is_stale(self) -> None:
         class FakeParaShape:
@@ -3374,7 +3374,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         width, source = app.current_paragraph_tab_width(FakeParaShape())
 
-        self.assertEqual(width, 5000)
+        self.assertEqual(width, 10000)
         self.assertIn("쪽", source)
 
     def test_paragraph_dotted_right_tab_uses_cell_inner_width_inside_table_cell(self) -> None:
@@ -3394,14 +3394,15 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         width, source = app.current_paragraph_tab_width(FakeParaShape())
 
-        self.assertEqual(width, 4400)
+        self.assertEqual(width, 8800)
         self.assertIn("셀", source)
 
     def test_paragraph_dotted_right_tab_floors_to_tenth_point_precision(self) -> None:
         app = object.__new__(MvpApp)
 
-        self.assertEqual(app.paragraph_tab_stop_value(26056), 26050)
-        self.assertEqual(app.paragraph_tab_stop_value(48190), 48190)
+        self.assertEqual(app.paragraph_tab_effective_width(26056), 26050)
+        self.assertEqual(app.paragraph_tab_stop_value(26056), 52100)
+        self.assertEqual(app.paragraph_tab_stop_value(48190), 96380)
 
     def test_paragraph_dotted_right_tab_falls_back_to_page_width_when_cell_width_fails(self) -> None:
         class FakeParaShape:
@@ -3420,7 +3421,7 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         width, source = app.current_paragraph_tab_width(FakeParaShape())
 
-        self.assertEqual(width, 5000)
+        self.assertEqual(width, 10000)
         self.assertIn("쪽", source)
 
 

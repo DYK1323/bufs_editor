@@ -174,6 +174,7 @@ PROOF_IMAGE_FIRST_CELL_HEIGHT = 63566
 PROOF_IMAGE_FULL_CELL_HEIGHT = 70016
 PROOF_IMAGE_CELL_MARGIN_X = 510
 PROOF_IMAGE_CELL_MARGIN_Y = 141
+PARAGRAPH_TAB_STOP_UNITS_PER_HWPUNIT = 2
 PROOF_DEFAULT_DPI = 300
 PROOF_JPEG_QUALITY = 92
 DEFAULT_UPDATE_SETTINGS = {
@@ -9911,9 +9912,12 @@ class MvpApp(tk.Tk):
         margins, margin_source = self.current_cell_horizontal_margins()
         return max(0, width - margins), f"셀({width_source}, margin={margin_source})"
 
-    def paragraph_tab_stop_value(self, width: int) -> int:
+    def paragraph_tab_effective_width(self, width: int) -> int:
         width = max(1, int(width))
         return max(1, (width // 10) * 10)
+
+    def paragraph_tab_stop_value(self, width: int) -> int:
+        return self.paragraph_tab_effective_width(width) * PARAGRAPH_TAB_STOP_UNITS_PER_HWPUNIT
 
     def format_hwp_width_debug(self, value) -> str:
         try:
@@ -9921,6 +9925,13 @@ class MvpApp(tk.Tk):
         except Exception:
             return repr(value)
         return f"{width} ({hwpunit_to_mm(width):.2f}mm)"
+
+    def format_tab_stop_debug(self, value) -> str:
+        try:
+            tab_stop = int(value)
+        except Exception:
+            return repr(value)
+        return f"{tab_stop} ({tab_stop / 200:.2f}pt)"
 
     def paragraph_tab_position_debug_lines(self) -> list[str]:
         lines: list[str] = ["[paragraph-tab-debug] 위치 진단"]
@@ -10061,7 +10072,7 @@ class MvpApp(tk.Tk):
                 pset = self.hwp.HParameterSet.HParaShape
                 self.hwp.HAction.GetDefault("ParagraphShape", pset.HSet)
             tab_width, source = self.current_paragraph_tab_width(pset)
-            lines.append(f"final_tab={self.format_hwp_width_debug(tab_width)}, source={source}")
+            lines.append(f"final_tab={self.format_tab_stop_debug(tab_width)}, source={source}")
         except Exception as exc:
             lines.append(f"final_tab 계산 실패={type(exc).__name__}: {exc}")
         return lines
@@ -10110,10 +10121,14 @@ class MvpApp(tk.Tk):
             if cell_width is not None:
                 width, source = cell_width
                 if width > 0:
-                    return self.paragraph_tab_stop_value(width), f"{source}, para_margin={paragraph_margins}"
+                    effective_width = self.paragraph_tab_effective_width(width)
+                    tab_stop = self.paragraph_tab_stop_value(width)
+                    return tab_stop, f"{source}, effective_width={effective_width}, para_margin={paragraph_margins}"
             self.debug("[paragraph-tab] 셀 내부로 감지했지만 셀 폭을 읽지 못해 쪽 본문 폭 기준으로 계산")
         page_width = self.current_page_text_width()
-        return self.paragraph_tab_stop_value(page_width), f"쪽, para_margin={paragraph_margins}"
+        effective_width = self.paragraph_tab_effective_width(page_width)
+        tab_stop = self.paragraph_tab_stop_value(page_width)
+        return tab_stop, f"쪽, effective_width={effective_width}, para_margin={paragraph_margins}"
 
     def set_tab_item_value(self, tab_items, index: int, value: int) -> bool:
         try:
