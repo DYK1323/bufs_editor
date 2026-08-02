@@ -3397,6 +3397,12 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(width, 4400)
         self.assertIn("셀", source)
 
+    def test_paragraph_dotted_right_tab_floors_to_tenth_point_precision(self) -> None:
+        app = object.__new__(MvpApp)
+
+        self.assertEqual(app.paragraph_tab_stop_value(26056), 26050)
+        self.assertEqual(app.paragraph_tab_stop_value(48190), 48190)
+
     def test_paragraph_dotted_right_tab_falls_back_to_page_width_when_cell_width_fails(self) -> None:
         class FakeParaShape:
             HSet = None

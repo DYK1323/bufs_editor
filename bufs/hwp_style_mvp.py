@@ -9911,6 +9911,10 @@ class MvpApp(tk.Tk):
         margins, margin_source = self.current_cell_horizontal_margins()
         return max(0, width - margins), f"셀({width_source}, margin={margin_source})"
 
+    def paragraph_tab_stop_value(self, width: int) -> int:
+        width = max(1, int(width))
+        return max(1, (width // 10) * 10)
+
     def format_hwp_width_debug(self, value) -> str:
         try:
             width = int(value)
@@ -9970,6 +9974,28 @@ class MvpApp(tk.Tk):
             lines.append(f"{label}.{item}={self.format_hwp_width_debug(value)}")
         return lines
 
+    def read_tab_item_value(self, tab_items, index: int):
+        for reader in (
+            lambda: tab_items.Item(index),
+            lambda: tab_items.GetItem(index),
+            lambda: tab_items[index],
+        ):
+            try:
+                return reader()
+            except Exception:
+                pass
+        return None
+
+    def tab_def_debug_lines(self, label: str, tab_def) -> list[str]:
+        lines = [f"{label}.AutoTabRight={getattr(tab_def, 'AutoTabRight', None)!r}"]
+        tab_items = getattr(tab_def, "TabItem", None)
+        if tab_items is None:
+            lines.append(f"{label}.TabItem=None")
+            return lines
+        values = [self.read_tab_item_value(tab_items, index) for index in range(9)]
+        lines.append(f"{label}.TabItem[0..8]={values!r}")
+        return lines
+
     def paragraph_tab_width_debug_lines(self) -> list[str]:
         lines: list[str] = ["[paragraph-tab-debug] 폭 진단"]
         try:
@@ -9986,6 +10012,10 @@ class MvpApp(tk.Tk):
             lines.append(f"HParaShape.LeftMargin={self.format_hwp_width_debug(self.read_int_parameter_item(pset, 'LeftMargin'))}")
             lines.append(f"HParaShape.RightMargin={self.format_hwp_width_debug(self.read_int_parameter_item(pset, 'RightMargin'))}")
             lines.append(f"paragraph_horizontal_margins={self.format_hwp_width_debug(paragraph_margins)}")
+            for item in ("Indent", "HeadingType", "NumberingType", "Level"):
+                value = self.get_parameter_item_value(pset, item)
+                lines.append(f"HParaShape.{item}={value!r}")
+            lines.extend(self.tab_def_debug_lines("HParaShape.TabDef", pset.TabDef))
         except Exception as exc:
             pset = None
             lines.append(f"ParagraphShape 진단 실패={type(exc).__name__}: {exc}")
@@ -10066,6 +10096,7 @@ class MvpApp(tk.Tk):
             self.activate_hwp_window()
             action, ok, tab_position, source = self.set_paragraph_dotted_right_tab()
             self.log(f"{label}: 기준={source}, 위치={tab_position}, action={action}, result={ok}")
+            self.log(self.paragraph_tab_width_debug_lines())
             if not ok:
                 messagebox.showwarning(label, "계산된 문단 탭 설정을 적용하지 못했습니다.")
         except Exception as exc:
@@ -10079,10 +10110,10 @@ class MvpApp(tk.Tk):
             if cell_width is not None:
                 width, source = cell_width
                 if width > 0:
-                    return width, f"{source}, para_margin={paragraph_margins}"
+                    return self.paragraph_tab_stop_value(width), f"{source}, para_margin={paragraph_margins}"
             self.debug("[paragraph-tab] 셀 내부로 감지했지만 셀 폭을 읽지 못해 쪽 본문 폭 기준으로 계산")
         page_width = self.current_page_text_width()
-        return max(1, page_width), f"쪽, para_margin={paragraph_margins}"
+        return self.paragraph_tab_stop_value(page_width), f"쪽, para_margin={paragraph_margins}"
 
     def set_tab_item_value(self, tab_items, index: int, value: int) -> bool:
         try:
