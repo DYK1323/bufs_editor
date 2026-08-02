@@ -3345,19 +3345,19 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.hwp = type("FakeHwp", (), {"HParameterSet": type("Sets", (), {"HParaShape": para})(), "HAction": FakeAction()})()
         app.debug = lambda _message: None
         app.is_in_table_cell = lambda: False
-        app.read_current_table_cell_size = lambda _prefix: None
+        app.read_current_table_cell_size = lambda _prefix: (_ for _ in ()).throw(AssertionError("page paragraph should not read cell width"))
         app.current_page_text_width = lambda: 5000
 
         action_name, ok, tab_position, source = app.set_paragraph_dotted_right_tab()
 
         self.assertEqual(action_name, "ParagraphShape.TabDef.TabItem")
         self.assertTrue(ok)
-        self.assertEqual(tab_position, 4700)
+        self.assertEqual(tab_position, 5000)
         self.assertIn("쪽", source)
         self.assertEqual(para.TabDef.array_spec, ("TabItem", 3))
-        self.assertEqual(para.TabDef.TabItem.values, {0: 4700, 1: 7, 2: 1})
+        self.assertEqual(para.TabDef.TabItem.values, {0: 5000, 1: 7, 2: 1})
 
-    def test_paragraph_dotted_right_tab_uses_cell_inner_width(self) -> None:
+    def test_paragraph_dotted_right_tab_uses_page_width_even_if_cell_shape_is_stale(self) -> None:
         class FakeParaShape:
             HSet = None
             LeftMargin = 100
@@ -3369,14 +3369,13 @@ class CellMatrixTransformTests(unittest.TestCase):
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
         app.is_in_table_cell = lambda: False
-        app.get_current_cell_address = lambda: None
-        app.read_current_table_cell_size = lambda _prefix: (5000, 1000, "fake-cell")
-        app.current_cell_horizontal_margins = lambda: (600, "fake-margin")
+        app.read_current_table_cell_size = lambda _prefix: (_ for _ in ()).throw(AssertionError("page paragraph should not read stale cell width"))
+        app.current_page_text_width = lambda: 5000
 
         width, source = app.current_paragraph_tab_width(FakeParaShape())
 
-        self.assertEqual(width, 4100)
-        self.assertIn("셀", source)
+        self.assertEqual(width, 5000)
+        self.assertIn("쪽", source)
 
     def test_paragraph_dotted_right_tab_uses_api_max_inside_table_cell(self) -> None:
         class FakeParaShape:
@@ -3409,12 +3408,12 @@ class CellMatrixTransformTests(unittest.TestCase):
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
         app.is_in_table_cell = lambda: False
-        app.read_current_table_cell_size = lambda _prefix: None
+        app.read_current_table_cell_size = lambda _prefix: (_ for _ in ()).throw(AssertionError("page paragraph should not read cell width"))
         app.current_page_text_width = lambda: 5000
 
         width, source = app.current_paragraph_tab_width(FakeParaShape())
 
-        self.assertEqual(width, 4700)
+        self.assertEqual(width, 5000)
         self.assertIn("쪽", source)
 
 

@@ -9895,14 +9895,8 @@ class MvpApp(tk.Tk):
         paragraph_margins = self.current_paragraph_horizontal_margins(pset)
         if self.is_in_table_cell():
             return PARAGRAPH_TAB_CELL_RIGHT_POSITION, "셀(API CurFieldState/GetTableCellAddr), tab=max"
-        cell_width = self.current_cell_inner_text_width()
-        if cell_width is not None:
-            width, source = cell_width
-            tab_width = width - paragraph_margins
-            if tab_width > 0:
-                return tab_width, f"{source}, para_margin={paragraph_margins}"
         page_width = self.current_page_text_width()
-        return max(1, page_width - paragraph_margins), f"쪽, para_margin={paragraph_margins}"
+        return max(1, page_width), f"쪽, para_margin={paragraph_margins}"
 
     def set_tab_item_value(self, tab_items, index: int, value: int) -> bool:
         try:
