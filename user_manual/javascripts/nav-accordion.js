@@ -1,5 +1,38 @@
 (() => {
+  const normalizeChapterFiveLinks = () => {
+    const sidebar = document.querySelector(".md-sidebar--primary");
+    if (!sidebar) {
+      return;
+    }
+
+    const homeLink =
+      document.querySelector(".md-header__button.md-logo") ||
+      document.querySelector(".md-nav__button.md-logo");
+    const docsRoot = homeLink
+      ? new URL(homeLink.getAttribute("href") || ".", window.location.href)
+      : new URL("/", window.location.href);
+
+    const chapterFiveTargets = new Map([
+      ["5.5 문단 탭", "05/05-paragraph-tab/"],
+      ["5.6 숫자와 날짜 정리", "05/05-05/"],
+      ["5.7 표 정리", "05/05-06/"],
+      ["5.8 캡션 만들기", "05/05-07/"],
+      ["5.9 마크다운 표 변환", "05/05-08/"],
+    ]);
+
+    for (const link of sidebar.querySelectorAll("a.md-nav__link")) {
+      const text = (link.textContent || "").replace(/\s+/g, " ").trim();
+      const target = chapterFiveTargets.get(text);
+      if (!target) {
+        continue;
+      }
+      link.href = new URL(target, docsRoot).href;
+    }
+  };
+
   const initAccordion = () => {
+    normalizeChapterFiveLinks();
+
     const sidebar = document.querySelector(".md-sidebar--primary");
     if (!sidebar) {
       return;
@@ -93,6 +126,7 @@
   };
 
   const runAccordion = () => {
+    normalizeChapterFiveLinks();
     initAccordion();
     window.requestAnimationFrame(initAccordion);
     window.setTimeout(initAccordion, 0);
