@@ -177,6 +177,12 @@ PROOF_IMAGE_CELL_MARGIN_Y = 141
 PARAGRAPH_TAB_STOP_UNITS_PER_HWPUNIT = 2
 PROOF_DEFAULT_DPI = 300
 PROOF_JPEG_QUALITY = 92
+UI_PAD = 6
+UI_PAD_SM = 4
+UI_GAP = 6
+UI_GAP_LG = 8
+UI_BUTTON_IPADY = 4
+STATUS_HINT_READY = "준비"
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
     "check_on_start": True,
@@ -2984,6 +2990,7 @@ class ToolTip:
             padding=(6, 3),
             relief="solid",
             borderwidth=1,
+            wraplength=360,
         )
         label.pack()
 
@@ -2997,8 +3004,8 @@ class MvpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("한글 스타일 자동화 MVP")
-        self.geometry("440x1000")
-        self.minsize(420, 720)
+        self.geometry("420x820")
+        self.minsize(400, 680)
         self.hwp = None
         self.style_records: list[StyleRecord] = []
         self.active_style_set_name, self.style_sets = load_style_sets()
@@ -3030,8 +3037,12 @@ class MvpApp(tk.Tk):
         self._refreshing = False
         self._applying_style = False
 
+        self.status_hint_var = tk.StringVar(value=STATUS_HINT_READY)
+        self.status_hint = ttk.Label(self, textvariable=self.status_hint_var, anchor="w", padding=(UI_PAD, 2), relief="sunken")
+        self.status_hint.pack(side="bottom", fill="x")
+
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=6, pady=(6, 4))
+        self.notebook.pack(side="top", fill="both", expand=True, padx=UI_PAD, pady=(UI_PAD, UI_PAD_SM))
 
         self._build_styles_tab()
         self._build_table_tab()
@@ -3047,7 +3058,20 @@ class MvpApp(tk.Tk):
         if self.update_settings.get("enabled") and self.update_settings.get("check_on_start"):
             self.after(1500, lambda: self.check_for_updates(silent=True))
 
-    def create_scrollable_tab(self, title: str, *, padding: int = 8) -> ttk.Frame:
+    def set_status_hint(self, text: str) -> None:
+        self.status_hint_var.set(text or STATUS_HINT_READY)
+
+    def clear_status_hint(self, text: str | None = None) -> None:
+        if text is None or self.status_hint_var.get() == text:
+            self.status_hint_var.set(STATUS_HINT_READY)
+
+    def add_help(self, widget, text: str) -> None:
+        ToolTip(widget, text)
+        widget.bind("<Enter>", lambda _event, value=text: self.set_status_hint(value), add="+")
+        widget.bind("<Leave>", lambda _event, value=text: self.clear_status_hint(value), add="+")
+        widget.bind("<ButtonPress>", lambda _event, value=text: self.clear_status_hint(value), add="+")
+
+    def create_scrollable_tab(self, title: str, *, padding: int = UI_PAD) -> ttk.Frame:
         outer = ttk.Frame(self.notebook)
         self.notebook.add(outer, text=title)
         outer.grid_rowconfigure(0, weight=1)
@@ -3135,7 +3159,7 @@ class MvpApp(tk.Tk):
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_rowconfigure(0, weight=1)
 
-        style_group = ttk.LabelFrame(frame, text="스타일 적용", padding=8)
+        style_group = ttk.LabelFrame(frame, text="스타일 적용", padding=UI_PAD)
         style_group.grid(row=0, column=0, sticky="nsew")
 
         set_row = ttk.Frame(style_group)
@@ -3152,17 +3176,12 @@ class MvpApp(tk.Tk):
         self.style_set_combo.bind("<<ComboboxSelected>>", self.on_style_set_selected)
         ttk.Button(set_row, text="관리", command=self.open_style_sets_window).pack(side="left", padx=(8, 0))
 
-        ttk.Label(style_group, text="선택한 세트의 스타일 이름").pack(anchor="w", pady=(8, 0))
+        ttk.Label(style_group, text="선택한 세트의 스타일 이름").pack(anchor="w", pady=(UI_GAP, 0))
         self.style_list = tk.Listbox(style_group, height=10)
-        self.style_list.pack(fill="both", expand=True, pady=(8, 0))
+        self.style_list.pack(fill="both", expand=True, pady=(UI_GAP, 0))
         self.style_list.bind("<<ListboxSelect>>", self.on_style_selected)
         self.style_list.bind("<Double-Button-1>", lambda _event: self.apply_selected_style(reason="double-click"))
-
-        ttk.Label(
-            style_group,
-            text="클릭하면 현재 문서의 같은 이름 스타일을 적용합니다.",
-            wraplength=390,
-        ).pack(anchor="w", pady=(8, 0))
+        self.add_help(self.style_list, "클릭하면 현재 문서의 같은 이름 스타일을 적용합니다.")
 
         row3 = ttk.Frame(style_group)
         row3.pack(fill="x", pady=(5, 0))
@@ -3176,7 +3195,7 @@ class MvpApp(tk.Tk):
         self.build_cleanup_controls(cleanup_frame)
 
     def _build_table_tab(self) -> None:
-        frame = ttk.Frame(self.notebook, padding=8)
+        frame = ttk.Frame(self.notebook, padding=UI_PAD)
         self.table_frame = frame
         self.notebook.add(frame, text="표 편집")
         self.build_table_tab_content()
@@ -3184,7 +3203,7 @@ class MvpApp(tk.Tk):
     def _build_page_tab(self) -> None:
         frame = self.create_scrollable_tab("쪽 편집")
 
-        hide_group = ttk.LabelFrame(frame, text="감추기", padding=8)
+        hide_group = ttk.LabelFrame(frame, text="감추기", padding=UI_PAD)
         hide_group.pack(fill="x")
         ttk.Button(
             hide_group,
@@ -3192,8 +3211,8 @@ class MvpApp(tk.Tk):
             command=self.hide_current_page_header_footer_page_number,
         ).pack(fill="x")
 
-        number_group = ttk.LabelFrame(frame, text="새 번호 개체", padding=8)
-        number_group.pack(fill="x", pady=(12, 0))
+        number_group = ttk.LabelFrame(frame, text="새 번호 개체", padding=UI_PAD)
+        number_group.pack(fill="x", pady=(UI_GAP_LG, 0))
         for column in range(3):
             number_group.grid_columnconfigure(column, weight=1)
         for column, (text, num_type) in enumerate((("새 쪽 번호", 0), ("새 표 번호", 4), ("새 그림 번호", 3))):
@@ -3203,8 +3222,8 @@ class MvpApp(tk.Tk):
                 command=lambda value=num_type, label=text: self.insert_new_number_object(value, label),
             ).grid(row=0, column=column, sticky="ew", padx=(0, 6 if column < 2 else 0), pady=(0, 6))
 
-        header_group = ttk.LabelFrame(frame, text="머리말 개체", padding=8)
-        header_group.pack(fill="x", pady=(12, 0))
+        header_group = ttk.LabelFrame(frame, text="머리말 개체", padding=UI_PAD)
+        header_group.pack(fill="x", pady=(UI_GAP_LG, 0))
         for column in range(3):
             header_group.grid_columnconfigure(column, weight=1)
         for column, (text, header_type) in enumerate((("머리말 양쪽", 0), ("머리말 짝수쪽", 1), ("머리말 홀수쪽", 2))):
@@ -3218,7 +3237,7 @@ class MvpApp(tk.Tk):
         frame = self.create_scrollable_tab("특수문자")
         frame.grid_columnconfigure(0, weight=1)
 
-        compose_group = ttk.LabelFrame(frame, text="겹치기글자", padding=8)
+        compose_group = ttk.LabelFrame(frame, text="겹치기글자", padding=UI_PAD)
         compose_group.grid(row=0, column=0, sticky="ew")
         compose_group.grid_columnconfigure(0, weight=1)
 
@@ -3238,7 +3257,7 @@ class MvpApp(tk.Tk):
         self.bind_dynamic_square_button_grid(compose_buttons_frame, compose_buttons)
 
         custom_row = ttk.Frame(compose_group)
-        custom_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        custom_row.grid(row=1, column=0, sticky="ew", pady=(UI_GAP, 0))
         custom_row.grid_columnconfigure(0, weight=1)
         custom_entry = ttk.Entry(custom_row, textvariable=self.compose_number_var, width=12)
         custom_entry.grid(row=0, column=0, sticky="ew")
@@ -3249,8 +3268,8 @@ class MvpApp(tk.Tk):
             command=self.insert_custom_square_composed_number,
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
-        checkbox_group = ttk.LabelFrame(frame, text="체크박스", padding=8)
-        checkbox_group.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        checkbox_group = ttk.LabelFrame(frame, text="체크박스", padding=UI_PAD)
+        checkbox_group.grid(row=1, column=0, sticky="ew", pady=(UI_GAP_LG, 0))
         self.create_square_compose_button(
             checkbox_group,
             chars="☑",
@@ -3281,8 +3300,8 @@ class MvpApp(tk.Tk):
             self.create_default_special_char_group(frame, title, chars, next_row)
             next_row += 1
 
-        favorite_group = ttk.LabelFrame(frame, text="자주 쓰는 특수문자", padding=8)
-        favorite_group.grid(row=next_row, column=0, sticky="ew", pady=(12, 0))
+        favorite_group = ttk.LabelFrame(frame, text="자주 쓰는 특수문자", padding=UI_PAD)
+        favorite_group.grid(row=next_row, column=0, sticky="ew", pady=(UI_GAP_LG, 0))
         favorite_group.grid_columnconfigure(0, weight=1)
         self.favorite_special_chars_frame = ttk.Frame(favorite_group)
         self.favorite_special_chars_frame.grid(row=0, column=0, sticky="ew")
@@ -3290,7 +3309,7 @@ class MvpApp(tk.Tk):
             favorite_group,
             text="관리",
             command=self.open_special_chars_window,
-        ).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        ).grid(row=1, column=0, sticky="ew", pady=(UI_GAP, 0))
         self.refresh_favorite_special_chars_buttons()
 
     def create_square_compose_button(
@@ -3393,8 +3412,8 @@ class MvpApp(tk.Tk):
         chars: tuple[str, ...],
         row: int,
     ) -> None:
-        group = ttk.LabelFrame(parent, text=title, padding=8)
-        group.grid(row=row, column=0, sticky="ew", pady=(12, 0))
+        group = ttk.LabelFrame(parent, text=title, padding=UI_PAD)
+        group.grid(row=row, column=0, sticky="ew", pady=(UI_GAP_LG, 0))
         group.grid_columnconfigure(0, weight=1)
         buttons_frame = ttk.Frame(group)
         buttons_frame.grid(row=0, column=0, sticky="ew")
@@ -3749,7 +3768,7 @@ class MvpApp(tk.Tk):
                 pady=(0 if row == 0 else TABLE_ICON_BUTTON_GAP, 0),
                 sticky="w",
             )
-            ToolTip(button, tooltip)
+            self.add_help(button, tooltip)
 
     def build_table_tab_content(self) -> None:
         frame = self.table_frame
@@ -3767,9 +3786,9 @@ class MvpApp(tk.Tk):
         bottom_frame = ttk.Frame(frame)
         bottom_frame.pack(side="bottom", fill="x")
         ttk.Button(bottom_frame, text="markdown 표 → 한글 표", command=self.convert_selected_markdown_table).pack(
-            fill="x", pady=(0, 6), ipady=8
+            fill="x", pady=(0, UI_GAP), ipady=UI_BUTTON_IPADY
         )
-        ttk.Button(bottom_frame, text="표 설정", command=self.open_table_settings_window).pack(fill="x", ipady=8)
+        ttk.Button(bottom_frame, text="표 설정", command=self.open_table_settings_window).pack(fill="x", ipady=UI_BUTTON_IPADY)
 
         scroll_host = ttk.Frame(frame)
         scroll_host.pack(side="top", fill="both", expand=True)
@@ -3834,7 +3853,7 @@ class MvpApp(tk.Tk):
             side="left", fill="x", expand=True, padx=(6, 0)
         )
         for button in table_action_row.winfo_children():
-            button.pack_configure(ipady=8)
+            button.pack_configure(ipady=UI_BUTTON_IPADY)
 
         section_label("번호종류")
         numbering_row = ttk.Frame(content)
@@ -3863,7 +3882,7 @@ class MvpApp(tk.Tk):
                     padx=(0 if col == 0 else 6, 0),
                     pady=(0 if row == 0 else 6, 0),
                     sticky="ew",
-                    ipady=8,
+                    ipady=UI_BUTTON_IPADY,
                 )
             clear_index = len(table_content_styles)
             row, col = divmod(clear_index, 4)
@@ -3877,7 +3896,7 @@ class MvpApp(tk.Tk):
                 padx=(0 if col == 0 else 6, 0),
                 pady=(0 if row == 0 else 6, 0),
                 sticky="ew",
-                ipady=8,
+                ipady=UI_BUTTON_IPADY,
             )
             for col in range(4):
                 table_style_buttons.columnconfigure(col, weight=1)
@@ -3887,7 +3906,7 @@ class MvpApp(tk.Tk):
                 table_style_buttons,
                 text="글자스타일제거",
                 command=self.clear_selected_character_style,
-            ).pack(fill="x", pady=(6, 0), ipady=8)
+            ).pack(fill="x", pady=(UI_GAP, 0), ipady=UI_BUTTON_IPADY)
 
         section_label("표 스타일")
         table_style_icons = ttk.Frame(content)
@@ -3922,7 +3941,7 @@ class MvpApp(tk.Tk):
             relief="raised",
             bd=1,
         )
-        title_button.pack(fill="x", pady=(0, 6), ipady=8)
+        title_button.pack(fill="x", pady=(0, UI_GAP), ipady=UI_BUTTON_IPADY)
 
     def table_content_style_records(self) -> list[StyleRecord]:
         prefix = normalize_style_name("표내용-")
@@ -4345,8 +4364,8 @@ class MvpApp(tk.Tk):
         ttk.Button(buttons, text="취소", command=window.destroy).pack(side="left", padx=(8, 0))
 
     def build_paragraph_tab_controls(self, parent: ttk.Frame) -> None:
-        tab_group = ttk.LabelFrame(parent, text="문단 탭", padding=8)
-        tab_group.pack(fill="x", pady=(8, 0))
+        tab_group = ttk.LabelFrame(parent, text="문단 탭", padding=UI_PAD)
+        tab_group.pack(fill="x", pady=(UI_GAP, 0))
         tab_group.grid_columnconfigure(0, weight=1, uniform="paragraph-tab")
         tab_group.grid_columnconfigure(1, weight=1, uniform="paragraph-tab")
         ttk.Button(
@@ -4361,8 +4380,9 @@ class MvpApp(tk.Tk):
         ).grid(row=0, column=1, sticky="ew")
 
     def build_cleanup_controls(self, parent: ttk.Frame) -> None:
-        cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=8)
-        cleanup_group.pack(fill="x", pady=(8, 0))
+        cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=UI_PAD)
+        cleanup_group.pack(fill="x", pady=(UI_GAP, 0))
+        self.add_help(cleanup_group, "정리 버튼은 한글에서 글자나 표 셀을 선택한 상태로 사용합니다.")
 
         sentence_buttons = ttk.Frame(cleanup_group)
         sentence_buttons.pack(fill="x")
@@ -4388,13 +4408,13 @@ class MvpApp(tk.Tk):
             font=bulk_font,
             relief="raised",
             bd=1,
-        ).grid(row=0, column=0, sticky="nsew", ipady=8)
+        ).grid(row=0, column=0, sticky="nsew", ipady=UI_BUTTON_IPADY)
         ttk.Button(main_buttons, text="「 」 씌우기", command=self.wrap_regulation_names_in_selection).grid(
             row=1,
             column=0,
             sticky="nsew",
             pady=(6, 0),
-            ipady=8,
+            ipady=UI_BUTTON_IPADY,
         )
 
         right_buttons = ttk.Frame(sentence_buttons)
@@ -4417,11 +4437,11 @@ class MvpApp(tk.Tk):
                 sticky="nsew",
                 padx=(0 if index % 2 == 0 else 6, 0),
                 pady=(0 if index < 2 else 6, 0),
-                ipady=8,
+                ipady=UI_BUTTON_IPADY,
             )
 
-        number_group = ttk.LabelFrame(parent, text="숫자 정리", padding=8)
-        number_group.pack(fill="x", pady=(8, 0))
+        number_group = ttk.LabelFrame(parent, text="숫자 정리", padding=UI_PAD)
+        number_group.pack(fill="x", pady=(UI_GAP, 0))
         number_buttons = ttk.Frame(number_group)
         number_buttons.pack(fill="x")
         ttk.Button(number_buttons, text="천원단위 쉼표 넣기", command=self.add_commas_to_selection).pack(
@@ -4431,8 +4451,8 @@ class MvpApp(tk.Tk):
             side="left", fill="x", expand=True, padx=(6, 0)
         )
 
-        decimal_group = ttk.LabelFrame(parent, text="소숫점 지정", padding=8)
-        decimal_group.pack(fill="x", pady=(8, 0))
+        decimal_group = ttk.LabelFrame(parent, text="소숫점 지정", padding=UI_PAD)
+        decimal_group.pack(fill="x", pady=(UI_GAP, 0))
         decimal_row = ttk.Frame(decimal_group)
         decimal_row.pack(fill="x")
         ttk.Label(decimal_row, text="소숫점").pack(side="left")
@@ -4450,8 +4470,8 @@ class MvpApp(tk.Tk):
             side="left", fill="x", expand=True, padx=(6, 0)
         )
 
-        unit_group = ttk.LabelFrame(parent, text="단위 변환", padding=8)
-        unit_group.pack(fill="x", pady=(8, 0))
+        unit_group = ttk.LabelFrame(parent, text="단위 변환", padding=UI_PAD)
+        unit_group.pack(fill="x", pady=(UI_GAP, 0))
         unit_decimal_row = ttk.Frame(unit_group)
         unit_decimal_row.pack(fill="x")
         ttk.Label(unit_decimal_row, text="변환 후 소숫점").pack(side="left")
@@ -4501,10 +4521,10 @@ class MvpApp(tk.Tk):
                 command=command,
             )
             button.grid(row=0, column=index, sticky="ew", padx=(6 if index else 0, 0))
-            ToolTip(button, unit_tooltips[button_text])
+            self.add_help(button, unit_tooltips[button_text])
 
-        date_group = ttk.LabelFrame(parent, text="날짜 정규화", padding=8)
-        date_group.pack(fill="x", pady=(8, 0))
+        date_group = ttk.LabelFrame(parent, text="날짜 정규화", padding=UI_PAD)
+        date_group.pack(fill="x", pady=(UI_GAP, 0))
         date_buttons = ttk.Frame(date_group)
         date_buttons.pack(fill="x")
         ttk.Button(date_buttons, text="0000년 0월 0일", command=self.normalize_dates_to_korean).pack(
@@ -4525,8 +4545,8 @@ class MvpApp(tk.Tk):
             side="left", fill="x", expand=True, padx=(6, 0)
         )
 
-        year_group = ttk.LabelFrame(parent, text="연도 정규화", padding=8)
-        year_group.pack(fill="x", pady=(8, 0))
+        year_group = ttk.LabelFrame(parent, text="연도 정규화", padding=UI_PAD)
+        year_group.pack(fill="x", pady=(UI_GAP, 0))
         year_buttons = ttk.Frame(year_group)
         year_buttons.pack(fill="x")
         ttk.Button(year_buttons, text="0000년", command=lambda: self.normalize_years_to_selection("full", "0000년")).pack(
@@ -4541,8 +4561,8 @@ class MvpApp(tk.Tk):
 
         self.build_paragraph_tab_controls(parent)
 
-        table_group = ttk.LabelFrame(parent, text="표 정리/되돌리기", padding=8)
-        table_group.pack(fill="x", pady=(8, 0))
+        table_group = ttk.LabelFrame(parent, text="표 정리/되돌리기", padding=UI_PAD)
+        table_group.pack(fill="x", pady=(UI_GAP, 0))
         table_buttons = ttk.Frame(table_group)
         table_buttons.pack(fill="x")
         ttk.Button(table_buttons, text="엑셀표 정리", command=self.clean_excel_table).pack(
@@ -4552,28 +4572,19 @@ class MvpApp(tk.Tk):
             side="left", fill="x", expand=True, padx=(6, 0)
         )
 
-        ttk.Label(
-            parent,
-            text="정리 버튼은 한글에서 글자나 표 셀을 선택한 상태로 사용합니다.",
-            wraplength=390,
-        ).pack(anchor="w", pady=(8, 0))
-
     def _build_cover_logo_tab(self) -> None:
         frame = self.create_scrollable_tab("양식/그림")
 
-        cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=8)
+        cover_group = ttk.LabelFrame(frame, text="표지 자동화", padding=UI_PAD)
         cover_group.pack(fill="x", pady=(0, 10))
         ttk.Checkbutton(cover_group, text="대외비 표시", variable=self.cover_confidential).pack(anchor="w")
-        ttk.Button(cover_group, text="선택 내용으로 표지 만들기", command=self.create_cover_from_selected_lines).pack(
+        cover_button = ttk.Button(cover_group, text="선택 내용으로 표지 만들기", command=self.create_cover_from_selected_lines)
+        cover_button.pack(
             fill="x", pady=(6, 0)
         )
-        ttk.Label(
-            cover_group,
-            text="한글에서 제목, 날짜, 부서명을 선택한 뒤 실행합니다. 부서명은 Shift+Enter 줄바꿈처럼 여러 줄이어도 됩니다.",
-            wraplength=390,
-        ).pack(anchor="w", pady=(6, 0))
+        self.add_help(cover_button, "한글에서 제목, 날짜, 부서명을 선택한 뒤 실행합니다. 부서명은 Shift+Enter 줄바꿈처럼 여러 줄이어도 됩니다.")
 
-        template_group = ttk.LabelFrame(frame, text="보고 양식", padding=8)
+        template_group = ttk.LabelFrame(frame, text="보고 양식", padding=UI_PAD)
         template_group.pack(fill="x", pady=(0, 10))
         ttk.Button(
             template_group,
@@ -4586,7 +4597,7 @@ class MvpApp(tk.Tk):
             command=self.insert_title_number_box_template,
         ).pack(fill="x", pady=(6, 0))
 
-        proof_group = ttk.LabelFrame(frame, text="증빙 PDF", padding=8)
+        proof_group = ttk.LabelFrame(frame, text="증빙 PDF", padding=UI_PAD)
         proof_group.pack(fill="x", pady=(0, 10))
         proof_option_row = ttk.Frame(proof_group)
         proof_option_row.pack(fill="x", pady=(0, 6))
@@ -4608,7 +4619,7 @@ class MvpApp(tk.Tk):
             command=self.insert_single_proof_pdf,
         ).pack(fill="x", pady=(6, 0))
 
-        picture_group = ttk.LabelFrame(frame, text="그림", padding=8)
+        picture_group = ttk.LabelFrame(frame, text="그림", padding=UI_PAD)
         picture_group.pack(fill="x", pady=(0, 10))
         picture_tool_row = ttk.Frame(picture_group)
         picture_tool_row.pack(fill="x")
@@ -4630,16 +4641,16 @@ class MvpApp(tk.Tk):
         for column in range(3):
             picture_tool_row.grid_columnconfigure(column, weight=1, uniform="picture-tools")
 
-        logo_group = ttk.LabelFrame(frame, text="로고 삽입", padding=8)
+        logo_group = ttk.LabelFrame(frame, text="로고 삽입", padding=UI_PAD)
         logo_group.pack(fill="both", expand=True)
         logo_size_row = ttk.Frame(logo_group)
         logo_size_row.pack(fill="x", pady=(0, 8))
         ttk.Label(logo_size_row, text="높이(mm)").pack(side="left")
         ttk.Entry(logo_size_row, textvariable=self.logo_height_var, width=8).pack(side="left", padx=(6, 0))
-        ttk.Label(logo_size_row, text="칩을 누르면 커서 위치에 삽입됩니다.").pack(side="left", padx=(10, 0))
 
         self.logo_chip_frame = ttk.Frame(logo_group)
         self.logo_chip_frame.pack(fill="both", expand=True)
+        self.add_help(self.logo_chip_frame, "로고 칩을 누르면 커서 위치에 삽입됩니다.")
 
     def log(self, lines: Iterable[str] | str) -> None:
         if isinstance(lines, str):
@@ -6002,6 +6013,7 @@ class MvpApp(tk.Tk):
                 command=lambda item=logo: self.insert_logo_at_cursor(item),
             )
             button.grid(row=row, column=col, columnspan=span, sticky="nsew", padx=(0, 6), pady=(0, 6))
+            self.add_help(button, "로고 칩을 누르면 커서 위치에 삽입됩니다.")
             col += span
             if col >= max_columns:
                 row += 1
