@@ -24,6 +24,7 @@ from hwp_style_mvp import (  # noqa: E402
     google_drive_direct_download_url,
     google_drive_file_id,
     github_api_latest_release_url,
+    initial_app_geometry,
     is_rectangular_cell_matrix,
     is_newer_version,
     looks_like_cell_clipboard_matrix,
@@ -99,6 +100,9 @@ from hwp_style_mvp import (  # noqa: E402
 
 
 class CellMatrixTransformTests(unittest.TestCase):
+    def test_initial_app_geometry_fills_work_area_height_except_margins(self) -> None:
+        self.assertEqual(initial_app_geometry((0, 0, 1920, 1040)), "420x1024+1492+8")
+
     def test_sync_builtin_templates_overwrites_builtin_and_preserves_custom(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)

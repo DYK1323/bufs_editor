@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
 import io
 import json
 import os
@@ -95,6 +96,36 @@ def user_config_root() -> Path:
     if base:
         return Path(base) / "BUFS-HWP-Editor"
     return Path.home() / ".bufs-hwp-editor"
+
+
+def get_primary_work_area() -> tuple[int, int, int, int] | None:
+    if os.name != "nt":
+        return None
+
+    class Rect(ctypes.Structure):
+        _fields_ = [
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        ]
+
+    rect = Rect()
+    try:
+        ok = ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
+    except Exception:
+        return None
+    if not ok:
+        return None
+    return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+
+
+def initial_app_geometry(work_area: tuple[int, int, int, int]) -> str:
+    left, top, right, bottom = work_area
+    y = top + APP_WINDOW_TOP_MARGIN
+    height = max(680, bottom - y - APP_WINDOW_BOTTOM_MARGIN)
+    x = max(left, right - APP_WINDOW_WIDTH - APP_WINDOW_RIGHT_MARGIN)
+    return f"{APP_WINDOW_WIDTH}x{height}+{x}+{y}"
 
 
 ROOT = app_root()
@@ -186,6 +217,7 @@ APP_WINDOW_WIDTH = 420
 APP_WINDOW_HEIGHT = 820
 APP_WINDOW_RIGHT_MARGIN = 8
 APP_WINDOW_TOP_MARGIN = 8
+APP_WINDOW_BOTTOM_MARGIN = 8
 STATUS_HINT_READY = "준비"
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
@@ -3008,8 +3040,10 @@ class MvpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("한글 스타일 자동화 MVP")
-        x = max(0, self.winfo_screenwidth() - APP_WINDOW_WIDTH - APP_WINDOW_RIGHT_MARGIN)
-        self.geometry(f"{APP_WINDOW_WIDTH}x{APP_WINDOW_HEIGHT}+{x}+{APP_WINDOW_TOP_MARGIN}")
+        work_area = get_primary_work_area()
+        if work_area is None:
+            work_area = (0, 0, self.winfo_screenwidth(), self.winfo_screenheight())
+        self.geometry(initial_app_geometry(work_area))
         self.minsize(400, 680)
         self.hwp = None
         self.style_records: list[StyleRecord] = []
