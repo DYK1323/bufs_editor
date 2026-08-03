@@ -129,7 +129,6 @@ except Exception as exc:  # pragma: no cover
 
 try:
     import pythoncom
-    import win32api
     import win32clipboard
     import win32com.client
     import win32con
@@ -137,7 +136,6 @@ try:
 except Exception:
     win32com = None  # type: ignore[assignment]
     pythoncom = None  # type: ignore[assignment]
-    win32api = None  # type: ignore[assignment]
     win32clipboard = None  # type: ignore[assignment]
     win32con = None  # type: ignore[assignment]
     win32gui = None  # type: ignore[assignment]
@@ -161,7 +159,6 @@ STYLE_SETS_FILE = CONFIG_ROOT / "style-sets.json"
 TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 SPECIAL_CHARS_FILE = CONFIG_ROOT / "special-chars.json"
-WINDOW_SETTINGS_FILE = CONFIG_ROOT / "window-settings.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
 APP_VERSION = "1.0.3"
 APP_NAME = "BUFS-HWP-Editor"
@@ -188,15 +185,8 @@ UI_BUTTON_IPADY = 4
 APP_WINDOW_WIDTH = 420
 APP_WINDOW_HEIGHT = 820
 APP_WINDOW_RIGHT_MARGIN = 8
-APP_WINDOW_TOP_MARGIN = 32
-APP_WINDOW_DOCK_GAP = 8
-APP_WINDOW_POSITION_SAVE_DELAY_MS = 700
+APP_WINDOW_TOP_MARGIN = 8
 STATUS_HINT_READY = "준비"
-DEFAULT_WINDOW_SETTINGS = {
-    "auto_dock": True,
-    "user_moved": False,
-    "geometry": "",
-}
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
     "check_on_start": True,
@@ -386,22 +376,6 @@ class HwpCandidate:
     path: str
     documents: str
     windows: str
-
-
-@dataclass(frozen=True)
-class MonitorWorkArea:
-    left: int
-    top: int
-    right: int
-    bottom: int
-
-    @property
-    def width(self) -> int:
-        return self.right - self.left
-
-    @property
-    def height(self) -> int:
-        return self.bottom - self.top
 
 
 @dataclass(frozen=True)
@@ -1395,44 +1369,6 @@ def load_update_settings() -> dict:
     if not isinstance(data, dict):
         return merge_dict(DEFAULT_UPDATE_SETTINGS, {})
     return merge_dict(DEFAULT_UPDATE_SETTINGS, data)
-
-
-def load_window_settings() -> dict:
-    if not WINDOW_SETTINGS_FILE.exists():
-        return merge_dict(DEFAULT_WINDOW_SETTINGS, {})
-    try:
-        data = read_json_file(WINDOW_SETTINGS_FILE)
-    except Exception:
-        return merge_dict(DEFAULT_WINDOW_SETTINGS, {})
-    if not isinstance(data, dict):
-        return merge_dict(DEFAULT_WINDOW_SETTINGS, {})
-    return merge_dict(DEFAULT_WINDOW_SETTINGS, data)
-
-
-def save_window_settings(settings: dict) -> None:
-    write_json_file(WINDOW_SETTINGS_FILE, merge_dict(DEFAULT_WINDOW_SETTINGS, settings))
-
-
-def parse_tk_geometry(geometry: str) -> tuple[int, int, int, int] | None:
-    match = re.match(r"^(\d+)x(\d+)([+-]\d+)([+-]\d+)$", str(geometry).strip())
-    if not match:
-        return None
-    width, height, x, y = match.groups()
-    return int(width), int(height), int(x), int(y)
-
-
-def rect_intersects_work_area(x: int, y: int, width: int, height: int, area: MonitorWorkArea) -> bool:
-    right = x + max(1, width)
-    bottom = y + max(1, height)
-    return x < area.right and right > area.left and y < area.bottom and bottom > area.top
-
-
-def geometry_is_on_monitor(geometry: str) -> bool:
-    parsed = parse_tk_geometry(geometry)
-    if parsed is None:
-        return False
-    width, height, x, y = parsed
-    return any(rect_intersects_work_area(x, y, width, height, area) for area in list_monitor_work_areas())
 
 
 def version_parts(version: str) -> tuple[int, ...]:
@@ -2919,105 +2855,6 @@ def list_visible_window_titles() -> list[tuple[int, str]]:
     return windows
 
 
-def list_monitor_work_areas() -> list[MonitorWorkArea]:
-    if win32api is None:
-        return [MonitorWorkArea(0, 0, APP_WINDOW_WIDTH + APP_WINDOW_RIGHT_MARGIN, APP_WINDOW_HEIGHT + APP_WINDOW_TOP_MARGIN)]
-
-    areas: list[MonitorWorkArea] = []
-    try:
-        monitors = win32api.EnumDisplayMonitors()
-    except Exception:
-        monitors = []
-    for monitor in monitors:
-        try:
-            info = win32api.GetMonitorInfo(monitor[0])
-            left, top, right, bottom = info.get("Work") or info.get("Monitor")
-            areas.append(MonitorWorkArea(int(left), int(top), int(right), int(bottom)))
-        except Exception:
-            continue
-    if areas:
-        return areas
-    return [MonitorWorkArea(0, 0, APP_WINDOW_WIDTH + APP_WINDOW_RIGHT_MARGIN, APP_WINDOW_HEIGHT + APP_WINDOW_TOP_MARGIN)]
-
-
-def monitor_for_rect(rect: tuple[int, int, int, int]) -> MonitorWorkArea:
-    areas = list_monitor_work_areas()
-    left, top, right, bottom = rect
-    center_x = int((left + right) / 2)
-    center_y = int((top + bottom) / 2)
-    for area in areas:
-        if area.left <= center_x < area.right and area.top <= center_y < area.bottom:
-            return area
-
-    def overlap_score(area: MonitorWorkArea) -> int:
-        overlap_w = max(0, min(right, area.right) - max(left, area.left))
-        overlap_h = max(0, min(bottom, area.bottom) - max(top, area.top))
-        return overlap_w * overlap_h
-
-    return max(areas, key=overlap_score)
-
-
-def fallback_window_geometry() -> str:
-    area = list_monitor_work_areas()[0]
-    width = min(APP_WINDOW_WIDTH, max(1, area.width))
-    height = min(APP_WINDOW_HEIGHT, max(1, area.height))
-    x = max(area.left, area.right - width - APP_WINDOW_RIGHT_MARGIN)
-    y = max(area.top, area.top + APP_WINDOW_TOP_MARGIN)
-    return f"{width}x{height}+{x}+{y}"
-
-
-def find_hwp_window(path: Path | None = None) -> tuple[int, str] | None:
-    if win32gui is None:
-        return None
-
-    names: list[str] = []
-    if path is not None:
-        names.extend([path.name, path.stem])
-
-    candidates: list[tuple[int, str, int]] = []
-    for hwnd, title in list_visible_window_titles():
-        if "한글" not in title:
-            continue
-        score = 10
-        for name in names:
-            if name and name in title:
-                score += 100
-                break
-        if title.endswith("- 한글"):
-            score += 20
-        candidates.append((hwnd, title, score))
-
-    if not candidates:
-        return None
-    hwnd, title, _score = sorted(candidates, key=lambda item: item[2], reverse=True)[0]
-    return hwnd, title
-
-
-def dock_geometry_for_hwp_window(hwnd: int) -> str | None:
-    if win32gui is None:
-        return None
-    try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-    except Exception:
-        return None
-    area = monitor_for_rect((left, top, right, bottom))
-    width = min(APP_WINDOW_WIDTH, max(1, area.width))
-    height = min(APP_WINDOW_HEIGHT, max(1, area.height))
-    y = min(max(top, area.top + APP_WINDOW_TOP_MARGIN), max(area.top, area.bottom - height))
-
-    right_x = right + APP_WINDOW_DOCK_GAP
-    if right_x + width <= area.right:
-        x = right_x
-    else:
-        left_x = left - width - APP_WINDOW_DOCK_GAP
-        if left_x >= area.left:
-            x = left_x
-        else:
-            x = max(area.left, area.right - width - APP_WINDOW_RIGHT_MARGIN)
-            y = max(area.top, area.top + APP_WINDOW_TOP_MARGIN)
-    return f"{width}x{height}+{x}+{y}"
-
-
 def list_hwp_candidates() -> list[HwpCandidate]:
     if pythoncom is None or win32com is None:
         return []
@@ -3171,14 +3008,10 @@ class MvpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("한글 스타일 자동화 MVP")
-        self.hwp = None
-        self.window_settings = load_window_settings()
-        self._applying_window_geometry = False
-        self._window_geometry_initialized = False
-        self._last_programmatic_geometry = ""
-        self._window_position_save_job = None
-        self.apply_window_geometry(self.initial_window_geometry())
+        x = max(0, self.winfo_screenwidth() - APP_WINDOW_WIDTH - APP_WINDOW_RIGHT_MARGIN)
+        self.geometry(f"{APP_WINDOW_WIDTH}x{APP_WINDOW_HEIGHT}+{x}+{APP_WINDOW_TOP_MARGIN}")
         self.minsize(400, 680)
+        self.hwp = None
         self.style_records: list[StyleRecord] = []
         self.active_style_set_name, self.style_sets = load_style_sets()
         self.current_doc_style_path: Path | None = None
@@ -3223,93 +3056,12 @@ class MvpApp(tk.Tk):
         self._build_cover_logo_tab()
         self._build_status_tab()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.bind("<Configure>", self.on_window_configure, add="+")
         self.bind_all("<Control-z>", self.on_global_undo)
         self.bind_all("<Control-Z>", self.on_global_undo)
         self.refresh_all()
-        self.after(1000, self.enable_window_geometry_tracking)
         self.after(700, self.warm_current_doc_style_cache)
         if self.update_settings.get("enabled") and self.update_settings.get("check_on_start"):
             self.after(1500, lambda: self.check_for_updates(silent=True))
-
-    def initial_window_geometry(self) -> str:
-        saved_geometry = str(self.window_settings.get("geometry") or "")
-        if saved_geometry and bool(self.window_settings.get("user_moved")) and geometry_is_on_monitor(saved_geometry):
-            return saved_geometry
-        if bool(self.window_settings.get("auto_dock", True)):
-            docked = self.hwp_window_dock_geometry()
-            if docked:
-                return docked
-        if saved_geometry and geometry_is_on_monitor(saved_geometry):
-            return saved_geometry
-        return fallback_window_geometry()
-
-    def apply_window_geometry(self, geometry: str) -> None:
-        self._applying_window_geometry = True
-        self._last_programmatic_geometry = geometry
-        self.geometry(geometry)
-        self.after_idle(self.finish_applying_window_geometry)
-
-    def finish_applying_window_geometry(self) -> None:
-        self._applying_window_geometry = False
-
-    def enable_window_geometry_tracking(self) -> None:
-        self._window_geometry_initialized = True
-
-    def hwp_window_dock_geometry(self) -> str | None:
-        window = find_hwp_window(self.get_current_hwp_path())
-        if window is None:
-            return None
-        hwnd, _title = window
-        return dock_geometry_for_hwp_window(hwnd)
-
-    def dock_to_hwp_window(self, *, force: bool = False) -> bool:
-        if not force and (
-            not bool(self.window_settings.get("auto_dock", True))
-            or bool(self.window_settings.get("user_moved"))
-        ):
-            return False
-        geometry = self.hwp_window_dock_geometry()
-        if not geometry:
-            return False
-        self.window_settings["auto_dock"] = True
-        self.window_settings["user_moved"] = False
-        self.window_settings["geometry"] = geometry
-        save_window_settings(self.window_settings)
-        self.apply_window_geometry(geometry)
-        return True
-
-    def force_dock_to_hwp_window(self) -> None:
-        if self.dock_to_hwp_window(force=True):
-            self.log("창 위치: 한글 창 옆으로 이동")
-        else:
-            self.log("창 위치: 붙일 한글 창을 찾지 못했습니다.")
-
-    def on_window_configure(self, event=None) -> None:
-        if event is None or event.widget is not self:
-            return
-        if not self._window_geometry_initialized or self._applying_window_geometry:
-            return
-        geometry = self.geometry()
-        parsed = parse_tk_geometry(geometry)
-        if parsed is None:
-            return
-        if self._window_position_save_job is not None:
-            self.after_cancel(self._window_position_save_job)
-        self._window_position_save_job = self.after(
-            APP_WINDOW_POSITION_SAVE_DELAY_MS,
-            lambda value=geometry: self.save_user_window_geometry(value),
-        )
-
-    def save_user_window_geometry(self, geometry: str) -> None:
-        self._window_position_save_job = None
-        if geometry == self._last_programmatic_geometry:
-            return
-        if self._applying_window_geometry or not geometry_is_on_monitor(geometry):
-            return
-        self.window_settings["user_moved"] = True
-        self.window_settings["geometry"] = geometry
-        save_window_settings(self.window_settings)
 
     def set_status_hint(self, text: str) -> None:
         self.status_hint_var.set(text or STATUS_HINT_READY)
@@ -3394,7 +3146,6 @@ class MvpApp(tk.Tk):
             ("자산 다시 읽기", self.refresh_all),
             ("업데이트 확인", lambda: self.check_for_updates(silent=False)),
             ("실행취소", self.undo_hwp),
-            ("한글 옆에 붙이기", self.force_dock_to_hwp_window),
         )
         for index, (text, command) in enumerate(status_buttons):
             ttk.Button(buttons, text=text, command=command).grid(
@@ -8087,7 +7838,6 @@ class MvpApp(tk.Tk):
             self.current_doc_style_norm_map = {}
             self.refresh_current_doc_style_map(force=True)
             self.log(["한글 COM 연결 성공", *LAST_HWP_CONNECTION_LOG, *describe_hwp(self.hwp)])
-            self.dock_to_hwp_window()
         except Exception as exc:
             messagebox.showerror("한글 연결 실패", str(exc))
             self.log(f"한글 COM 연결 실패: {exc}")
@@ -9600,11 +9350,28 @@ class MvpApp(tk.Tk):
         if win32gui is None:
             return False
 
-        window = find_hwp_window(self.get_current_hwp_path())
-        if window is None:
+        path = self.get_current_hwp_path()
+        names: list[str] = []
+        if path is not None:
+            names.extend([path.name, path.stem])
+
+        candidates: list[tuple[int, str, int]] = []
+        for hwnd, title in list_visible_window_titles():
+            if "한글" not in title:
+                continue
+            score = 10
+            for name in names:
+                if name and name in title:
+                    score += 100
+                    break
+            if title.endswith("- 한글"):
+                score += 20
+            candidates.append((hwnd, title, score))
+
+        if not candidates:
             return False
 
-        hwnd, title = window
+        hwnd, title, _score = sorted(candidates, key=lambda item: item[2], reverse=True)[0]
         try:
             # SW_RESTORE breaks Windows snapped/split layouts even when the
             # window is already visible. Restore only minimized HWP windows.

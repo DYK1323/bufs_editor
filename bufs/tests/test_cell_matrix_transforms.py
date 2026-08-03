@@ -95,68 +95,10 @@ from hwp_style_mvp import (  # noqa: E402
     transform_cell_matrix,
     validate_update_zip,
     MvpApp,
-    MonitorWorkArea,
-    dock_geometry_for_hwp_window,
-    fallback_window_geometry,
-    parse_tk_geometry,
 )
 
 
 class CellMatrixTransformTests(unittest.TestCase):
-    def test_fallback_window_geometry_uses_monitor_work_area_right_edge(self) -> None:
-        original = hwp_style_mvp.list_monitor_work_areas
-        hwp_style_mvp.list_monitor_work_areas = lambda: [MonitorWorkArea(100, 20, 1500, 900)]
-        try:
-            self.assertEqual(fallback_window_geometry(), "420x820+1072+52")
-        finally:
-            hwp_style_mvp.list_monitor_work_areas = original
-
-    def test_dock_geometry_prefers_hwp_window_right_side_when_space_allows(self) -> None:
-        class FakeWin32Gui:
-            def GetWindowRect(self, _hwnd):
-                return (100, 40, 900, 700)
-
-        original_gui = hwp_style_mvp.win32gui
-        original_areas = hwp_style_mvp.list_monitor_work_areas
-        hwp_style_mvp.win32gui = FakeWin32Gui()
-        hwp_style_mvp.list_monitor_work_areas = lambda: [MonitorWorkArea(0, 0, 1600, 900)]
-        try:
-            self.assertEqual(dock_geometry_for_hwp_window(1), "420x820+908+40")
-        finally:
-            hwp_style_mvp.win32gui = original_gui
-            hwp_style_mvp.list_monitor_work_areas = original_areas
-
-    def test_dock_geometry_uses_left_side_when_right_side_is_full(self) -> None:
-        class FakeWin32Gui:
-            def GetWindowRect(self, _hwnd):
-                return (600, 40, 1500, 700)
-
-        original_gui = hwp_style_mvp.win32gui
-        original_areas = hwp_style_mvp.list_monitor_work_areas
-        hwp_style_mvp.win32gui = FakeWin32Gui()
-        hwp_style_mvp.list_monitor_work_areas = lambda: [MonitorWorkArea(0, 0, 1600, 900)]
-        try:
-            self.assertEqual(dock_geometry_for_hwp_window(1), "420x820+172+40")
-        finally:
-            hwp_style_mvp.win32gui = original_gui
-            hwp_style_mvp.list_monitor_work_areas = original_areas
-
-    def test_dock_geometry_falls_back_inside_maximized_hwp_window(self) -> None:
-        class FakeWin32Gui:
-            def GetWindowRect(self, _hwnd):
-                return (0, 0, 1600, 900)
-
-        original_gui = hwp_style_mvp.win32gui
-        original_areas = hwp_style_mvp.list_monitor_work_areas
-        hwp_style_mvp.win32gui = FakeWin32Gui()
-        hwp_style_mvp.list_monitor_work_areas = lambda: [MonitorWorkArea(0, 0, 1600, 860)]
-        try:
-            parsed = parse_tk_geometry(dock_geometry_for_hwp_window(1) or "")
-            self.assertEqual(parsed, (420, 820, 1172, 32))
-        finally:
-            hwp_style_mvp.win32gui = original_gui
-            hwp_style_mvp.list_monitor_work_areas = original_areas
-
     def test_sync_builtin_templates_overwrites_builtin_and_preserves_custom(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name)
