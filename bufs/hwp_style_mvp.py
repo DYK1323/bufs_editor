@@ -9875,6 +9875,28 @@ class MvpApp(tk.Tk):
         text = "".join(parts).replace("\r\n", "\n").replace("\r", "\n")
         return text.split("\n", 1)[0]
 
+    def read_single_paragraph_selection_text(
+        self,
+        selected_positions: tuple[tuple[int, int, int], tuple[int, int, int]],
+    ) -> tuple[str, int, int] | None:
+        start, end = selected_positions
+        if start[0] != end[0] or start[1] != end[1] or end[2] <= start[2]:
+            return None
+        list_id, para = start[0], start[1]
+        offset = self.hwp_paragraph_visible_text_offset(list_id, para)
+        visible_start = max(0, start[2] - offset)
+        visible_end = max(0, end[2] - offset)
+        if visible_end <= visible_start:
+            return None
+        paragraph_text = self.read_current_paragraph_text(list_id, para)
+        if paragraph_text is None or visible_start > len(paragraph_text):
+            return None
+        visible_end = min(visible_end, len(paragraph_text))
+        selected_text = paragraph_text[visible_start:visible_end]
+        if not selected_text:
+            return None
+        return selected_text, visible_start, visible_end
+
     def get_current_heading_string(self) -> str:
         try:
             return safe_str(self.hwp.GetHeadingString())
@@ -10991,12 +11013,17 @@ class MvpApp(tk.Tk):
         strip_wrapping_lines: bool = False,
         reselect_current_cell: bool = False,
         reselect_after_paste: bool = False,
+        replace_single_paragraph_by_position: bool = False,
         preflight=None,
     ) -> None:
         if not self.ensure_hwp():
             return
         try:
-            selected_positions = self.get_selected_text_positions() if reselect_after_paste else None
+            selected_positions = (
+                self.get_selected_text_positions()
+                if reselect_after_paste or replace_single_paragraph_by_position
+                else None
+            )
             pre_copy_cell_range = None
             pre_copy_cell_block = allow_cell_iteration and self.is_selected_cell_block()
             if pre_copy_cell_block:
@@ -11067,7 +11094,15 @@ class MvpApp(tk.Tk):
                     "방금처럼 셀이 깨진 경우 한글에서 Ctrl+Z로 되돌린 뒤, 우선 한 셀 안의 텍스트만 선택해서 실행하세요.",
                 )
                 return
-            source_text = strip_wrapping_blank_lines(text) if strip_wrapping_lines else text
+            position_source = None
+            if replace_single_paragraph_by_position and selected_positions is not None and "\t" not in text:
+                position_source = self.read_single_paragraph_selection_text(selected_positions)
+            if position_source is not None:
+                selected_text, visible_start, visible_end = position_source
+                source_text = strip_wrapping_blank_lines(selected_text) if strip_wrapping_lines else selected_text
+            else:
+                visible_start = visible_end = None
+                source_text = strip_wrapping_blank_lines(text) if strip_wrapping_lines else text
             if not source_text:
                 self.log(f"{label}: 선택 텍스트가 빈 줄만 포함")
                 if reselect_current_cell:
@@ -11082,6 +11117,41 @@ class MvpApp(tk.Tk):
                     self.activate_hwp_window()
                 self.log(f"{label}: 변경 없음, CellReselect={cell_selected}")
                 return
+            if (
+                replace_single_paragraph_by_position
+                and selected_positions is not None
+                and "\t" not in text
+                and "\n" not in source_text
+                and "\r" not in source_text
+                and visible_start is not None
+                and visible_end is not None
+            ):
+                start, end = selected_positions
+                if start[0] == end[0] and start[1] == end[1]:
+                    replace_ok = False
+                    delete_ok = self.delete_hwp_text_range(start[0], start[1], visible_start, visible_end)
+                    if delete_ok:
+                        replace_ok = self.insert_hwp_text(transformed)
+                    if replace_ok:
+                        cell_selected = False
+                        text_reselected = False
+                        if reselect_current_cell:
+                            time.sleep(0.03)
+                            cell_selected = self.run_hwp_command("TableCellBlock")
+                        if not cell_selected and reselect_after_paste:
+                            time.sleep(0.03)
+                            text_reselected = self.reselect_hwp_text(start, transformed)
+                        self.activate_hwp_window()
+                        self.log(
+                            f"{label}: Copy={copy_ok}, PositionReplace=True, Paste=False, "
+                            f"CellReselect={cell_selected}, TextReselect={text_reselected}, "
+                            f"{len(text)}자 -> {len(transformed)}자"
+                        )
+                        return
+                    self.log(
+                        f"{label}: 위치 기반 교체 실패, "
+                        f"Delete={delete_ok}, Insert={replace_ok}, Paste fallback"
+                    )
             self.set_clipboard_text(transformed)
             paste_ok = self.run_hwp_command("Paste")
             cell_selected = False
@@ -11886,6 +11956,7 @@ class MvpApp(tk.Tk):
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
         )
 
     def normalize_dates_to_dot(self) -> None:
@@ -11895,6 +11966,7 @@ class MvpApp(tk.Tk):
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
         )
 
     def normalize_dates_to_dot_padded(self) -> None:
@@ -11904,6 +11976,7 @@ class MvpApp(tk.Tk):
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
         )
 
     def normalize_years_to_selection(self, style: str, label: str) -> None:
@@ -11913,6 +11986,7 @@ class MvpApp(tk.Tk):
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
         )
 
     def add_weekdays_to_selection(self) -> None:
@@ -11922,6 +11996,7 @@ class MvpApp(tk.Tk):
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
         )
 
     def remove_weekdays_from_selection(self) -> None:
@@ -11931,6 +12006,7 @@ class MvpApp(tk.Tk):
             allow_cell_iteration=True,
             strip_wrapping_lines=True,
             reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
         )
 
     def palette_color_or_rgb(self, name: str, rgb: tuple[int, int, int]) -> PaletteColor:

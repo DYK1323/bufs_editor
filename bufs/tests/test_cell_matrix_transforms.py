@@ -2535,6 +2535,51 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(written["text"], "2022. 9. 1.(목)")
 
+    def test_transform_text_replaces_single_paragraph_selection_by_position_without_paste(self) -> None:
+        class FakeHwp:
+            SelectionMode = 0
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((7, 3, 25), (7, 3, 36))
+        app.is_selected_cell_block = lambda: False
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.get_clipboard_text = lambda: "Article 41-2(2026. 2. 27. amended)"
+        app.read_single_paragraph_selection_text = lambda _positions: ("2026. 2. 27.", 25, 36)
+        commands: list[str] = []
+
+        def fake_run_hwp_command(command: str) -> bool:
+            commands.append(command)
+            return command in {"Copy", "TableCellBlock"}
+
+        app.run_hwp_command = fake_run_hwp_command
+        app.transform_selected_cell_matrix = lambda *args, **kwargs: self.fail(
+            "non-cell selection should not use cell matrix iteration"
+        )
+        app.set_clipboard_text = lambda _text: self.fail("position replacement should not write clipboard")
+        deleted: list[tuple[int, int, int, int]] = []
+        inserted: list[str] = []
+        app.delete_hwp_text_range = lambda list_id, para, start, end: deleted.append(
+            (list_id, para, start, end)
+        ) or True
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
+        app.activate_hwp_window = lambda: None
+
+        app.transform_selected_text(
+            "date normalize",
+            lambda text: normalize_dates(text, "dot_padded"),
+            allow_cell_iteration=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
+        )
+
+        self.assertEqual(deleted, [(7, 3, 25, 36)])
+        self.assertEqual(inserted, ["2026. 02. 27."])
+        self.assertNotIn("Paste", commands)
+
     def test_formula_address_iteration_moves_from_current_cell_to_each_formula_address(self) -> None:
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
