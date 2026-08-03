@@ -4414,7 +4414,7 @@ class MvpApp(tk.Tk):
         ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(
             tab_group,
-            text="점선 오른쪽탭",
+            text="목차 점선",
             command=self.apply_dotted_right_paragraph_tab,
         ).grid(row=0, column=1, sticky="ew")
 
@@ -10034,12 +10034,12 @@ class MvpApp(tk.Tk):
         try:
             self.activate_hwp_window()
             action, ok, tab_position, source = self.set_paragraph_dotted_right_tab()
-            self.log(f"점선 오른쪽탭: 기준={source}, 위치={tab_position}, action={action}, result={ok}")
+            self.log(f"목차 점선: 기준={source}, 위치={tab_position}, action={action}, result={ok}")
             if not ok:
-                messagebox.showwarning("점선 오른쪽탭", "현재 문단 또는 선택 영역에 문단 탭 설정을 적용하지 못했습니다.")
+                messagebox.showwarning("목차 점선", "현재 문단 또는 선택 영역에 문단 탭 설정을 적용하지 못했습니다.")
         except Exception as exc:
-            self.log(f"점선 오른쪽탭 실패: {type(exc).__name__}: {exc}")
-            messagebox.showerror("점선 오른쪽탭 실패", str(exc))
+            self.log(f"목차 점선 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror("목차 점선 실패", str(exc))
 
     def execute_put_new_para_number(self) -> tuple[bool, bool]:
         pset = self.hwp.HParameterSet.HParaShape
