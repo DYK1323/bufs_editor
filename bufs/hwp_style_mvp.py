@@ -9532,22 +9532,34 @@ class MvpApp(tk.Tk):
         return True
 
     def get_current_cell_address(self) -> tuple[int, int] | None:
+        indicator_address = None
+        indicator = None
+        try:
+            indicator = self.hwp.KeyIndicator()
+            for value in reversed(indicator if isinstance(indicator, tuple) else (indicator,)):
+                indicator_address = parse_cell_address_from_keyindicator(safe_str(value))
+                if indicator_address is not None:
+                    break
+        except Exception as exc:
+            self.debug(f"[cell-address] KeyIndicator 실패: {type(exc).__name__}: {exc}")
+
         try:
             first = int(self.hwp.GetTableCellAddr(0))
             second = int(self.hwp.GetTableCellAddr(1))
             if first >= 0 and second >= 0:
+                com_address = (first, second)
+                if indicator_address is not None:
+                    if com_address != indicator_address:
+                        self.debug(
+                            f"[cell-address] GetTableCellAddr/KeyIndicator 불일치: "
+                            f"com={com_address}, indicator={indicator_address}; KeyIndicator 사용"
+                        )
+                    return indicator_address
                 return first, second
         except Exception as exc:
             self.debug(f"[cell-address] GetTableCellAddr 실패: {type(exc).__name__}: {exc}")
-        try:
-            indicator = self.hwp.KeyIndicator()
-        except Exception as exc:
-            self.debug(f"[cell-address] KeyIndicator 실패: {type(exc).__name__}: {exc}")
-            return None
-        for value in reversed(indicator if isinstance(indicator, tuple) else (indicator,)):
-            address = parse_cell_address_from_keyindicator(safe_str(value))
-            if address is not None:
-                return address
+        if indicator_address is not None:
+            return indicator_address
         self.debug(f"[cell-address] KeyIndicator 주소 없음: {indicator!r}")
         return None
 
@@ -10632,20 +10644,30 @@ class MvpApp(tk.Tk):
     ) -> tuple[int, int] | None:
         if len(addresses) < 2:
             return None
-        address_positions = self.snapshot_formula_address_positions(addresses)
-        if address_positions is None:
+
+        self.clear_hwp_selection()
+        time.sleep(0.03)
+        current_address = self.get_current_cell_address()
+        if current_address is None:
             return None
 
         visited = 0
         changed = 0
-        for address, cell_pos in address_positions:
-            if not self.set_hwp_pos_by_set(cell_pos):
-                self.debug(f"[cell-address-iterate] 셀 위치 복원 실패: address={address}")
-                return None
+        for address in addresses:
+            if current_address != address:
+                if not self.move_between_table_addresses(current_address, address):
+                    self.debug(f"[cell-address-iterate] 셀 이동 실패: from={current_address}, target={address}")
+                    return None
+                actual_address = self.get_current_cell_address()
+                if actual_address != address:
+                    self.debug(
+                        f"[cell-address-iterate] 셀 이동 검증 실패: "
+                        f"from={current_address}, expected={address}, actual={actual_address}"
+                    )
+                    return None
+                current_address = actual_address
             current_text = self.read_current_cell_text()
             if current_text is None:
-                return None
-            if not self.set_hwp_pos_by_set(cell_pos):
                 return None
             source_text = strip_wrapping_blank_lines(current_text) if strip_wrapping_lines else current_text
             transformed = transform(source_text) if source_text else source_text
@@ -10658,6 +10680,7 @@ class MvpApp(tk.Tk):
                     return None
                 changed += 1
             self.clear_hwp_selection()
+            current_address = address
         self.log(f"{label}: TableFormula 주소 순회 완료, visited={visited}, changed={changed}")
         return visited, changed
 

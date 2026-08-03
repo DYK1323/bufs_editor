@@ -2050,6 +2050,22 @@ class CellMatrixTransformTests(unittest.TestCase):
     def test_parse_keyindicator_cell_address(self) -> None:
         self.assertEqual(parse_cell_address_from_keyindicator("(D5): 표 안 입력"), (4, 5))
 
+    def test_current_cell_address_prefers_keyindicator_when_com_addr_disagrees(self) -> None:
+        class FakeHwp:
+            def KeyIndicator(self):
+                return ("", "(A15): 표 안 입력")
+
+            def GetTableCellAddr(self, index):
+                return (15, 1)[index]
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        messages: list[str] = []
+        app.debug = messages.append
+
+        self.assertEqual(app.get_current_cell_address(), (1, 15))
+        self.assertTrue(any("불일치" in message for message in messages))
+
     def test_multiline_dates_are_cell_like_for_single_column_selection(self) -> None:
         self.assertTrue(looks_like_cell_clipboard_matrix("2026.7.22\r\n2026-07-23\r\n"))
         self.assertTrue(looks_like_cell_clipboard_matrix("19910114\r\n910114\r\n"))
@@ -2533,10 +2549,6 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.set_clipboard_text = lambda _text: None
         app.paste_text_into_selected_cell = lambda: True
         app.clear_hwp_selection = lambda: True
-        positions = iter(["pos-c2", "pos-d2"])
-        restored: list[str] = []
-        app.get_hwp_pos_by_set = lambda: next(positions)
-        app.set_hwp_pos_by_set = lambda pos: restored.append(pos) or True
         app.log = lambda _message: None
 
         result = app.transform_formula_address_cells(
@@ -2547,42 +2559,24 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(result, (2, 1))
         self.assertEqual(moves, [((4, 5), (3, 2)), ((3, 2), (4, 2))])
-        self.assertEqual(restored, ["pos-c2", "pos-c2", "pos-d2", "pos-d2"])
 
-    def test_formula_address_iteration_uses_snapshotted_positions_after_unchanged_cell(self) -> None:
+    def test_formula_address_iteration_moves_by_address_after_changed_cell(self) -> None:
         app = object.__new__(MvpApp)
         app.debug = lambda _message: None
         app.log = lambda _message: None
         app.clear_hwp_selection = lambda: True
 
-        snapshot_addresses = iter([(3, 2), (4, 2), (3, 3)])
-        app.get_current_cell_address = lambda: next(snapshot_addresses)
+        current_addresses = iter([(3, 2), (4, 2), (3, 3)])
+        app.get_current_cell_address = lambda: next(current_addresses)
         moves: list[tuple[tuple[int, int], tuple[int, int]]] = []
-        transforming = False
 
         def fake_move(current, target):
-            self.assertFalse(transforming, "변환 중에는 상대 셀 이동을 다시 쓰면 안 됩니다")
             moves.append((current, target))
             return True
 
         app.move_between_table_addresses = fake_move
-        positions = iter(["pos-c2", "pos-d2", "pos-c3"])
-        app.get_hwp_pos_by_set = lambda: next(positions)
-        restored: list[str] = []
-
-        def fake_set_pos(pos):
-            restored.append(pos)
-            return True
-
-        app.set_hwp_pos_by_set = fake_set_pos
         values = iter(["2022. 9. 1.", "이미 본문", "2021. 6. 8."])
-
-        def fake_read():
-            nonlocal transforming
-            transforming = True
-            return next(values)
-
-        app.read_current_cell_text = fake_read
+        app.read_current_cell_text = lambda: next(values)
         written: list[str] = []
         app.select_current_table_cell_for_replace = lambda: True
         app.set_clipboard_text = written.append
@@ -2596,7 +2590,6 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(result, (3, 2))
         self.assertEqual(moves, [((3, 2), (4, 2)), ((4, 2), (3, 3))])
-        self.assertEqual(restored, ["pos-c2", "pos-c2", "pos-d2", "pos-d2", "pos-c3", "pos-c3"])
         self.assertEqual(written, ["2022. 9. 1.(목)", "2021. 6. 8.(화)"])
 
     def test_addressless_multi_column_selection_does_not_try_detection_endpoints(self) -> None:
