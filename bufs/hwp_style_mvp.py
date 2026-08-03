@@ -182,6 +182,10 @@ UI_PAD_SM = 4
 UI_GAP = 6
 UI_GAP_LG = 8
 UI_BUTTON_IPADY = 4
+APP_WINDOW_WIDTH = 420
+APP_WINDOW_HEIGHT = 820
+APP_WINDOW_RIGHT_MARGIN = 8
+APP_WINDOW_TOP_MARGIN = 32
 STATUS_HINT_READY = "준비"
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
@@ -3004,7 +3008,8 @@ class MvpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("한글 스타일 자동화 MVP")
-        self.geometry("420x820")
+        x = max(0, self.winfo_screenwidth() - APP_WINDOW_WIDTH - APP_WINDOW_RIGHT_MARGIN)
+        self.geometry(f"{APP_WINDOW_WIDTH}x{APP_WINDOW_HEIGHT}+{x}+{APP_WINDOW_TOP_MARGIN}")
         self.minsize(400, 680)
         self.hwp = None
         self.style_records: list[StyleRecord] = []
