@@ -11753,12 +11753,20 @@ class MvpApp(tk.Tk):
                 )
                 self.log(f"{label}: 표 셀 범위 선택으로 중단")
                 return
-            stripped_selection = text.strip()
+
+            position_source = self.read_single_paragraph_selection_text(positions) if positions is not None else None
+            if position_source is not None:
+                selection_text, visible_start, visible_end = position_source
+            else:
+                selection_text = text
+                visible_start = visible_end = None
+
+            stripped_selection = selection_text.strip()
             if is_standard_regulation_wrapper(stripped_selection):
                 self.activate_hwp_window()
                 self.log(f"{label}: 이미 감싸져 있어 변경 없음")
                 return
-            stripped_text = strip_wrapping_blank_lines(text)
+            stripped_text = strip_wrapping_blank_lines(selection_text)
             if not stripped_text or "\n" in stripped_text or "\r" in stripped_text:
                 messagebox.showwarning(
                     label,
@@ -11779,17 +11787,17 @@ class MvpApp(tk.Tk):
 
             start, end = positions
             if needs_regulation_wrapper_conversion(stripped_selection):
-                if start[0] != end[0] or start[1] != end[1]:
+                if start[0] != end[0] or start[1] != end[1] or visible_start is None or visible_end is None:
                     messagebox.showwarning(
                         label,
                         "괄호 변환은 한 문단 안에서 선택한 경우에만 가능합니다.",
                     )
                     self.log(f"{label}: 괄호 변환 범위가 한 문단을 벗어나 중단")
                     return
-                list_id, para, start_pos = start
-                leading_offset = len(text) - len(text.lstrip())
-                close_pos = start_pos + len(text.rstrip()) - 1
-                open_pos = start_pos + leading_offset
+                list_id, para = start[0], start[1]
+                leading_offset = len(selection_text) - len(selection_text.lstrip())
+                close_pos = visible_start + len(selection_text.rstrip()) - 1
+                open_pos = visible_start + leading_offset
                 if close_pos <= open_pos:
                     messagebox.showwarning(label, "괄호 위치를 확인하지 못했습니다.")
                     self.log(f"{label}: 괄호 위치 계산 실패")

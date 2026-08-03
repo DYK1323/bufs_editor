@@ -3294,9 +3294,10 @@ class CellMatrixTransformTests(unittest.TestCase):
     def test_wrap_regulation_button_converts_existing_corner_brackets(self) -> None:
         app = object.__new__(MvpApp)
         app.ensure_hwp = lambda: True
-        app.get_selected_text_positions = lambda: ((0, 2, 5), (0, 2, 10))
+        app.get_selected_text_positions = lambda: ((0, 2, 8), (0, 2, 13))
         app.run_hwp_command = lambda command: command == "Copy"
         app.get_clipboard_text = lambda: "「규정명」"
+        app.read_single_paragraph_selection_text = lambda _positions: ("「규정명」", 5, 10)
         app.activate_hwp_window = lambda: None
         app.log = lambda _message: None
         app.debug = lambda _message: None
