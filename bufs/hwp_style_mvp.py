@@ -191,7 +191,7 @@ TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 SPECIAL_CHARS_FILE = CONFIG_ROOT / "special-chars.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 APP_NAME = "BUFS-HWP-Editor"
 TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
 TITLE_NUMBER_BOX_MARKER_SEPARATOR = "::"
@@ -2513,6 +2513,7 @@ def rows_to_tsv(rows: list[list[str]]) -> str:
 class CaptionParts:
     prefix: str
     suffix: str
+    kind: str = ""
 
 
 @dataclass(frozen=True)
@@ -2605,7 +2606,23 @@ def split_table_caption_parts(text: str, parser_settings: dict | None = None) ->
         suffix = str(settings.get("suffix_template", "] {title}")).format_map(values)
     except KeyError as exc:
         raise ValueError(f"캡션 조립 템플릿에서 알 수 없는 값 이름을 사용했습니다: {exc}") from exc
-    return CaptionParts(prefix=prefix, suffix=suffix)
+    return CaptionParts(prefix=prefix, suffix=suffix, kind=safe_str(values.get("kind") or "표"))
+
+
+def caption_target_kind_from_ctrl(ctrl) -> str | None:
+    ctrl_id = safe_str(getattr(ctrl, "CtrlID", "")).strip().lower()
+    user_desc = safe_str(getattr(ctrl, "UserDesc", "")).strip().lower()
+    if ctrl_id == "tbl" or "table" in user_desc or "표" in user_desc:
+        return "표"
+    if ctrl_id in {"pic", "pict", "img"} or "picture" in user_desc or "image" in user_desc or "그림" in user_desc:
+        return "그림"
+    return None
+
+
+def default_caption_label_length(kind: str | None) -> int:
+    if kind == "그림":
+        return len("그림 ")
+    return len("표 ")
 
 
 def build_cf_html(fragment: str) -> bytes:
@@ -3072,7 +3089,7 @@ class MvpApp(tk.Tk):
         self.logo_chip_images: list[tk.PhotoImage] = []
         self.icon_images: dict[str, tk.PhotoImage] = {}
         self.pending_caption_title = ""
-        self.pending_caption_parts = CaptionParts(prefix="", suffix="")
+        self.pending_caption_parts = CaptionParts(prefix="", suffix="", kind="")
         self._refreshing = False
         self._applying_style = False
 
@@ -6887,17 +6904,17 @@ class MvpApp(tk.Tk):
             if self.has_selected_object() or self.selected_block_contains_table():
                 messagebox.showwarning(
                     label,
-                    "표까지 선택된 상태에서는 제목을 자르지 않습니다.\n\n"
-                    "표 바로 윗줄 제목 텍스트만 블록 선택한 뒤 다시 실행하세요.",
+                    "표/그림 개체까지 선택된 상태에서는 제목을 자르지 않습니다.\n\n"
+                    "표/그림 바로 윗줄 제목 텍스트만 블록 선택한 뒤 다시 실행하세요.",
                 )
-                self.log(f"{label}: 표 포함 선택으로 Cut 중단")
+                self.log(f"{label}: 표/그림 포함 선택으로 Cut 중단")
                 return False
 
             copy_ok = self.run_hwp_command("Copy")
             time.sleep(0.08)
             title_text = strip_wrapping_blank_lines(self.get_clipboard_text()).strip()
             if not copy_ok or not title_text:
-                messagebox.showwarning(label, "표 바로 윗줄 제목만 블록 선택한 뒤 다시 실행하세요.")
+                messagebox.showwarning(label, "표/그림 바로 윗줄 제목만 블록 선택한 뒤 다시 실행하세요.")
                 self.log(f"{label}: Copy={copy_ok}, 제목 텍스트 없음")
                 return False
 
@@ -6930,30 +6947,34 @@ class MvpApp(tk.Tk):
             return False
 
     def apply_pending_table_caption_to_next_table(self) -> None:
-        label = "다음 표 캡션 조립"
+        label = "다음 표/그림 캡션 조립"
         if not self.ensure_hwp():
             return
         if not self.pending_caption_title:
             messagebox.showwarning(label, "먼저 `표 제목 잘라두기`를 실행하세요.")
             return
         try:
-            table_selected = self.has_selected_object()
-            self.debug(f"[caption-build] selected_object={table_selected}")
-            if not table_selected:
-                messagebox.showwarning(label, "표 개체를 선택한 상태에서 실행하세요.")
-                self.log(f"{label}: 표 개체 선택 상태 아님")
+            selected_kind = self.current_caption_target_kind()
+            self.debug(f"[caption-build] selected_kind={selected_kind}")
+            if not selected_kind:
+                messagebox.showwarning(label, "표나 그림 개체를 선택한 상태에서 실행하세요.")
+                self.log(f"{label}: 표/그림 개체 선택 상태 아님")
                 return
-            self.apply_pending_table_caption_to_selected_table_core(label)
+            self.apply_pending_table_caption_to_selected_object_core(label, selected_kind)
         except Exception as exc:
             self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
             messagebox.showerror(f"{label} 실패", str(exc))
 
     def apply_pending_table_caption_to_selected_table_core(self, label: str) -> bool:
+        return self.apply_pending_table_caption_to_selected_object_core(label, "표")
+
+    def apply_pending_table_caption_to_selected_object_core(self, label: str, target_kind: str | None = None) -> bool:
         try:
             action, caption_ok = "ShapeObjCaption", self.run_hwp_command("ShapeObjCaption")
             self.debug(f"[caption-build] caption action={action}, result={caption_ok}")
             if not caption_ok:
-                messagebox.showwarning(label, "표는 선택했지만 캡션을 만들지 못했습니다.")
+                target_label = target_kind or "개체"
+                messagebox.showwarning(label, f"{target_label}는 선택했지만 캡션을 만들지 못했습니다.")
                 self.log(f"{label}: 캡션 액션 실패, action={action}")
                 return False
 
@@ -6968,7 +6989,8 @@ class MvpApp(tk.Tk):
             suffix_ok = remove_tail_space_ok and (not parts.suffix or self.insert_hwp_text(parts.suffix))
 
             begin_action, begin_ok = "MoveLineBegin", self.run_hwp_command("MoveLineBegin")
-            remove_label_ok = begin_ok and self.delete_hwp_chars(2)
+            label_length = default_caption_label_length(target_kind or parts.kind)
+            remove_label_ok = begin_ok and self.delete_hwp_chars(label_length)
             prefix_ok = remove_label_ok and (not parts.prefix or self.insert_hwp_text(parts.prefix))
 
             style_ok = False
@@ -6980,14 +7002,14 @@ class MvpApp(tk.Tk):
                     style_ok = self.apply_first_style_containing("캡션")
                 moved_text = self.pending_caption_title
                 self.pending_caption_title = ""
-                self.pending_caption_parts = CaptionParts(prefix="", suffix="")
+                self.pending_caption_parts = CaptionParts(prefix="", suffix="", kind="")
                 self.activate_hwp_window()
                 self.log(
                     f"{label}: caption={action}:{caption_ok}, begin={begin_action}:{begin_ok}, "
                     f"caption_pos_top={caption_pos_action}:{caption_pos_ok}, "
-                    f"remove_label={remove_label_ok}, prefix={prefix_ok}, "
+                    f"remove_label={remove_label_ok}({label_length}), prefix={prefix_ok}, "
                     f"remove_tail_space={remove_tail_space_ok}, "
-                    f"suffix={suffix_ok}, caption_style={style_ok}, 제목 {len(moved_text)}자"
+                    f"suffix={suffix_ok}, target={target_kind}, caption_style={style_ok}, 제목 {len(moved_text)}자"
                 )
                 return True
 
@@ -7003,20 +7025,27 @@ class MvpApp(tk.Tk):
             return False
 
     def cut_title_and_apply_to_next_table_caption(self) -> None:
-        label = "선택 제목 → 다음 표 캡션"
+        label = "선택 제목 → 다음 표/그림 캡션"
         if not self.ensure_hwp():
             return
         if not self.cut_selected_table_caption_title_core(label):
             return
+        target_kind = self.pending_caption_parts.kind or None
         self.run_hwp_command("Cancel")
         time.sleep(0.05)
-        table_selected = self.select_next_table_object_below_cursor()
-        self.debug(f"[caption-one-step] select_next_table={table_selected}")
-        if not table_selected:
-            messagebox.showwarning(label, "제목은 잘라냈지만 다음 표를 선택하지 못했습니다.")
-            self.log(f"{label}: 다음 표 선택 실패")
+        target_selected, selected_kind = self.select_next_caption_target_object_below_cursor(expected_kind=target_kind)
+        self.debug(f"[caption-one-step] select_next_target={target_selected}, kind={selected_kind}, expected={target_kind}")
+        if not target_selected:
+            expected_label = target_kind or "표/그림"
+            messagebox.showwarning(
+                label,
+                f"제목은 잘라냈지만 다음 {expected_label} 개체를 선택하지 못했습니다.\n\n"
+                "캡션 문자열 바로 다음에 표 또는 그림 개체가 있는지 확인하세요.\n"
+                "제목과 개체 사이에 빈 줄이나 일반 문단이 있으면 자동 선택에 실패할 수 있습니다.",
+            )
+            self.log(f"{label}: 다음 {expected_label} 선택 실패, selected_kind={selected_kind}")
             return
-        self.apply_pending_table_caption_to_selected_table_core(label)
+        self.apply_pending_table_caption_to_selected_object_core(label, selected_kind)
 
     def apply_table_outside_margins(self) -> None:
         if not self.ensure_hwp():
@@ -7373,6 +7402,55 @@ class MvpApp(tk.Tk):
             return self.hwp.CurSelectedCtrl is not None
         except Exception:
             return False
+
+    def current_caption_target_kind(self) -> str | None:
+        try:
+            ctrl = self.hwp.CurSelectedCtrl
+        except Exception:
+            return None
+        if ctrl is None:
+            return None
+        return caption_target_kind_from_ctrl(ctrl)
+
+    def select_current_caption_target_object(self) -> tuple[bool, str | None, str]:
+        self.activate_hwp_window()
+        time.sleep(0.03)
+        selected = self.run_hwp_command("SelectCtrlReverse")
+        time.sleep(0.03)
+        try:
+            ctrl = self.hwp.CurSelectedCtrl
+        except Exception:
+            ctrl = None
+        if ctrl is None:
+            return selected, None, "Ctrl=None"
+        ctrl_id = safe_str(getattr(ctrl, "CtrlID", ""))
+        user_desc = safe_str(getattr(ctrl, "UserDesc", ""))
+        kind = caption_target_kind_from_ctrl(ctrl)
+        return selected, kind, f"CtrlID={ctrl_id!r}, UserDesc={user_desc!r}"
+
+    def select_next_caption_target_object_below_cursor(
+        self,
+        *,
+        expected_kind: str | None = None,
+        max_down_moves: int = 8,
+    ) -> tuple[bool, str | None]:
+        self.clear_hwp_selection()
+        for move_count in range(1, max_down_moves + 1):
+            moved = self.run_hwp_command("MoveDown")
+            time.sleep(0.03)
+            selected, kind, detail = self.select_current_caption_target_object()
+            self.debug(
+                f"[caption-one-step] next-target search move={move_count}, "
+                f"MoveDown={moved}, SelectCtrlReverse={selected}, kind={kind}, expected={expected_kind}, {detail}"
+            )
+            if kind is not None:
+                if expected_kind is None or kind == expected_kind:
+                    return True, kind
+                return False, kind
+            self.clear_hwp_selection()
+            if not moved:
+                break
+        return False, None
 
     def get_table_property_set(self):
         selected = False

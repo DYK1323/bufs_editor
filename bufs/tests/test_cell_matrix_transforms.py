@@ -16,6 +16,7 @@ from hwp_style_mvp import (  # noqa: E402
     add_weekdays_to_dates,
     cell_matrix_size,
     cell_matrix_to_tsv,
+    caption_target_kind_from_ctrl,
     clean_manual_line_breaks,
     consume_numbering_entry,
     convert_decimal_numbers_to_currency_unit,
@@ -40,6 +41,7 @@ from hwp_style_mvp import (  # noqa: E402
     parse_update_info,
     create_filled_title_number_box_file,
     create_title_number_box_hwpml,
+    default_caption_label_length,
     resolve_config_path,
     migrate_title_number_box_roles,
     normalize_title_box_text,
@@ -1363,8 +1365,26 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(spaced.prefix, "[그림 2.4-")
         self.assertEqual(spaced.suffix, "] 학사관리 체계 개선 실적")
+        self.assertEqual(spaced.kind, "그림")
         self.assertEqual(compact.prefix, "[표-")
         self.assertEqual(compact.suffix, "] 제목")
+        self.assertEqual(compact.kind, "표")
+
+    def test_caption_target_kind_from_ctrl_identifies_table_and_picture(self) -> None:
+        class Ctrl:
+            def __init__(self, ctrl_id: str, user_desc: str = "") -> None:
+                self.CtrlID = ctrl_id
+                self.UserDesc = user_desc
+
+        self.assertEqual(caption_target_kind_from_ctrl(Ctrl("tbl")), "표")
+        self.assertEqual(caption_target_kind_from_ctrl(Ctrl("pic")), "그림")
+        self.assertEqual(caption_target_kind_from_ctrl(Ctrl("", "Picture")), "그림")
+        self.assertIsNone(caption_target_kind_from_ctrl(Ctrl("eqed", "Equation")))
+
+    def test_default_caption_label_length_matches_hwp_labels(self) -> None:
+        self.assertEqual(default_caption_label_length("표"), 2)
+        self.assertEqual(default_caption_label_length("그림"), 3)
+        self.assertEqual(default_caption_label_length(None), 2)
 
     def test_table_settings_upgrade_legacy_default_caption_parser(self) -> None:
         settings = {
