@@ -108,6 +108,14 @@
       "right": "none",
       "inside_horz": "thin",
       "inside_vert": "thin"
+    },
+    "border_colors": {
+      "top": "기본값",
+      "bottom": "기본값",
+      "left": "기본값",
+      "right": "기본값",
+      "inside_horz": "기본값",
+      "inside_vert": "기본값"
     }
   },
   "table_margins": {

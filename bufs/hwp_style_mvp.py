@@ -191,7 +191,7 @@ TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 SPECIAL_CHARS_FILE = CONFIG_ROOT / "special-chars.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 APP_NAME = "BUFS-HWP-Editor"
 TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
 TITLE_NUMBER_BOX_MARKER_SEPARATOR = "::"
@@ -219,6 +219,94 @@ APP_WINDOW_RIGHT_MARGIN = 8
 APP_WINDOW_TOP_MARGIN = 8
 APP_WINDOW_BOTTOM_MARGIN = 8
 STATUS_HINT_READY = "준비"
+BUTTON_TOOLTIPS = {
+    "한글 다시 연결": "실행 중인 한글 문서에 다시 연결합니다.",
+    "대상 확인": "현재 연결된 한글 문서와 커서 위치 정보를 확인합니다.",
+    "테스트 문서 열기": "스타일 확인용 테스트 문서 사본을 엽니다.",
+    "자산 다시 읽기": "스타일, 설정, 로고 등 앱 자산을 다시 불러옵니다.",
+    "업데이트 확인": "새 버전이 있는지 확인합니다.",
+    "실행취소": "한글에서 마지막 작업을 되돌립니다.",
+    "대외비 표시": "표지를 만들 때 대외비 표시를 함께 넣습니다.",
+    "가로 자동 회전": "증빙 PDF 페이지가 가로형이면 삽입 전에 자동으로 회전합니다.",
+    "쉼표": "숫자 변환 결과에 천 단위 쉼표를 함께 적용합니다.",
+    "표식 삭제": "인라인 규칙을 적용한 뒤 감싼 표식 문자를 삭제합니다.",
+    "경계 포함": "인라인 규칙 적용 시 감싼 표식까지 선택 범위에 포함합니다.",
+    "사용": "이 인라인 규칙을 일괄처리 대상에 포함합니다.",
+    "표": "선택한 표/그림 캡션 번호 종류를 표 번호로 바꿉니다.",
+    "캡션": "선택한 스타일을 캡션 스타일 후보로 표시합니다.",
+    "상위 개요 뒤 새 번호": "상위 개요가 바뀌면 이 수준 번호를 새로 시작합니다.",
+    "관리": "목록에 표시할 항목을 추가, 수정, 정렬합니다.",
+    "위로": "선택한 스타일을 목록에서 한 칸 위로 이동합니다.",
+    "아래로": "선택한 스타일을 목록에서 한 칸 아래로 이동합니다.",
+    "프롬프트": "현재 스타일 세트 기준의 AI 작성용 프롬프트를 클립보드에 복사합니다.",
+    "글자스타일제거": "선택 영역에 적용된 글자 스타일을 제거합니다.",
+    "모두 감추기(머리말/꼬리말/쪽번호)": "현재 쪽의 머리말, 꼬리말, 쪽번호 표시를 감춥니다.",
+    "새 쪽 번호": "커서 위치에 새 쪽 번호 개체를 삽입합니다.",
+    "새 표 번호": "커서 위치에 새 표 번호 개체를 삽입합니다.",
+    "새 그림 번호": "커서 위치에 새 그림 번호 개체를 삽입합니다.",
+    "머리말 양쪽": "양쪽 쪽에 적용되는 머리말 개체를 삽입합니다.",
+    "머리말 짝수쪽": "짝수 쪽에만 적용되는 머리말 개체를 삽입합니다.",
+    "머리말 홀수쪽": "홀수 쪽에만 적용되는 머리말 개체를 삽입합니다.",
+    "넣기": "입력한 내용을 현재 커서 위치에 삽입합니다.",
+    "추가": "새 항목을 입력할 수 있도록 양식을 비웁니다.",
+    "등록": "입력한 내용을 새 항목으로 추가합니다.",
+    "수정": "선택한 항목을 입력한 내용으로 수정합니다.",
+    "삭제": "선택한 항목을 삭제합니다.",
+    "위": "선택한 항목을 한 칸 위로 이동합니다.",
+    "아래": "선택한 항목을 한 칸 아래로 이동합니다.",
+    "저장": "변경 내용을 저장합니다.",
+    "취소": "변경 내용을 저장하지 않고 창을 닫습니다.",
+    "닫기": "창을 닫습니다.",
+    "markdown 표 → 한글 표": "선택한 Markdown 표 텍스트를 한글 표로 변환합니다.",
+    "표 설정": "표 색상, 테두리, 여백, 캡션 인식 설정을 엽니다.",
+    "셀여백": "선택한 표 셀의 안쪽 여백을 기본값으로 정리합니다.",
+    "표여백": "선택한 표의 바깥 여백과 배치를 기본값으로 정리합니다.",
+    "너비맞추기": "선택한 표 너비를 본문 폭에 맞춥니다.",
+    "캡션원클릭": "선택한 캡션 제목을 잘라 바로 아래 표/그림의 캡션으로 넣습니다.",
+    "없음": "선택한 표/그림 캡션 번호 종류를 해제합니다.",
+    "그림": "선택한 표/그림 캡션 번호 종류를 그림 번호로 바꿉니다.",
+    "제목셀 자동화": "선택한 셀을 제목행 색상, 글자색, 테두리 스타일로 정리합니다.",
+    "표 자동화": "선택한 표에 기본 문단 스타일, 셀/표 여백, 표 스타일, 너비 맞춤을 한 번에 적용합니다.",
+    "색 없음": "선택한 표 셀의 배경색을 제거합니다.",
+    "색 추가": "입력한 RGB 값을 색상 팔레트에 추가합니다.",
+    "선택 삭제": "선택한 팔레트 색상을 삭제합니다.",
+    "인식 테스트": "테스트 제목을 현재 캡션 정규식으로 나눠 봅니다.",
+    "오른쪽 자동탭": "선택한 문단에 오른쪽 정렬 자동 탭을 설정합니다.",
+    "목차⋯⋯1": "선택한 문단에 목차형 점선 탭을 설정합니다.",
+    "일괄처리": "선택 영역의 개요 표식과 인라인 규칙을 한 번에 정리합니다.",
+    "「 」 씌우기": "선택 영역의 규정명으로 보이는 텍스트에 「 」를 씌웁니다.",
+    "줄바꿈정리": "선택 영역의 불필요한 줄바꿈을 문장 흐름에 맞게 정리합니다.",
+    "기호제거": "선택 영역 앞머리의 수동 개요번호나 기호를 제거합니다.",
+    "새 번호": "커서 위치의 문단 번호를 새 번호로 시작합니다.",
+    "이어서": "커서 위치의 문단 번호를 앞 번호에 이어서 매깁니다.",
+    "천원단위 쉼표 넣기": "선택한 숫자에 천 단위 쉼표를 넣습니다.",
+    "쉼표 빼기": "선택한 숫자에서 천 단위 쉼표를 제거합니다.",
+    "소숫점 처리": "선택한 숫자를 지정한 소숫점 자리와 방식으로 정리합니다.",
+    "0000년 0월 0일": "선택한 날짜를 0000년 0월 0일 형식으로 바꿉니다.",
+    "0000. 0. 0.": "선택한 날짜를 0000. 0. 0. 형식으로 바꿉니다.",
+    "0000. 00. 00.": "선택한 날짜를 0000. 00. 00. 형식으로 바꿉니다.",
+    "요일 추가 (월)": "선택한 날짜 뒤에 요일을 추가합니다.",
+    "요일 제거": "선택한 날짜에서 요일 표기를 제거합니다.",
+    "0000년": "선택한 연도를 네 자리 연도 형식으로 바꿉니다.",
+    "00년": "선택한 연도를 두 자리 연도 형식으로 바꿉니다.",
+    "'00년": "선택한 연도를 작은따옴표가 붙은 두 자리 형식으로 바꿉니다.",
+    "엑셀표 정리": "엑셀에서 붙여넣은 표를 보고서 표 형식으로 정리합니다.",
+    "선택 내용으로 표지 만들기": "한글에서 제목, 날짜, 부서명을 선택한 뒤 표지 양식으로 만듭니다.",
+    "보고양식 불러오기": "커서 위치에 일반 보고 양식을 삽입합니다.",
+    "대제목 번호박스 삽입": "커서 위치에 대제목 번호박스 양식을 삽입합니다.",
+    "증빙 PDF 폴더 삽입": "선택한 폴더의 PDF들을 증빙 양식으로 변환해 삽입합니다.",
+    "증빙 PDF 1건 삽입": "선택한 PDF 하나를 증빙 양식으로 변환해 삽입합니다.",
+    "증빙 이미지 삽입": "선택한 이미지 여러 개를 하나의 증빙 양식에 순서대로 삽입합니다.",
+    "왼쪽 90도": "선택한 그림을 왼쪽으로 90도 회전하고 셀 크기에 다시 맞춥니다.",
+    "오른쪽 90도": "선택한 그림을 오른쪽으로 90도 회전하고 셀 크기에 다시 맞춥니다.",
+    "셀 맞춤": "셀 안의 선택 그림을 셀 크기에 맞게 비율 유지로 조정합니다.",
+    "이름변경": "현재 스타일 세트 이름을 입력한 이름으로 바꿉니다.",
+    "세트추가": "새 스타일 세트를 추가합니다.",
+    "파일에서 불러오기": "HWPX/HWP 파일에서 스타일 목록을 읽어옵니다.",
+    "세트삭제": "현재 스타일 세트를 삭제합니다.",
+    "찾아보기": "파일을 찾아 경로를 입력합니다.",
+    "적용": "입력한 설정을 현재 스타일 세트에 적용합니다.",
+}
 DEFAULT_UPDATE_SETTINGS = {
     "enabled": True,
     "check_on_start": True,
@@ -475,6 +563,14 @@ DEFAULT_TABLE_SETTINGS = {
             "right": "thin",
             "inside_horz": "thin",
             "inside_vert": "thin",
+        },
+        "border_colors": {
+            "top": "기본값",
+            "bottom": "기본값",
+            "left": "기본값",
+            "right": "기본값",
+            "inside_horz": "기본값",
+            "inside_vert": "기본값",
         },
     },
     "table_margins": {
@@ -1668,6 +1764,22 @@ def normalize_table_settings(settings: dict) -> dict:
     if isinstance(title, dict):
         for key in ("apply_hwp_header", "apply_cell_background", "apply_cell_borders"):
             title.pop(key, None)
+        border_keys = ("top", "bottom", "left", "right", "inside_horz", "inside_vert")
+        borders = title.get("borders")
+        if not isinstance(borders, dict):
+            borders = {}
+            title["borders"] = borders
+        for key in border_keys:
+            if borders.get(key) not in settings.get("line_presets", {}):
+                borders[key] = DEFAULT_TABLE_SETTINGS["title_cell"]["borders"][key]
+        border_colors = title.get("border_colors")
+        if not isinstance(border_colors, dict):
+            border_colors = {}
+            title["border_colors"] = border_colors
+        valid_colors = {"기본값", *[str(item.get("name")) for item in settings.get("palette", []) if isinstance(item, dict)]}
+        for key in border_keys:
+            if border_colors.get(key) not in valid_colors:
+                border_colors[key] = DEFAULT_TABLE_SETTINGS["title_cell"]["border_colors"][key]
     settings["line_presets"]["none"]["label"] = "선 없음"
     markdown_table = settings.get("markdown_table")
     if isinstance(markdown_table, dict):
@@ -2313,6 +2425,16 @@ def render_pdf_pages_to_jpegs(
             target = output_dir / f"{pdf_path.stem}-p{index:03d}.jpg"
             image.save(target, "JPEG", quality=quality, optimize=True)
             pages.append(ProofImagePage(target, image.width, image.height, rotated))
+    return pages
+
+
+def image_paths_to_proof_pages(paths: Iterable[Path]) -> list[ProofImagePage]:
+    pages: list[ProofImagePage] = []
+    for path in paths:
+        size = read_image_pixel_size(path)
+        if size is None:
+            raise RuntimeError(f"이미지 크기를 읽지 못했습니다: {path.name}")
+        pages.append(ProofImagePage(path, size[0], size[1], False))
     return pages
 
 
@@ -3122,10 +3244,30 @@ class MvpApp(tk.Tk):
             self.status_hint_var.set(STATUS_HINT_READY)
 
     def add_help(self, widget, text: str) -> None:
+        if getattr(widget, "_bufs_has_help", False):
+            return
+        setattr(widget, "_bufs_has_help", True)
         ToolTip(widget, text)
         widget.bind("<Enter>", lambda _event, value=text: self.set_status_hint(value), add="+")
         widget.bind("<Leave>", lambda _event, value=text: self.clear_status_hint(value), add="+")
         widget.bind("<ButtonPress>", lambda _event, value=text: self.clear_status_hint(value), add="+")
+
+    def default_button_tooltip(self, text: str) -> str:
+        if text:
+            return BUTTON_TOOLTIPS.get(text, f"{text} 기능을 실행합니다.")
+        return ""
+
+    def add_missing_button_tooltips(self, root) -> None:
+        for child in root.winfo_children():
+            if isinstance(child, (tk.Button, ttk.Button, ttk.Checkbutton)) and not getattr(child, "_bufs_has_help", False):
+                try:
+                    text = str(child.cget("text") or "").strip()
+                except Exception:
+                    text = ""
+                tooltip = self.default_button_tooltip(text)
+                if tooltip:
+                    self.add_help(child, tooltip)
+            self.add_missing_button_tooltips(child)
 
     def create_scrollable_tab(self, title: str, *, padding: int = UI_PAD) -> ttk.Frame:
         outer = ttk.Frame(self.notebook)
@@ -3207,6 +3349,7 @@ class MvpApp(tk.Tk):
                 pady=(0 if index < 3 else 6, 0),
             )
 
+        self.add_missing_button_tooltips(buttons)
         self.status_text = tk.Text(frame, height=30, wrap="word")
         self.status_text.pack(fill="both", expand=True)
 
@@ -3249,6 +3392,7 @@ class MvpApp(tk.Tk):
         cleanup_frame = ttk.Frame(frame)
         cleanup_frame.grid(row=1, column=0, sticky="ew")
         self.build_cleanup_controls(cleanup_frame)
+        self.add_missing_button_tooltips(frame)
 
     def _build_table_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=UI_PAD)
@@ -3288,6 +3432,7 @@ class MvpApp(tk.Tk):
                 text=text,
                 command=lambda value=header_type, label=text: self.insert_header_footer_object(0, value, label),
             ).grid(row=0, column=column, sticky="ew", padx=(0, 6 if column < 2 else 0), pady=(0, 6))
+        self.add_missing_button_tooltips(frame)
 
     def _build_special_chars_tab(self) -> None:
         frame = self.create_scrollable_tab("특수문자")
@@ -3367,6 +3512,7 @@ class MvpApp(tk.Tk):
             command=self.open_special_chars_window,
         ).grid(row=1, column=0, sticky="ew", pady=(UI_GAP, 0))
         self.refresh_favorite_special_chars_buttons()
+        self.add_missing_button_tooltips(frame)
 
     def create_square_compose_button(
         self,
@@ -3432,6 +3578,7 @@ class MvpApp(tk.Tk):
         canvas.bind("<space>", lambda _event: command())
         canvas.bind("<Return>", lambda _event: command())
         draw(False)
+        self.add_help(canvas, f"{chars} 문자를 현재 커서 위치에 삽입합니다.")
         return canvas
 
     def bind_dynamic_square_button_grid(self, parent: ttk.Frame, buttons: list[tk.Canvas]) -> None:
@@ -3578,6 +3725,7 @@ class MvpApp(tk.Tk):
         canvas.bind("<space>", lambda _event: self.insert_default_special_char(char))
         canvas.bind("<Return>", lambda _event: self.insert_default_special_char(char))
         draw(False)
+        self.add_help(canvas, f"{char} 문자를 현재 커서 위치에 삽입합니다.")
         return canvas
 
     def refresh_favorite_special_chars_buttons(self) -> None:
@@ -3590,7 +3738,7 @@ class MvpApp(tk.Tk):
         for index, entry in enumerate(self.special_chars):
             label = entry.get("label") or entry.get("text") or "?"
             text = entry.get("text") or label
-            tk.Button(
+            button = tk.Button(
                 frame,
                 text=label,
                 font=favorite_font,
@@ -3600,7 +3748,9 @@ class MvpApp(tk.Tk):
                 bd=1,
                 padx=8,
                 command=lambda value=text: self.insert_favorite_special_char(value),
-            ).grid(row=0, column=index, padx=(0 if index == 0 else 6, 0))
+            )
+            button.grid(row=0, column=index, padx=(0 if index == 0 else 6, 0))
+            self.add_help(button, f"{text} 문자를 현재 커서 위치에 삽입합니다.")
 
     def insert_default_special_char(self, text: str) -> None:
         self.insert_plain_special_char(text, f"기본 특수문자 {text}")
@@ -3773,6 +3923,7 @@ class MvpApp(tk.Tk):
 
         refresh_list(0 if entries else None)
         text_entry.focus_set()
+        self.add_missing_button_tooltips(window)
 
     def load_icon_image(self, icon_name: str) -> tk.PhotoImage | None:
         if icon_name in self.icon_images:
@@ -3928,11 +4079,12 @@ class MvpApp(tk.Tk):
         if table_content_styles:
             for index, record in enumerate(table_content_styles):
                 row, col = divmod(index, 4)
-                ttk.Button(
+                button = ttk.Button(
                     table_style_buttons,
                     text=self.table_content_style_button_label(record),
                     command=lambda name=record.name: self.apply_table_content_style(name),
-                ).grid(
+                )
+                button.grid(
                     row=row,
                     column=col,
                     padx=(0 if col == 0 else 6, 0),
@@ -3940,6 +4092,7 @@ class MvpApp(tk.Tk):
                     sticky="ew",
                     ipady=UI_BUTTON_IPADY,
                 )
+                self.add_help(button, f"선택한 표 셀에 {record.name} 스타일을 적용합니다.")
             clear_index = len(table_content_styles)
             row, col = divmod(clear_index, 4)
             ttk.Button(
@@ -3998,6 +4151,19 @@ class MvpApp(tk.Tk):
             bd=1,
         )
         title_button.pack(fill="x", pady=(0, UI_GAP), ipady=UI_BUTTON_IPADY)
+        default_table_button = tk.Button(
+            content,
+            text="표 자동화",
+            command=self.apply_default_table_preset,
+            bg=title_bg,
+            activebackground=title_bg,
+            fg="#000000",
+            font=title_button_font,
+            relief="raised",
+            bd=1,
+        )
+        default_table_button.pack(fill="x", pady=(0, UI_GAP), ipady=UI_BUTTON_IPADY)
+        self.add_missing_button_tooltips(frame)
 
     def table_content_style_records(self) -> list[StyleRecord]:
         prefix = normalize_style_name("표내용-")
@@ -4049,6 +4215,7 @@ class MvpApp(tk.Tk):
             command=self.clear_cell_fill_color,
         )
         none_button.grid(row=0, column=0, padx=(0, 4), pady=(0, 6), sticky="ew")
+        self.add_help(none_button, BUTTON_TOOLTIPS["색 없음"])
         self.create_color_chips(parent, self.apply_cell_fill_color, start_index=1)
 
     def create_color_chips(self, parent: ttk.Frame, command, start_index: int = 0) -> None:
@@ -4065,6 +4232,7 @@ class MvpApp(tk.Tk):
                 command=lambda item=color: command(item),
             )
             button.grid(row=index // columns, column=index % columns, padx=(0, 4), pady=(0, 6), sticky="ew")
+            self.add_help(button, f"선택한 영역에 {color.name} 색상을 적용합니다.")
         for col in range(columns):
             parent.columnconfigure(col, weight=1)
 
@@ -4081,6 +4249,7 @@ class MvpApp(tk.Tk):
 
         settings = merge_dict(DEFAULT_TABLE_SETTINGS, self.table_settings)
         color_names = [color.name for color in self.palette]
+        border_color_choices = ["기본값", *color_names]
         para_styles = [record.name for record in self.style_records if record.style_type == "PARA"]
         char_styles = ["(적용 안 함)", *[record.name for record in self.style_records if record.style_type == "CHAR"]]
         line_type_values = ["solid", "dot", "double", "none"]
@@ -4094,6 +4263,7 @@ class MvpApp(tk.Tk):
 
         vars_by_path: dict[tuple[str, ...], tk.StringVar] = {}
         color_combos: list[ttk.Combobox] = []
+        border_color_combos: list[ttk.Combobox] = []
 
         def var_for(path: tuple[str, ...], value: str) -> tk.StringVar:
             var = tk.StringVar(value=value)
@@ -4105,6 +4275,8 @@ class MvpApp(tk.Tk):
             box.pack(side="left", padx=(4, 0))
             if path[-1] in {"color", "background_color", "text_color"}:
                 color_combos.append(box)
+            if path[:2] == ("title_cell", "border_colors"):
+                border_color_combos.append(box)
             return box
 
         def entry(parent, path: tuple[str, ...], value: str, width: int = 8):
@@ -4149,7 +4321,106 @@ class MvpApp(tk.Tk):
         canvas.bind("<Leave>", unbind_scroll)
         window.bind("<Destroy>", unbind_scroll, add="+")
 
-        ttk.Label(body, text="색상 팔레트").pack(anchor="w")
+        ttk.Label(body, text="기본 표 설정").pack(anchor="w")
+        markdown_table = settings["markdown_table"]
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="기본 문단 스타일", width=14).pack(side="left")
+        combo(
+            row,
+            ("markdown_table", "paragraph_style"),
+            markdown_table.get("paragraph_style", "(적용 안 함)"),
+            ["(적용 안 함)", *para_styles],
+            width=22,
+        )
+        current_table_style = markdown_table.get("table_style_preset", "thin_top_bottom")
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="기본 표 스타일", width=14).pack(side="left")
+        combo(
+            row,
+            ("markdown_table", "table_style_preset"),
+            f"{current_table_style}: {TABLE_STYLE_PRESET_LABELS.get(current_table_style, current_table_style)}",
+            table_style_choices,
+            width=28,
+        )
+
+        margins = settings["table_margins"]
+        ttk.Label(body, text="기본 셀 안 여백(mm)").pack(anchor="w", pady=(10, 0))
+        cell_margin_labels = [
+            ("cell_left", "셀 안 좌"),
+            ("cell_right", "셀 안 우"),
+            ("cell_top", "셀 안 상"),
+            ("cell_bottom", "셀 안 하"),
+        ]
+        for index in range(0, len(cell_margin_labels), 2):
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=(6, 0))
+            for key, label in cell_margin_labels[index : index + 2]:
+                ttk.Label(row, text=label, width=12).pack(side="left")
+                entry(row, ("table_margins", key), str(margins.get(key, "0.0")), width=7)
+
+        ttk.Label(body, text="기본 표 바깥 여백(mm)").pack(anchor="w", pady=(10, 0))
+        outside_margin_labels = [
+            ("outside_left", "표 바깥 좌"),
+            ("outside_right", "표 바깥 우"),
+            ("outside_top", "표 바깥 상"),
+            ("outside_bottom", "표 바깥 하"),
+        ]
+        for index in range(0, len(outside_margin_labels), 2):
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=(6, 0))
+            for key, label in outside_margin_labels[index : index + 2]:
+                ttk.Label(row, text=label, width=12).pack(side="left")
+                entry(row, ("table_margins", key), str(margins.get(key, "0.0")), width=7)
+
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="제목셀 설정").pack(anchor="w")
+        title = settings["title_cell"]
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="배경색", width=12).pack(side="left")
+        combo(row, ("title_cell", "background_color"), title["background_color"], color_names)
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="글자색", width=12).pack(side="left")
+        combo(row, ("title_cell", "text_color"), title["text_color"], color_names)
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="문단 스타일", width=12).pack(side="left")
+        combo(row, ("title_cell", "paragraph_style"), title["paragraph_style"], para_styles)
+
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="글자 스타일", width=12).pack(side="left")
+        combo(row, ("title_cell", "character_style"), title["character_style"], char_styles)
+
+        ttk.Label(body, text="제목셀 테두리").pack(anchor="w", pady=(10, 0))
+        border_labels = {
+            "top": "상",
+            "bottom": "하",
+            "left": "좌",
+            "right": "우",
+            "inside_horz": "안쪽 가로",
+            "inside_vert": "안쪽 세로",
+        }
+        for key, label in border_labels.items():
+            row = ttk.Frame(body)
+            row.pack(fill="x", pady=(6, 0))
+            ttk.Label(row, text=label, width=12).pack(side="left")
+            current_key = title["borders"].get(key, "thin")
+            current = f"{current_key}: {preset_labels.get(current_key, current_key)}"
+            combo(row, ("title_cell", "borders", key), current, preset_choices, width=20)
+            current_color = title.get("border_colors", {}).get(key, "기본값")
+            if current_color not in border_color_choices:
+                current_color = "기본값"
+            combo(row, ("title_cell", "border_colors", key), current_color, border_color_choices, width=8)
+
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="색상/선 프리셋").pack(anchor="w")
+        ttk.Label(body, text="색상 팔레트").pack(anchor="w", pady=(8, 0))
         palette_tree = ttk.Treeview(body, columns=("rgb", "purpose"), show="tree headings", height=6)
         palette_tree.heading("#0", text="이름")
         palette_tree.heading("rgb", text="RGB")
@@ -4179,6 +4450,11 @@ class MvpApp(tk.Tk):
                 box.configure(values=current_names)
                 if box.get() not in current_names and current_names:
                     box.set(current_names[0])
+            border_values = ["기본값", *current_names]
+            for box in border_color_combos:
+                box.configure(values=border_values)
+                if box.get() not in border_values:
+                    box.set("기본값")
 
         def add_color() -> None:
             name = name_var.get().strip()
@@ -4214,8 +4490,7 @@ class MvpApp(tk.Tk):
         ttk.Button(color_buttons, text="색 추가", command=add_color).pack(side="left")
         ttk.Button(color_buttons, text="선택 삭제", command=remove_color).pack(side="left", padx=(8, 0))
 
-        ttk.Separator(body).pack(fill="x", pady=12)
-        ttk.Label(body, text="선 프리셋").pack(anchor="w")
+        ttk.Label(body, text="선 프리셋").pack(anchor="w", pady=(8, 0))
         for key in preset_keys:
             preset = settings["line_presets"][key]
             row = ttk.Frame(body)
@@ -4226,104 +4501,7 @@ class MvpApp(tk.Tk):
             combo(row, ("line_presets", key, "color"), preset["color"], color_names, width=8)
 
         ttk.Separator(body).pack(fill="x", pady=12)
-        ttk.Label(body, text="제목셀").pack(anchor="w")
-
-        title = settings["title_cell"]
-        row = ttk.Frame(body)
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="배경색", width=12).pack(side="left")
-        combo(row, ("title_cell", "background_color"), title["background_color"], color_names)
-
-        row = ttk.Frame(body)
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="글자색", width=12).pack(side="left")
-        combo(row, ("title_cell", "text_color"), title["text_color"], color_names)
-
-        row = ttk.Frame(body)
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="문단 스타일", width=12).pack(side="left")
-        combo(row, ("title_cell", "paragraph_style"), title["paragraph_style"], para_styles)
-
-        row = ttk.Frame(body)
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="글자 스타일", width=12).pack(side="left")
-        combo(row, ("title_cell", "character_style"), title["character_style"], char_styles)
-
-        ttk.Separator(body).pack(fill="x", pady=12)
-        ttk.Label(body, text="제목셀 테두리").pack(anchor="w")
-        border_labels = {
-            "top": "상",
-            "bottom": "하",
-            "left": "좌",
-            "right": "우",
-            "inside_horz": "안쪽 가로",
-            "inside_vert": "안쪽 세로",
-        }
-        for key, label in border_labels.items():
-            row = ttk.Frame(body)
-            row.pack(fill="x", pady=(6, 0))
-            ttk.Label(row, text=label, width=12).pack(side="left")
-            current_key = title["borders"].get(key, "thin")
-            current = f"{current_key}: {preset_labels.get(current_key, current_key)}"
-            combo(row, ("title_cell", "borders", key), current, preset_choices)
-
-        ttk.Separator(body).pack(fill="x", pady=12)
-        ttk.Label(body, text="Markdown 표").pack(anchor="w")
-        markdown_table = settings["markdown_table"]
-        row = ttk.Frame(body)
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="기본 문단 스타일", width=14).pack(side="left")
-        combo(
-            row,
-            ("markdown_table", "paragraph_style"),
-            markdown_table.get("paragraph_style", "(적용 안 함)"),
-            ["(적용 안 함)", *para_styles],
-            width=22,
-        )
-        current_table_style = markdown_table.get("table_style_preset", "thin_top_bottom")
-        row = ttk.Frame(body)
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="표 스타일", width=14).pack(side="left")
-        combo(
-            row,
-            ("markdown_table", "table_style_preset"),
-            f"{current_table_style}: {TABLE_STYLE_PRESET_LABELS.get(current_table_style, current_table_style)}",
-            table_style_choices,
-            width=28,
-        )
-
-        ttk.Separator(body).pack(fill="x", pady=12)
-        ttk.Label(body, text="셀 안 여백(mm)").pack(anchor="w")
-        margins = settings["table_margins"]
-        cell_margin_labels = [
-            ("cell_left", "셀 안 좌"),
-            ("cell_right", "셀 안 우"),
-            ("cell_top", "셀 안 상"),
-            ("cell_bottom", "셀 안 하"),
-        ]
-        for index in range(0, len(cell_margin_labels), 2):
-            row = ttk.Frame(body)
-            row.pack(fill="x", pady=(6, 0))
-            for key, label in cell_margin_labels[index : index + 2]:
-                ttk.Label(row, text=label, width=12).pack(side="left")
-                entry(row, ("table_margins", key), str(margins.get(key, "0.0")), width=7)
-
-        ttk.Label(body, text="표 바깥 여백(mm)").pack(anchor="w", pady=(10, 0))
-        outside_margin_labels = [
-            ("outside_left", "표 바깥 좌"),
-            ("outside_right", "표 바깥 우"),
-            ("outside_top", "표 바깥 상"),
-            ("outside_bottom", "표 바깥 하"),
-        ]
-        for index in range(0, len(outside_margin_labels), 2):
-            row = ttk.Frame(body)
-            row.pack(fill="x", pady=(6, 0))
-            for key, label in outside_margin_labels[index : index + 2]:
-                ttk.Label(row, text=label, width=12).pack(side="left")
-                entry(row, ("table_margins", key), str(margins.get(key, "0.0")), width=7)
-
-        ttk.Separator(body).pack(fill="x", pady=12)
-        ttk.Label(body, text="캡션 제목 인식").pack(anchor="w")
+        ttk.Label(body, text="캡션 인식").pack(anchor="w")
         caption_parser = settings["caption_parser"]
         caption_rows = [
             ("pattern", "정규식", 42),
@@ -4418,6 +4596,7 @@ class MvpApp(tk.Tk):
         buttons.pack(fill="x", pady=(14, 0))
         ttk.Button(buttons, text="저장", command=save_and_close).pack(side="left")
         ttk.Button(buttons, text="취소", command=window.destroy).pack(side="left", padx=(8, 0))
+        self.add_missing_button_tooltips(window)
 
     def build_paragraph_tab_controls(self, parent: ttk.Frame) -> None:
         tab_group = ttk.LabelFrame(parent, text="문단 탭", padding=UI_PAD)
@@ -4438,7 +4617,6 @@ class MvpApp(tk.Tk):
     def build_cleanup_controls(self, parent: ttk.Frame) -> None:
         cleanup_group = ttk.LabelFrame(parent, text="문장 정리", padding=UI_PAD)
         cleanup_group.pack(fill="x", pady=(UI_GAP, 0))
-        self.add_help(cleanup_group, "정리 버튼은 한글에서 글자나 표 셀을 선택한 상태로 사용합니다.")
 
         sentence_buttons = ttk.Frame(cleanup_group)
         sentence_buttons.pack(fill="x")
@@ -4627,6 +4805,7 @@ class MvpApp(tk.Tk):
         ttk.Button(table_buttons, text="실행취소", command=self.undo_hwp).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
+        self.add_missing_button_tooltips(parent)
 
     def _build_cover_logo_tab(self) -> None:
         frame = self.create_scrollable_tab("양식/그림")
@@ -4653,7 +4832,7 @@ class MvpApp(tk.Tk):
             command=self.insert_title_number_box_template,
         ).pack(fill="x", pady=(6, 0))
 
-        proof_group = ttk.LabelFrame(frame, text="증빙 PDF", padding=UI_PAD)
+        proof_group = ttk.LabelFrame(frame, text="증빙자료 만들기", padding=UI_PAD)
         proof_group.pack(fill="x", pady=(0, 10))
         proof_option_row = ttk.Frame(proof_group)
         proof_option_row.pack(fill="x", pady=(0, 6))
@@ -4674,6 +4853,11 @@ class MvpApp(tk.Tk):
             text="증빙 PDF 1건 삽입",
             command=self.insert_single_proof_pdf,
         ).pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            proof_group,
+            text="증빙 이미지 삽입",
+            command=self.insert_proof_images,
+        ).pack(fill="x", pady=(6, 0))
 
         picture_group = ttk.LabelFrame(frame, text="그림", padding=UI_PAD)
         picture_group.pack(fill="x", pady=(0, 10))
@@ -4681,20 +4865,25 @@ class MvpApp(tk.Tk):
         picture_tool_row.pack(fill="x")
         ttk.Button(
             picture_tool_row,
-            text="그림 왼쪽 90도",
+            text="왼쪽 90도",
             command=lambda: self.rotate_selected_picture(clockwise=False),
         ).grid(row=0, column=0, sticky="ew")
         ttk.Button(
             picture_tool_row,
-            text="그림 오른쪽 90도",
+            text="오른쪽 90도",
             command=lambda: self.rotate_selected_picture(clockwise=True),
         ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
         ttk.Button(
             picture_tool_row,
-            text="선택 그림 셀 맞춤",
+            text="셀 맞춤",
             command=self.fit_selected_picture_to_proof_cell,
         ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
-        for column in range(3):
+        ttk.Button(
+            picture_tool_row,
+            text="캡션원클릭",
+            command=self.cut_title_and_apply_to_next_table_caption,
+        ).grid(row=0, column=3, sticky="ew", padx=(6, 0))
+        for column in range(4):
             picture_tool_row.grid_columnconfigure(column, weight=1, uniform="picture-tools")
 
         logo_group = ttk.LabelFrame(frame, text="로고 삽입", padding=UI_PAD)
@@ -4706,7 +4895,7 @@ class MvpApp(tk.Tk):
 
         self.logo_chip_frame = ttk.Frame(logo_group)
         self.logo_chip_frame.pack(fill="both", expand=True)
-        self.add_help(self.logo_chip_frame, "로고 칩을 누르면 커서 위치에 삽입됩니다.")
+        self.add_missing_button_tooltips(frame)
 
     def log(self, lines: Iterable[str] | str) -> None:
         if isinstance(lines, str):
@@ -5912,8 +6101,12 @@ class MvpApp(tk.Tk):
         add_form.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Combobox(add_form, textvariable=style_type_var, values=["문단", "글자"], state="readonly", width=6).pack(side="left")
         ttk.Entry(add_form, textvariable=style_name_var, width=20).pack(side="left", fill="x", expand=True, padx=(6, 0))
-        ttk.Checkbutton(add_form, text="표", variable=table_style_var).pack(side="left", padx=(6, 0))
-        ttk.Checkbutton(add_form, text="캡션", variable=caption_style_var).pack(side="left")
+        table_style_check = ttk.Checkbutton(add_form, text="표", variable=table_style_var)
+        table_style_check.pack(side="left", padx=(6, 0))
+        self.add_help(table_style_check, "선택한 스타일을 표내용 스타일 후보로 표시합니다.")
+        caption_style_check = ttk.Checkbutton(add_form, text="캡션", variable=caption_style_var)
+        caption_style_check.pack(side="left")
+        self.add_help(caption_style_check, "선택한 스타일을 캡션 스타일 후보로 표시합니다.")
 
         marker_form = ttk.Frame(style_tab)
         marker_form.grid(row=2, column=0, sticky="ew", pady=(8, 0))
@@ -6018,6 +6211,7 @@ class MvpApp(tk.Tk):
         last_tab[0] = notebook.select()
         clear_style_form()
         clear_rule_form()
+        self.add_missing_button_tooltips(window)
 
     def populate_logo_chips(self, logos: list[Path]) -> None:
         for child in self.logo_chip_frame.winfo_children():
@@ -6225,8 +6419,6 @@ class MvpApp(tk.Tk):
         self.refresh_current_doc_style_map(force=True)
 
     def current_doc_style_reconnect_hint(self) -> str:
-        if not self.__dict__.get("current_doc_style_map"):
-            return ""
         return "\n\n스타일 불러오기를 이미 했다면 상태 탭에서 [한글 다시 연결]을 누른 뒤 다시 시도하세요."
 
     def warm_current_doc_style_cache(self) -> None:
@@ -6730,13 +6922,14 @@ class MvpApp(tk.Tk):
             self.debug(f"[title-cell-header] CellShape 커밋 실패: {type(exc).__name__}: {exc}")
             return False
 
-    def line_values_for_preset(self, preset_key: str) -> tuple[int, int, int] | None:
+    def line_values_for_preset(self, preset_key: str, color_name: str | None = None) -> tuple[int, int, int] | None:
         preset = self.table_settings["line_presets"].get(preset_key)
         if not preset:
             return None
         line_type = self.line_type_value(preset["type"])
         width = self.line_width_value(preset["width"])
-        color = self.hwp_rgb(self.palette_color(preset["color"]))
+        effective_color = color_name if color_name and color_name != "기본값" else preset["color"]
+        color = self.hwp_rgb(self.palette_color(effective_color))
         return line_type, width, color
 
     def set_border_edge(self, target, edge: str, line_type: int, width: int, color: int) -> None:
@@ -6747,14 +6940,14 @@ class MvpApp(tk.Tk):
         if edge == "left":
             self.set_com_attr(target, "BorderCorlorLeft", color)
 
-    def set_border_edge_from_preset(self, target, edge: str, preset_key: str) -> None:
-        values = self.line_values_for_preset(preset_key)
+    def set_border_edge_from_preset(self, target, edge: str, preset_key: str, color_name: str | None = None) -> None:
+        values = self.line_values_for_preset(preset_key, color_name)
         if values is None:
             return
         self.set_border_edge(target, edge, *values)
 
-    def set_inside_border_from_preset(self, target, orientation: str, preset_key: str) -> None:
-        values = self.line_values_for_preset(preset_key)
+    def set_inside_border_from_preset(self, target, orientation: str, preset_key: str, color_name: str | None = None) -> None:
+        values = self.line_values_for_preset(preset_key, color_name)
         if values is None:
             return
         line_type, width, color = values
@@ -6835,6 +7028,16 @@ class MvpApp(tk.Tk):
             results.append(f"헤더아래이중선={header_border_ok}({header_border_action})")
             if not header_border_ok:
                 return results, False, "헤더 아래쪽 이중선 적용에 실패했습니다."
+
+        try:
+            title_border_action, title_border_ok = self.set_title_cell_borders()
+            results.append(f"제목셀테두리={title_border_ok}({title_border_action})")
+            if not title_border_ok:
+                return results, False, "제목셀 테두리 적용에 실패했습니다."
+        except Exception as exc:
+            results.append(f"제목셀테두리 실패:{type(exc).__name__}")
+            self.debug(f"[table-style] 제목셀테두리 실패: {exc}")
+            return results, False, "제목셀 테두리 적용에 실패했습니다."
 
         color_name = title["background_color"]
         bg_action, bg_ok, bg_default = self.set_cell_fill_color(self.palette_color(color_name))
@@ -7809,14 +8012,16 @@ class MvpApp(tk.Tk):
         except Exception:
             pass
 
-        borders = self.table_settings["title_cell"]["borders"]
+        title_cell = self.table_settings["title_cell"]
+        borders = title_cell["borders"]
+        border_colors = title_cell.get("border_colors", {})
         for target in targets:
-            self.set_border_edge_from_preset(target, "top", borders["top"])
-            self.set_border_edge_from_preset(target, "bottom", borders["bottom"])
-            self.set_border_edge_from_preset(target, "left", borders["left"])
-            self.set_border_edge_from_preset(target, "right", borders["right"])
-            self.set_inside_border_from_preset(target, "horz", borders["inside_horz"])
-            self.set_inside_border_from_preset(target, "vert", borders["inside_vert"])
+            self.set_border_edge_from_preset(target, "top", borders["top"], border_colors.get("top"))
+            self.set_border_edge_from_preset(target, "bottom", borders["bottom"], border_colors.get("bottom"))
+            self.set_border_edge_from_preset(target, "left", borders["left"], border_colors.get("left"))
+            self.set_border_edge_from_preset(target, "right", borders["right"], border_colors.get("right"))
+            self.set_inside_border_from_preset(target, "horz", borders["inside_horz"], border_colors.get("inside_horz"))
+            self.set_inside_border_from_preset(target, "vert", borders["inside_vert"], border_colors.get("inside_vert"))
 
         return self.execute_first_hwp_action(("CellBorder",), pset.HSet)
 
@@ -9125,6 +9330,42 @@ class MvpApp(tk.Tk):
         self.debug(f"[proof-exit] CloseEx={closed}, BreakPage={page_break}")
         return bool(closed and page_break)
 
+    def insert_proof_image_pages(
+        self,
+        title: str,
+        pages: list[ProofImagePage],
+        *,
+        source_name: str,
+        insert_page_break_after: bool = False,
+    ) -> tuple[int, int]:
+        if not pages:
+            raise RuntimeError(f"삽입할 증빙 이미지가 없습니다: {source_name}")
+
+        template_path = create_filled_proof_template_file(title)
+        insert_ok = self.insert_file_at_cursor(template_path, keep_section=0)
+        if not insert_ok:
+            raise RuntimeError(f"증빙 양식을 삽입하지 못했습니다: {template_path.name}")
+
+        if not self.hwp_find_text(PROOF_IMAGE_MARKER, direction=1):
+            if not self.hwp_find_text(PROOF_IMAGE_MARKER, direction=2):
+                raise RuntimeError(f"증빙자료 위치를 찾지 못했습니다: {source_name}")
+        self.run_hwp_command("Delete")
+
+        inserted = 0
+        rotated = 0
+        full_cell_height = self.current_proof_full_cell_height()
+        for index, page in enumerate(pages):
+            if index > 0 and not self.append_proof_image_row():
+                raise RuntimeError(f"증빙 이미지 행 추가에 실패했습니다: {source_name} #{index + 1}")
+            cell_height = PROOF_IMAGE_FIRST_CELL_HEIGHT if index == 0 else full_cell_height
+            if not self.insert_proof_image_page(page, cell_height):
+                raise RuntimeError(f"증빙 이미지 삽입에 실패했습니다: {source_name} #{index + 1}")
+            inserted += 1
+            rotated += 1 if page.rotated else 0
+            self.clear_hwp_selection()
+        self.move_after_current_proof_table(insert_page_break=insert_page_break_after)
+        return inserted, rotated
+
     def insert_proof_pdf(self, pdf_path: Path, *, insert_page_break_after: bool = False) -> tuple[int, int]:
         title = normalize_proof_title_from_path(pdf_path)
         dpi, auto_rotate = self.proof_render_options()
@@ -9138,33 +9379,48 @@ class MvpApp(tk.Tk):
             )
             if not pages:
                 raise RuntimeError(f"PDF 페이지가 없습니다: {pdf_path.name}")
-
-            template_path = create_filled_proof_template_file(title)
-            insert_ok = self.insert_file_at_cursor(template_path, keep_section=0)
-            if not insert_ok:
-                raise RuntimeError(f"증빙 양식을 삽입하지 못했습니다: {template_path.name}")
-
-            if not self.hwp_find_text(PROOF_IMAGE_MARKER, direction=1):
-                if not self.hwp_find_text(PROOF_IMAGE_MARKER, direction=2):
-                    raise RuntimeError(f"증빙자료 위치를 찾지 못했습니다: {pdf_path.name}")
-            self.run_hwp_command("Delete")
-
-            inserted = 0
-            rotated = 0
-            full_cell_height = self.current_proof_full_cell_height()
-            for index, page in enumerate(pages):
-                if index > 0 and not self.append_proof_image_row():
-                    raise RuntimeError(f"증빙 이미지 행 추가에 실패했습니다: {pdf_path.name} p.{index + 1}")
-                cell_height = PROOF_IMAGE_FIRST_CELL_HEIGHT if index == 0 else full_cell_height
-                if not self.insert_proof_image_page(page, cell_height):
-                    raise RuntimeError(f"증빙 이미지 삽입에 실패했습니다: {pdf_path.name} p.{index + 1}")
-                inserted += 1
-                rotated += 1 if page.rotated else 0
-                self.clear_hwp_selection()
-            self.move_after_current_proof_table(insert_page_break=insert_page_break_after)
+            inserted, rotated = self.insert_proof_image_pages(
+                title,
+                pages,
+                source_name=pdf_path.name,
+                insert_page_break_after=insert_page_break_after,
+            )
         self.run_hwp_command("UpdateAll")
         self.log(f"증빙 삽입 완료: {pdf_path.name}, title={title}, pages={inserted}, rotated={rotated}, dpi={dpi}, jpg={PROOF_JPEG_QUALITY}")
         return inserted, rotated
+
+    def insert_proof_images(self) -> None:
+        label = "증빙 이미지 삽입"
+        if not self.ensure_hwp():
+            return
+        paths = filedialog.askopenfilenames(
+            title=label,
+            filetypes=(
+                ("이미지 파일", "*.png *.jpg *.jpeg *.bmp"),
+                ("PNG 파일", "*.png"),
+                ("JPEG 파일", "*.jpg *.jpeg"),
+                ("BMP 파일", "*.bmp"),
+                ("모든 파일", "*.*"),
+            ),
+        )
+        if not paths:
+            return
+        image_paths = [Path(path) for path in paths]
+        try:
+            pages = image_paths_to_proof_pages(image_paths)
+            title = normalize_proof_title_from_path(image_paths[0])
+            inserted, rotated = self.insert_proof_image_pages(
+                title,
+                pages,
+                source_name=f"{image_paths[0].name} 외 {len(image_paths) - 1}개" if len(image_paths) > 1 else image_paths[0].name,
+            )
+            self.run_hwp_command("UpdateAll")
+            self.activate_hwp_window()
+            self.log(f"{label} 완료: title={title}, images={inserted}, files={len(image_paths)}")
+            messagebox.showinfo(label, f"삽입 완료\n\n이미지: {inserted}개")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
 
     def insert_single_proof_pdf(self) -> None:
         label = "증빙 PDF 1건 삽입"
@@ -11256,6 +11512,21 @@ class MvpApp(tk.Tk):
     def convert_selected_markdown_table(self) -> None:
         self.draw_selected_markdown_table(label="Markdown 표 → 한글 표")
 
+    def apply_default_table_preset(self) -> None:
+        label = "표 자동화"
+        if not self.ensure_hwp():
+            return
+        try:
+            self.activate_hwp_window()
+            results = self.apply_default_table_formatting(label)
+            ok = bool(results) and all(result_ok for _name, result_ok in results)
+            self.log(f"{label}: " + ", ".join(f"{name}={result_ok}" for name, result_ok in results))
+            if not ok:
+                messagebox.showwarning(label, "표 안에 커서를 두거나 표를 선택한 상태에서 다시 실행하세요.")
+        except Exception as exc:
+            self.log(f"{label} 실패: {type(exc).__name__}: {exc}")
+            messagebox.showerror(f"{label} 실패", str(exc))
+
     def read_selected_markdown_table(self, label: str, *, warn_if_missing: bool = True) -> tuple[str, list[list[str]]] | None:
         selected_positions = self.get_selected_text_positions()
         copy_ok = self.run_hwp_command("Copy")
@@ -11306,7 +11577,7 @@ class MvpApp(tk.Tk):
                 return "failed"
             fill_ok = self.fill_current_table_with_rows(rows)
             if fill_ok:
-                format_results = self.apply_markdown_table_post_formatting(label, len(rows), len(rows[0]))
+                format_results = self.apply_default_table_formatting(label, len(rows), len(rows[0]))
                 self.activate_hwp_window()
             else:
                 format_results = []
@@ -11417,7 +11688,7 @@ class MvpApp(tk.Tk):
             )
             return "failed"
         fill_ok = self.fill_current_table_with_rows(rows)
-        format_results = self.apply_markdown_table_post_formatting(label, len(rows), len(rows[0])) if fill_ok else []
+        format_results = self.apply_default_table_formatting(label, len(rows), len(rows[0])) if fill_ok else []
         self.activate_hwp_window()
         self.log(
             f"{label}: markdown 표 블록 변환 paras={start_para}-{end_para}, "
@@ -11430,7 +11701,7 @@ class MvpApp(tk.Tk):
             return "partial"
         return "converted"
 
-    def apply_markdown_table_post_formatting(
+    def apply_default_table_formatting(
         self,
         label: str,
         row_count: int | None = None,
@@ -11468,7 +11739,7 @@ class MvpApp(tk.Tk):
         results.append(("너비맞추기", width_ok))
 
         self.debug(
-            f"[markdown-table-format] {label}: "
+            f"[default-table-format] {label}: "
             f"style={markdown_style_name}:{style_ok}, "
             f"cell_margin={cell_margin_action}:{cell_margin_ok}, "
             f"table_style={table_style_preset}:{table_style_ok}:{table_style_results}, "

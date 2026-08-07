@@ -1,5 +1,5 @@
 {
-  "latest_version": "1.0.4",
+  "latest_version": "1.0.5",
   "download_url": "https://github.com/DYK1323/bufs_editor/releases/latest",
-  "notes": "표/그림 캡션 조립과 텍스트 변환 안정화, 사용자 매뉴얼 개선"
+  "notes": "표 자동화, 제목셀 선 색상, 증빙 이미지 삽입, 그림 탭 캡션원클릭, 사용자 매뉴얼 반영"
 }
