@@ -7,6 +7,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvPython = Join-Path $root "bufs\.venv\Scripts\python.exe"
 $app = Join-Path $root "bufs\hwp_style_mvp.py"
 $updaterApp = Join-Path $root "bufs\update_helper.py"
+$appIcon = Join-Path $root "bufs\icons\app.ico"
 $dist = Join-Path $root "dist"
 $build = Join-Path $root "build"
 
@@ -36,6 +37,7 @@ $pyinstallerArgs = @(
   "--onedir",
   "--clean",
   "--name", "BUFS-HWP-Editor",
+  "--icon", $appIcon,
   "--hidden-import", "pythoncom",
   "--hidden-import", "pywintypes",
   "--hidden-import", "win32timezone",

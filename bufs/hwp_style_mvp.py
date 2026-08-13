@@ -133,6 +133,7 @@ if Path.cwd().resolve() != ROOT:
     # 설치 폴더 루트에는 쉽다한글이 번들링한 python312.dll이 있어
     # Python 3.11 가상환경의 pywin32 로딩과 충돌할 수 있다.
     os.chdir(ROOT)
+APP_ICON_FILE = ROOT / "icons" / "app.ico"
 
 CONFIG_ROOT = user_config_root()
 BUNDLED_TEMPLATE_DIR = ROOT / "templates"
@@ -191,7 +192,7 @@ TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 SPECIAL_CHARS_FILE = CONFIG_ROOT / "special-chars.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 APP_NAME = "BUFS-HWP-Editor"
 TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
 TITLE_NUMBER_BOX_MARKER_SEPARATOR = "::"
@@ -3179,6 +3180,7 @@ class MvpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("한글 스타일 자동화 MVP")
+        self.apply_app_icon()
         work_area = get_primary_work_area()
         if work_area is None:
             work_area = (0, 0, self.winfo_screenwidth(), self.winfo_screenheight())
@@ -3235,6 +3237,14 @@ class MvpApp(tk.Tk):
         self.after(700, self.warm_current_doc_style_cache)
         if self.update_settings.get("enabled") and self.update_settings.get("check_on_start"):
             self.after(1500, lambda: self.check_for_updates(silent=True))
+
+    def apply_app_icon(self) -> None:
+        if not APP_ICON_FILE.exists():
+            return
+        try:
+            self.iconbitmap(str(APP_ICON_FILE))
+        except Exception:
+            pass
 
     def set_status_hint(self, text: str) -> None:
         self.status_hint_var.set(text or STATUS_HINT_READY)
@@ -11874,7 +11884,10 @@ class MvpApp(tk.Tk):
             list_id, first_para, last_para = paragraph_range
             original_pos = self.get_hwp_pos_by_set()
             self.clear_hwp_selection()
-            warn_on_existing_title_boxes = self.has_title_number_boxes_after_paragraph(list_id, last_para)
+            warn_on_existing_title_boxes = any(
+                entry.outline_markers and self.is_title_number_box_entry(entry)
+                for entry in active_set.paragraph_styles
+            )
             visited = 0
             matched = 0
             changed = 0
@@ -12004,7 +12017,7 @@ class MvpApp(tk.Tk):
         missing_styles: set[str] = set()
         missing_roles: set[str] = set()
         numbering_state = NumberingRunState()
-        warn_on_existing_title_boxes = bool(self.current_title_number_box_numbers())
+        warn_on_existing_title_boxes = False
 
         for address, cell_pos in address_positions:
             if not self.set_hwp_pos_by_set(cell_pos):

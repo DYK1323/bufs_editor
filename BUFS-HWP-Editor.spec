@@ -7,10 +7,10 @@ hiddenimports += collect_submodules('win32com')
 
 
 a = Analysis(
-    ['C:\\Users\\DAYOUNG\\bufs_editor\\bufs\\hwp_style_mvp.py'],
+    ['bufs\\hwp_style_mvp.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\Users\\DAYOUNG\\bufs_editor\\bufs\\style-sets.json', 'bufs'), ('C:\\Users\\DAYOUNG\\bufs_editor\\bufs\\table-settings.json', 'bufs'), ('C:\\Users\\DAYOUNG\\bufs_editor\\bufs\\style-order.json', 'bufs'), ('C:\\Users\\DAYOUNG\\bufs_editor\\bufs\\templates', 'bufs\\templates'), ('C:\\Users\\DAYOUNG\\bufs_editor\\bufs\\icons', 'bufs\\icons'), ('C:\\Users\\DAYOUNG\\bufs_editor\\bufs\\logos', 'bufs\\logos')],
+    datas=[('bufs\\style-sets.json', 'bufs'), ('bufs\\table-settings.json', 'bufs'), ('bufs\\update-settings.json', 'bufs'), ('bufs\\style-order.json', 'bufs'), ('bufs\\templates', 'bufs\\templates'), ('bufs\\icons', 'bufs\\icons'), ('bufs\\logos', 'bufs\\logos')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -37,6 +37,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='bufs\\icons\\app.ico',
 )
 coll = COLLECT(
     exe,

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="_레이어_2" data-name="레이어 2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 948 948">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #ffcb05;
+      }
+
+      .cls-2 {
+        fill: #e1e1e1;
+        filter: url(#drop-shadow-2);
+      }
+
+      .cls-3 {
+        letter-spacing: -.03em;
+      }
+
+      .cls-4 {
+        fill: #fff;
+        filter: url(#drop-shadow-1);
+      }
+
+      .cls-5 {
+        fill: #555;
+      }
+
+      .cls-6 {
+        fill: #969696;
+      }
+
+      .cls-7 {
+        font-family: PretendardVariable-ExtraBold, 'Pretendard Variable';
+        font-size: 185.81px;
+        font-variation-settings: 'wght' 800;
+        font-weight: 700;
+      }
+    </style>
+    <filter id="drop-shadow-1" x="0" y="0" width="948" height="948" filterUnits="userSpaceOnUse">
+      <feOffset dx="10" dy="10"/>
+      <feGaussianBlur result="blur" stdDeviation="8"/>
+      <feFlood flood-color="#000" flood-opacity=".2"/>
+      <feComposite in2="blur" operator="in"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+    <filter id="drop-shadow-2" x="680" y="0" width="255" height="255" filterUnits="userSpaceOnUse">
+      <feOffset dx="-3" dy="10"/>
+      <feGaussianBlur result="blur-2" stdDeviation="8"/>
+      <feFlood flood-color="#000" flood-opacity=".1"/>
+      <feComposite in2="blur-2" operator="in"/>
+      <feComposite in="SourceGraphic"/>
+    </filter>
+  </defs>
+  <g id="_레이어_1-2" data-name="레이어 1">
+    <rect class="cls-4" x="14" y="14" width="900" height="900" rx="80" ry="80"/>
+    <g>
+      <circle class="cls-1" cx="342.49" cy="603.53" r="35.78"/>
+      <path class="cls-1" d="M581.05,174.91h-202.78v-70.98h-71.57v70.98H103.93v71.57h148.59c-39.4,28.12-65.09,74.21-65.09,126.31,0,85.64,69.42,155.06,155.06,155.06s155.06-69.42,155.06-155.06c0-52.1-25.69-98.19-65.09-126.31h148.59v-71.57ZM342.49,456.28c-46.11,0-83.5-37.38-83.5-83.5s37.38-83.5,83.5-83.5,83.5,37.38,83.5,83.5-37.38,83.5-83.5,83.5Z"/>
+    </g>
+    <text class="cls-7" transform="translate(353.29 599.72)"><tspan class="cls-5"><tspan x="0" y="0">BUFS</tspan></tspan><tspan class="cls-6"><tspan x="-195.06" y="222.97">EDI</tspan><tspan class="cls-3" x="97.53" y="222.97">T</tspan><tspan x="213.03" y="222.97">OR</tspan></tspan></text>
+    <path class="cls-2" d="M725.93,220.11l169.97.14c16.09.01,24.16-19.44,12.78-30.82L738.56,19.32c-11.38-11.38-30.83-3.31-30.82,12.78l.14,169.97c0,9.96,8.08,18.03,18.04,18.04Z"/>
+  </g>
+</svg>

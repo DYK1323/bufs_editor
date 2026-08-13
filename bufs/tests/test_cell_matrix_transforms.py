@@ -2967,6 +2967,32 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertEqual(applied, ["본문-개요2"])
 
+    def test_configured_outline_style_bulk_skips_title_box_document_scan_for_plain_rules(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 1})()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((0, 2, 0), (0, 2, 4))
+        app.get_hwp_pos_by_set = lambda: "original"
+        app.set_hwp_pos_by_set = lambda _pos: True
+        app.clear_hwp_selection = lambda: True
+        app.activate_hwp_window = lambda: None
+        app.log = lambda _message: None
+        app.debug = lambda _message: None
+        app.ensure_current_doc_style_cache = lambda: None
+        app.active_style_set_name = "set"
+        app.style_sets = [StyleSet("set", [StyleEntry("본문-개요2", outline_markers=("ㅇ",))], [])]
+        app.is_hwp_paragraph_in_table = lambda _list_id, _para: False
+        app.read_current_paragraph_text = lambda _list_id, _para: "ㅇ 본문"
+        app.delete_hwp_text_range = lambda _list_id, _para, _start, _end: True
+        app.apply_style_to_paragraph_text = lambda _list_id, _para, _record: True
+        app.apply_inline_rules_to_paragraph = lambda *_args, **_kwargs: 0
+        app.find_current_doc_style_record = lambda name: StyleRecord(1, 1, "PARA", name)
+        app.has_title_number_boxes_after_paragraph = lambda *_args, **_kwargs: self.fail(
+            "plain bulk rules should not scan the document for title number boxes"
+        )
+
+        app.apply_configured_outline_styles_to_selection()
+
     def test_configured_outline_style_bulk_title_box_replaces_paragraph(self) -> None:
         app = object.__new__(MvpApp)
         app.hwp = type("FakeHwp", (), {"SelectionMode": 1})()
