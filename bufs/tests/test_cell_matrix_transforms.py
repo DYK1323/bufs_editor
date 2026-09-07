@@ -18,6 +18,7 @@ from hwp_style_mvp import (  # noqa: E402
     cell_matrix_to_tsv,
     caption_target_kind_from_ctrl,
     clean_manual_line_breaks,
+    changed_text_span,
     consume_numbering_entry,
     convert_decimal_numbers_to_currency_unit,
     flatten_cell_matrix,
@@ -32,6 +33,7 @@ from hwp_style_mvp import (  # noqa: E402
     manual_outline_prefix_length,
     normalize_decimal_numbers,
     normalize_dates,
+    normalize_proof_title_from_path,
     normalize_years,
     normalize_clipboard_newlines,
     normalize_table_settings,
@@ -39,6 +41,7 @@ from hwp_style_mvp import (  # noqa: E402
     parse_cover_input,
     parse_github_release_info,
     parse_update_info,
+    proof_sort_key,
     create_filled_title_number_box_file,
     create_title_number_box_hwpml,
     default_caption_label_length,
@@ -136,6 +139,27 @@ class CellMatrixTransformTests(unittest.TestCase):
 
             self.assertEqual((builtin / "nested" / "new.hwpx").read_text(encoding="utf-8"), "new")
             self.assertTrue(custom.exists())
+
+    def test_normalize_proof_title_from_path_removes_hyphenated_prefix_number(self) -> None:
+        self.assertEqual(normalize_proof_title_from_path(Path("2-1_증빙제목.pdf")), "증빙제목")
+        self.assertEqual(normalize_proof_title_from_path(Path("2-10 증빙제목.pdf")), "증빙제목")
+
+    def test_normalize_proof_title_from_path_keeps_title_when_prefix_is_only_number(self) -> None:
+        self.assertEqual(normalize_proof_title_from_path(Path("1_증빙제목.pdf")), "증빙제목")
+        self.assertEqual(normalize_proof_title_from_path(Path("2.1_증빙제목.pdf")), "증빙제목")
+
+    def test_proof_sort_key_sorts_hyphenated_numbers_numerically(self) -> None:
+        paths = [
+            Path("2-10_열번째.pdf"),
+            Path("1-1_첫번째.pdf"),
+            Path("2-2_두번째.pdf"),
+            Path("2-1_첫번째.pdf"),
+        ]
+
+        self.assertEqual(
+            [path.name for path in sorted(paths, key=proof_sort_key)],
+            ["1-1_첫번째.pdf", "2-1_첫번째.pdf", "2-2_두번째.pdf", "2-10_열번째.pdf"],
+        )
 
     def test_resolve_config_path_maps_legacy_templates_path_to_builtin(self) -> None:
         self.assertEqual(
@@ -440,6 +464,45 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(commands, ["Cancel", "SelectCtrlReverse", "ShapeObjTableSelCell", "TableCellBlock", "TableCellBlockRow"])
         self.assertIn("TableCellBlock=False, ready=True", steps)
 
+    def test_select_current_table_first_row_moves_to_top_left_when_first_cell_command_stays_on_last_row(self) -> None:
+        app = object.__new__(MvpApp)
+        commands: list[str] = []
+        addresses = [(1, 5), (1, 1)]
+        app.hwp = object()
+        app.select_current_table_object = lambda: commands.append("SelectCtrlReverse") or True
+        app.select_selected_table_first_cell = lambda: commands.append("ShapeObjTableSelCell") or True
+        app.move_to_nearby_table_cell = lambda: self.fail("첫 셀 명령이 성공하면 nearby fallback을 쓰지 않아야 합니다")
+        app.get_current_cell_address = lambda: addresses.pop(0)
+        app.move_table_cell = lambda command, count=1: commands.extend([command] * count) or True
+        app.is_selected_cell_block = lambda: False
+
+        def run_command(command: str) -> bool:
+            commands.append(command)
+            return True
+
+        app.run_hwp_command = run_command
+
+        ok, steps = app.select_current_table_first_row()
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            commands,
+            [
+                "Cancel",
+                "SelectCtrlReverse",
+                "ShapeObjTableSelCell",
+                "TableUpperCell",
+                "TableUpperCell",
+                "TableUpperCell",
+                "TableUpperCell",
+                "TableCellBlock",
+                "TableCellBlockRow",
+            ],
+        )
+        self.assertIn("cell_address=(1, 5)", steps)
+        self.assertIn("move_top_left=True", steps)
+        self.assertIn("top_left_address=(1, 1)", steps)
+
     def test_table_style_preset_applies_header_background_after_border(self) -> None:
         app = object.__new__(MvpApp)
         calls: list[tuple[str, object | None]] = []
@@ -456,6 +519,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         }
         app.set_selected_cells_as_header = lambda: calls.append(("header_attr", None)) or ("CellShape", True, True)
         app.apply_style_by_name = lambda name: calls.append(("style", name)) or True
+        app.set_title_cell_borders = lambda: calls.append(("title_border", None)) or ("CellBorder", True)
         app.palette_color = lambda name: calls.append(("palette", name)) or hwp_style_mvp.PaletteColor(
             name,
             (220, 221, 221),
@@ -476,6 +540,7 @@ class CellMatrixTransformTests(unittest.TestCase):
                 ("header_attr", None),
                 ("style", "표내용-중간"),
                 ("style", "표내용-굵게"),
+                ("title_border", None),
                 ("palette", "셀배경"),
                 ("fill", "셀배경"),
             ],
@@ -497,6 +562,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         }
         app.set_selected_cells_as_header = lambda: calls.append(("header_attr", None)) or ("CellShape", True, True)
         app.apply_style_by_name = lambda name: calls.append(("style", name)) or True
+        app.set_title_cell_borders = lambda: calls.append(("title_border", None)) or ("CellBorder", True)
         app.palette_color = lambda name: calls.append(("palette", name)) or hwp_style_mvp.PaletteColor(
             name,
             (220, 221, 221),
@@ -518,6 +584,7 @@ class CellMatrixTransformTests(unittest.TestCase):
                 ("style", "표내용-중간"),
                 ("style", "표내용-굵게"),
                 ("border", "double_bottom"),
+                ("title_border", None),
                 ("palette", "셀배경"),
                 ("fill", "셀배경"),
             ],
@@ -1187,6 +1254,26 @@ class CellMatrixTransformTests(unittest.TestCase):
             ],
         )
 
+    def test_delete_hwp_text_range_falls_back_when_select_text_range_mismatches(self) -> None:
+        class FakeHwp:
+            def SelectText(self, *_args):
+                return True
+
+            def GetSelectedPos(self):
+                return (True, 7, 3, 0, 7, 3, 1)
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        app.debug = lambda _message: None
+        app.actual_hwp_text_range = lambda _list_id, _para, _start, _end: (6, 10)
+        app.set_hwp_pos = lambda _pos: True
+        app.clear_hwp_selection = lambda: True
+        commands: list[str] = []
+        app.run_hwp_command = lambda command: commands.append(command) or True
+
+        self.assertTrue(app.delete_hwp_text_range(7, 3, 6, 10))
+        self.assertEqual(commands, ["MoveSelRight", "MoveSelRight", "MoveSelRight", "MoveSelRight", "Delete"])
+
     def test_title_number_box_settings_prefers_style_template_file_over_set_default(self) -> None:
         app = object.__new__(MvpApp)
         app.table_settings = {"title_number_box": {"template_file": "templates/global.hwpx"}}
@@ -1647,7 +1734,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertEqual(cell_shape.items["Cell"].items["MarginTop"], 200)
         self.assertEqual(cell_shape.items["Cell"].items["MarginBottom"], 200)
 
-    def test_markdown_table_post_formatting_runs_cell_steps_before_object_steps(self) -> None:
+    def test_default_table_formatting_runs_cell_steps_before_object_steps(self) -> None:
         app = object.__new__(MvpApp)
         calls: list[str] = []
         app.set_table_page_width = lambda: calls.append("width") or ("HWPML2X", True, 1000)
@@ -1660,7 +1747,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.table_settings = {"markdown_table": {"paragraph_style": "(적용 안 함)", "table_style_preset": "thin_top_bottom"}}
         app.debug = lambda _message: None
 
-        results = app.apply_markdown_table_post_formatting("Markdown 표 → 한글 표", 3, 2)
+        results = app.apply_default_table_formatting("Markdown 표 → 한글 표", 3, 2)
 
         self.assertEqual(
             calls,
@@ -1676,7 +1763,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         )
         self.assertEqual(results, [("셀여백", True), ("표스타일:얇은상하", True), ("표여백", True), ("너비맞추기", True)])
 
-    def test_markdown_table_post_formatting_applies_configured_paragraph_style(self) -> None:
+    def test_default_table_formatting_applies_configured_paragraph_style(self) -> None:
         app = object.__new__(MvpApp)
         calls: list[str] = []
         app.table_settings = {
@@ -1695,7 +1782,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.clear_hwp_selection = lambda: calls.append("clear") or True
         app.debug = lambda _message: None
 
-        results = app.apply_markdown_table_post_formatting("Markdown 표 → 한글 표", 3, 2)
+        results = app.apply_default_table_formatting("Markdown 표 → 한글 표", 3, 2)
 
         self.assertEqual(
             calls,
@@ -1720,6 +1807,36 @@ class CellMatrixTransformTests(unittest.TestCase):
                 ("너비맞추기", True),
             ],
         )
+
+    def test_default_table_formatting_can_skip_content_style_from_quick_toggle(self) -> None:
+        class Toggle:
+            def get(self):
+                return False
+
+        app = object.__new__(MvpApp)
+        calls: list[str] = []
+        app.table_auto_content_style_var = Toggle()
+        app.table_settings = {
+            "markdown_table": {
+                "paragraph_style": "표내용-중간",
+                "table_style_preset": "thin_top_bottom",
+            }
+        }
+        app.set_table_page_width = lambda: calls.append("width") or ("HWPML2X", True, 1000)
+        app.select_current_table_object = lambda: calls.append("select_object") or True
+        app.set_table_outside_margins = lambda: calls.append("outside") or ("TablePropertyDialog", True)
+        app.select_current_table_all_cells = lambda rows=None, cols=None: calls.append(f"select_cells:{rows}x{cols}") or True
+        app.apply_style_by_name = lambda style_name: calls.append(f"style:{style_name}") or True
+        app.set_table_cell_margins = lambda: calls.append("cell_margin") or ("CellShape", True)
+        app.apply_table_style_preset_steps = lambda preset: calls.append(f"table_style:{preset}") or (["header-style"], True, None)
+        app.clear_hwp_selection = lambda: calls.append("clear") or True
+        app.debug = lambda _message: None
+
+        results = app.apply_default_table_formatting("표 자동화", 3, 2)
+
+        self.assertNotIn("style:표내용-중간", calls)
+        self.assertIn("table_style:thin_top_bottom", calls)
+        self.assertIn(("문단스타일:표내용-중간:건너뜀", True), results)
 
     def test_selected_table_object_can_switch_to_all_cell_selection(self) -> None:
         app = object.__new__(MvpApp)
@@ -1984,8 +2101,8 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.set_clipboard_text = lambda _text: self.fail("restore should not run")
         app.create_table_at_cursor = lambda rows, cols: ("TableCreate", rows == 2 and cols == 2)
         app.fill_current_table_with_rows = lambda rows: rows == [["A", "B"], ["1", "2"]]
-        formatted: list[str] = []
-        app.apply_markdown_table_post_formatting = lambda label, rows, cols: formatted.append((label, rows, cols)) or [
+        formatted: list[tuple[str, int, int]] = []
+        app.apply_default_table_formatting = lambda label, rows, cols: formatted.append((label, rows, cols)) or [
             ("셀여백", True),
             ("얇은상하", True),
             ("표여백", True),
@@ -2289,6 +2406,16 @@ class CellMatrixTransformTests(unittest.TestCase):
         )
         self.assertEqual(normalize_dates("19910231 991399", "dot"), "19910231 991399")
 
+    def test_normalize_dates_does_not_treat_percentage_decimal_as_date(self) -> None:
+        text = "외국인 유학생 비율 2024년 6.0% → 2025년 11.8%(1,045명)로 증가"
+
+        self.assertEqual(normalize_dates(text, "dot_padded"), text)
+
+    def test_normalize_dates_does_not_treat_score_decimal_as_date(self) -> None:
+        text = "휴학생 지원 체계 기여도는 2024년 4.22점에서 2025년 4.35점으로 상승"
+
+        self.assertEqual(normalize_dates(text, "dot_padded"), text)
+
     def test_normalize_years_handles_year_and_school_year_without_dates(self) -> None:
         source = (
             "2026\ub144 26\ub144 '26\ub144 "
@@ -2388,21 +2515,137 @@ class CellMatrixTransformTests(unittest.TestCase):
 
         self.assertTrue(app.is_selected_cell_block())
 
-    def test_single_copied_cell_without_formula_addresses_uses_text_path(self) -> None:
+    def test_single_copied_cell_without_formula_addresses_uses_paragraph_replacement(self) -> None:
         app = object.__new__(MvpApp)
         app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
         app.debug = lambda _message: None
         app.log = lambda _message: None
         app.get_selected_cell_range_by_formula = lambda: None
+        app.activate_hwp_window = lambda: None
+        app.selected_current_cell_paragraph_range = lambda: (7, 3, 3)
+        app.read_current_paragraph_text = lambda _list_id, _para: "2021. 6. 8."
+        deleted: list[tuple[int, int, int, int]] = []
+        inserted: list[str] = []
+        app.delete_hwp_text_range = lambda list_id, para, start, end: deleted.append(
+            (list_id, para, start, end)
+        ) or True
+        app.set_hwp_pos = lambda _pos: self.fail("삭제 직후 보이는 문자 위치로 다시 이동하면 안 됩니다")
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
 
         self.assertTrue(looks_like_single_copied_cell("2021. 6. 8.\r\n"))
-        self.assertFalse(
+        self.assertTrue(
             app.transform_selected_cell_matrix(
-                "요일 추가",
+                "날짜 정규화",
                 "2021. 6. 8.\r\n",
-                add_weekdays_to_dates,
+                lambda text: normalize_dates(text, "dot_padded"),
             )
         )
+        self.assertEqual(deleted, [(7, 3, 6, 9)])
+        self.assertEqual(inserted, ["06. 0"])
+
+    def test_single_cell_date_normalization_uses_paragraph_text_not_copied_bullet_text(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.activate_hwp_window = lambda: None
+        app.get_selected_cell_range_by_formula = lambda: None
+        app.selected_current_cell_paragraph_range = lambda: (8, 4, 4)
+        app.read_current_paragraph_text = lambda _list_id, _para: "2026. 7. 2."
+        app.set_clipboard_text = lambda _text: self.fail("단일 셀 날짜 정규화는 클립보드 붙여넣기를 쓰지 않아야 합니다")
+        deleted: list[tuple[int, int, int, int]] = []
+        inserted: list[str] = []
+        app.delete_hwp_text_range = lambda list_id, para, start, end: deleted.append(
+            (list_id, para, start, end)
+        ) or True
+        app.set_hwp_pos = lambda _pos: self.fail("삭제 직후 보이는 문자 위치로 다시 이동하면 안 됩니다")
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
+
+        handled = app.transform_selected_cell_matrix(
+            "날짜 정규화",
+            "• 2026. 7. 2.\r\n",
+            lambda text: normalize_dates(text, "dot_padded"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(deleted, [(8, 4, 6, 9)])
+        self.assertEqual(inserted, ["07. 0"])
+
+    def test_single_cell_date_normalization_only_replaces_changed_spans_per_paragraph(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.activate_hwp_window = lambda: None
+        app.get_selected_cell_range_by_formula = lambda: None
+        app.selected_current_cell_paragraph_range = lambda: (9, 10, 11)
+        paragraphs = {
+            10: "총학생회 간담회(2025.12.15.)",
+            11: "수업개선위원회 개최(2026.01.19.)",
+        }
+        app.read_current_paragraph_text = lambda _list_id, para: paragraphs[para]
+        deleted: list[tuple[int, int, int, int]] = []
+        inserted: list[str] = []
+        app.delete_hwp_text_range = lambda list_id, para, start, end: deleted.append(
+            (list_id, para, start, end)
+        ) or True
+        app.set_hwp_pos = lambda _pos: self.fail("삭제 직후 보이는 문자 위치로 다시 이동하면 안 됩니다")
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
+
+        handled = app.transform_selected_cell_matrix(
+            "날짜 정규화",
+            "총학생회 간담회(2025.12.15.)\r\n수업개선위원회 개최(2026.01.19.)\r\n",
+            lambda text: normalize_dates(text, "dot_padded"),
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(deleted, [(9, 10, 14, 17), (9, 11, 16, 19)])
+        self.assertEqual(inserted, [" 12. ", " 01. "])
+
+    def test_multiline_table_text_selection_uses_position_replacement_without_paste(self) -> None:
+        class FakeHwp:
+            SelectionMode = 1
+
+        app = object.__new__(MvpApp)
+        app.hwp = FakeHwp()
+        app.ensure_hwp = lambda: True
+        app.get_selected_text_positions = lambda: ((0, 10, 0), (0, 13, 0))
+        app.is_selected_cell_block = lambda: False
+        app.get_clipboard_text = lambda: (
+            "총학생회 간담회(2025.12.15.)\r\n"
+            "수업개선위원회 개최(2026.01.19.)\r\n"
+        )
+        paragraphs = {
+            10: "총학생회 간담회(2025.12.15.)",
+            11: "수업개선위원회 개최(2026.01.19.)",
+            12: "핵심역량변경에 따른 의견수렴",
+        }
+        app.read_current_paragraph_text = lambda _list_id, para: paragraphs[para]
+        app.hwp_paragraph_visible_text_offset = lambda _list_id, _para: 0
+        app.set_clipboard_text = lambda _text: self.fail("여러 문단 날짜 정규화는 붙여넣기를 쓰지 않아야 합니다")
+        app.run_hwp_command = lambda command: command == "Copy"
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.activate_hwp_window = lambda: None
+        deleted: list[tuple[int, int, int, int]] = []
+        inserted: list[str] = []
+        app.delete_hwp_text_range = lambda list_id, para, start, end: deleted.append(
+            (list_id, para, start, end)
+        ) or True
+        app.set_hwp_pos = lambda _pos: True
+        app.insert_hwp_text = lambda text: inserted.append(text) or True
+
+        app.transform_selected_text(
+            "날짜 정규화",
+            lambda text: normalize_dates(text, "dot_padded"),
+            allow_cell_iteration=True,
+            strip_wrapping_lines=True,
+            reselect_current_cell=True,
+            replace_single_paragraph_by_position=True,
+        )
+
+        self.assertEqual(deleted, [(0, 10, 14, 17), (0, 11, 16, 19)])
+        self.assertEqual(inserted, [" 12. ", " 01. "])
 
     def test_cell_matrix_transform_stops_when_cell_address_snapshot_is_missing(self) -> None:
         app = object.__new__(MvpApp)
@@ -2412,6 +2655,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.get_selected_cell_range_by_formula = lambda: {"rows": 99, "cols": 99}
         app.detect_selected_cell_rect = lambda *args, **kwargs: self.fail("주소 없을 때 셀 감지 스캔을 실행하면 안 됩니다")
         app.transform_selected_cells_by_iteration = lambda *args, **kwargs: self.fail("주소 없을 때 한 열 순회를 실행하면 안 됩니다")
+        app.transform_current_cell_paragraphs = lambda *args, **kwargs: self.fail("범위 불명 상태에서 단일 셀 치환을 실행하면 안 됩니다")
         app.set_clipboard_text = lambda _text: self.fail("주소 없을 때 TSV 붙여넣기를 실행하면 안 됩니다")
         warnings: list[tuple[str, str]] = []
         original_showwarning = hwp_style_mvp.messagebox.showwarning
@@ -2429,6 +2673,29 @@ class CellMatrixTransformTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertTrue(warnings)
         self.assertIn("테이블 전체를 추측해서 훑지 않습니다", warnings[0][1])
+
+    def test_unknown_range_with_multiline_text_does_not_use_single_cell_path(self) -> None:
+        app = object.__new__(MvpApp)
+        app.hwp = type("FakeHwp", (), {"SelectionMode": 19})()
+        app.debug = lambda _message: None
+        app.log = lambda _message: None
+        app.get_selected_cell_range_by_formula = lambda: {"rows": 4, "cols": 2}
+        app.transform_current_cell_paragraphs = lambda *args, **kwargs: self.fail("범위 불명 다중 문단은 단일 셀 치환을 실행하면 안 됩니다")
+        warnings: list[tuple[str, str]] = []
+        original_showwarning = hwp_style_mvp.messagebox.showwarning
+        hwp_style_mvp.messagebox.showwarning = lambda title, message: warnings.append((title, message))
+
+        try:
+            handled = app.transform_selected_cell_matrix(
+                "요일 제거",
+                "첫 번째\r\n두 번째\r\n세 번째",
+                remove_weekdays_from_dates,
+            )
+        finally:
+            hwp_style_mvp.messagebox.showwarning = original_showwarning
+
+        self.assertTrue(handled)
+        self.assertTrue(warnings)
 
     def test_formula_address_iteration_runs_before_detection_scan(self) -> None:
         app = object.__new__(MvpApp)
@@ -2675,7 +2942,7 @@ class CellMatrixTransformTests(unittest.TestCase):
         app.hwp = FakeHwp()
         app.debug = lambda _message: None
         app.log = lambda _message: None
-        app.get_selected_cell_range_by_formula = lambda: {"rows": 4, "cols": 2}
+        app.get_selected_cell_range_by_formula = lambda: {"rows": 4, "cols": 2, "cells": 8}
 
         tried: list[tuple[int, int, int]] = []
 

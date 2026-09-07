@@ -301,7 +301,7 @@ DATE_RE = re.compile(
     r"(?:\s*월\s*|\s*\.\s*|\s*-\s*)"
     r"(?P<day>\d{1,2})"
     r"(?:\s*일|\s*\.)?"
-    r"(?!\d)"
+    r"(?![\d%\uC810])"
 )
 COMPACT_DATE_RE = re.compile(
     r"(?<![\d,.-])"
@@ -329,7 +329,7 @@ WEEKDAY_DATE_RE = re.compile(
     r"(?:\s*일|\s*\.)?"
     r")"
     r"(?:\s*\([월화수목금토일]\))?"
-    r"(?!\d)"
+    r"(?![\d%\uC810])"
 )
 
 KOREAN_WEEKDAYS = ("월", "화", "수", "목", "금", "토", "일")

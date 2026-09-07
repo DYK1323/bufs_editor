@@ -1862,6 +1862,26 @@ def normalize_style_name(name: str) -> str:
     return text.casefold()
 
 
+def changed_text_span(original: str, updated: str) -> tuple[int, int, str] | None:
+    if original == updated:
+        return None
+    prefix = 0
+    limit = min(len(original), len(updated))
+    while prefix < limit and original[prefix] == updated[prefix]:
+        prefix += 1
+
+    original_suffix = len(original)
+    updated_suffix = len(updated)
+    while (
+        original_suffix > prefix
+        and updated_suffix > prefix
+        and original[original_suffix - 1] == updated[updated_suffix - 1]
+    ):
+        original_suffix -= 1
+        updated_suffix -= 1
+    return prefix, original_suffix, updated[prefix:updated_suffix]
+
+
 def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
     red, green, blue = rgb
     return f"#{red:02X}{green:02X}{blue:02X}"
@@ -2323,13 +2343,13 @@ def style_entry_has_role(entry: StyleEntry, role: str) -> bool:
 
 def normalize_proof_title_from_path(path: Path) -> str:
     title = path.stem.strip()
-    title = re.sub(r"^\s*\d+(?:\.\d+)?[\s._-]+", "", title).strip()
+    title = re.sub(r"^\s*\d+(?:[.-]\d+)*[\s._-]+", "", title).strip()
     return title or path.stem
 
 
-def proof_sort_key(path: Path) -> tuple[float, str]:
-    match = re.match(r"^\s*(\d+(?:\.\d+)?)", path.stem)
-    number = float(match.group(1)) if match else float("inf")
+def proof_sort_key(path: Path) -> tuple[tuple[float, ...], str]:
+    match = re.match(r"^\s*(\d+(?:[.-]\d+)*)(?=$|[\s._-])", path.stem)
+    number = tuple(float(part) for part in re.split(r"[.-]", match.group(1))) if match else (float("inf"),)
     return number, path.name.casefold()
 
 
@@ -3210,6 +3230,7 @@ class MvpApp(tk.Tk):
         self.unit_decimal_mode_var = tk.StringVar(value="반올림")
         self.unit_decimal_use_commas_var = tk.BooleanVar(value=True)
         self.compose_number_var = tk.StringVar(value="")
+        self.table_auto_content_style_var = tk.BooleanVar(value=True)
         self.logo_chip_images: list[tk.PhotoImage] = []
         self.icon_images: dict[str, tk.PhotoImage] = {}
         self.pending_caption_title = ""
@@ -4173,6 +4194,13 @@ class MvpApp(tk.Tk):
             bd=1,
         )
         default_table_button.pack(fill="x", pady=(0, UI_GAP), ipady=UI_BUTTON_IPADY)
+        table_auto_option = ttk.Checkbutton(
+            content,
+            text="표 내용 스타일 적용",
+            variable=self.table_auto_content_style_var,
+        )
+        table_auto_option.pack(anchor="w", pady=(0, UI_GAP))
+        self.add_help(table_auto_option, "표 자동화에서 표 내용 문단 스타일을 적용할지 선택합니다.")
         self.add_missing_button_tooltips(frame)
 
     def table_content_style_records(self) -> list[StyleRecord]:
@@ -4788,7 +4816,6 @@ class MvpApp(tk.Tk):
         ttk.Button(date_buttons2, text="요일 제거", command=self.remove_weekdays_from_selection).pack(
             side="left", fill="x", expand=True, padx=(6, 0)
         )
-
         year_group = ttk.LabelFrame(parent, text="연도 정규화", padding=UI_PAD)
         year_group.pack(fill="x", pady=(UI_GAP, 0))
         year_buttons = ttk.Frame(year_group)
@@ -8094,6 +8121,19 @@ class MvpApp(tk.Tk):
         else:
             results.append(f"ShapeObjTableSelCell={first_cell_ok}")
 
+        if first_cell_ok and self.__dict__.get("hwp") is not None:
+            address = self.get_current_cell_address()
+            results.append(f"cell_address={address}")
+            if address is not None and address != (1, 1):
+                top_left_ok = self.move_between_table_addresses(address, (1, 1))
+                results.append(f"move_top_left={top_left_ok}")
+                if not top_left_ok:
+                    return False, results
+                moved_address = self.get_current_cell_address()
+                results.append(f"top_left_address={moved_address}")
+                if moved_address is not None and moved_address != (1, 1):
+                    return False, results
+
         block_ok = first_cell_ok and self.run_hwp_command("TableCellBlock")
         block_ready = bool(block_ok or self.is_selected_cell_block())
         results.append(f"TableCellBlock={block_ok}, ready={block_ready}")
@@ -10241,6 +10281,56 @@ class MvpApp(tk.Tk):
             return None
         return selected_text, visible_start, visible_end
 
+    def transform_selected_paragraphs_by_position(
+        self,
+        label: str,
+        selected_positions: tuple[tuple[int, int, int], tuple[int, int, int]],
+        transform,
+    ) -> tuple[int, int] | None:
+        start, end = selected_positions
+        if start[0] != end[0]:
+            return None
+        list_id = start[0]
+        first_para = start[1]
+        last_para = end[1]
+        if end[2] == 0 and last_para > first_para:
+            last_para -= 1
+        if last_para < first_para:
+            return None
+
+        visited = 0
+        changed = 0
+        for para in range(first_para, last_para + 1):
+            paragraph_text = self.read_current_paragraph_text(list_id, para)
+            if paragraph_text is None:
+                return None
+            offset = self.hwp_paragraph_visible_text_offset(list_id, para)
+            selection_start = max(0, start[2] - offset) if para == first_para else 0
+            if para == end[1]:
+                selection_end = max(0, end[2] - offset)
+            else:
+                selection_end = len(paragraph_text)
+            selection_start = min(selection_start, len(paragraph_text))
+            selection_end = min(selection_end, len(paragraph_text))
+            if selection_end <= selection_start:
+                continue
+            selected_text = paragraph_text[selection_start:selection_end]
+            transformed = transform(selected_text)
+            visited += 1
+            span = changed_text_span(selected_text, transformed)
+            if span is None:
+                continue
+            span_start, span_end, replacement = span
+            actual_start = selection_start + span_start
+            actual_end = selection_start + span_end
+            if not self.delete_hwp_text_range(list_id, para, actual_start, actual_end):
+                return None
+            if replacement and not self.insert_hwp_text(replacement):
+                return None
+            changed += 1
+        self.log(f"{label}: 선택 문단 위치 치환 완료, visited={visited}, changed={changed}")
+        return visited, changed
+
     def get_current_heading_string(self) -> str:
         try:
             return safe_str(self.hwp.GetHeadingString())
@@ -10489,7 +10579,14 @@ class MvpApp(tk.Tk):
             if not self.set_hwp_pos((list_id, para, actual_start)):
                 return False
             if hasattr(self.hwp, "SelectText") and self.hwp.SelectText(para, actual_start, para, actual_end):
-                return self.run_hwp_command("Delete")
+                matches = self.selected_hwp_text_range_matches(list_id, para, actual_start, actual_end)
+                if matches is not False:
+                    return self.run_hwp_command("Delete")
+                self.debug(
+                    f"[paragraph-delete] SelectText 범위 불일치, fallback 사용 "
+                    f"para={para}, expected={actual_start}-{actual_end}"
+                )
+                self.clear_hwp_selection()
         except Exception as exc:
             self.debug(f"[paragraph-delete] SelectText 실패 para={para}: {type(exc).__name__}: {exc}")
         if not self.set_hwp_pos((list_id, para, actual_start)):
@@ -11101,6 +11198,39 @@ class MvpApp(tk.Tk):
         self.log(f"{label}: TableFormula 주소 순회 완료, visited={visited}, changed={changed}")
         return visited, changed
 
+    def transform_current_cell_paragraphs(
+        self,
+        label: str,
+        transform,
+        *,
+        strip_wrapping_lines: bool = False,
+    ) -> tuple[int, int] | None:
+        paragraph_range = self.selected_current_cell_paragraph_range()
+        if paragraph_range is None:
+            return None
+        list_id, first_para, last_para = paragraph_range
+        visited = 0
+        changed = 0
+        for para in range(first_para, last_para + 1):
+            paragraph_text = self.read_current_paragraph_text(list_id, para)
+            if paragraph_text is None:
+                return None
+            if not paragraph_text:
+                visited += 1
+                continue
+            transformed = transform(paragraph_text)
+            visited += 1
+            span = changed_text_span(paragraph_text, transformed)
+            if span is not None:
+                start_pos, end_pos, replacement = span
+                if not self.delete_hwp_text_range(list_id, para, start_pos, end_pos):
+                    return None
+                if replacement and not self.insert_hwp_text(replacement):
+                    return None
+                changed += 1
+        self.log(f"{label}: 단일 셀 문단 치환 완료, visited={visited}, changed={changed}")
+        return visited, changed
+
     def snapshot_formula_address_positions(
         self,
         addresses: list[tuple[int, int]],
@@ -11302,14 +11432,7 @@ class MvpApp(tk.Tk):
         if range_info is None:
             range_info = self.get_selected_cell_range_by_formula()
 
-        matrix = parse_cell_clipboard_matrix(text)
-        if matrix and len(matrix) == 1 and len(matrix[0]) == 1:
-            return False
-
         formula_addresses = list(range_info.get("addresses", [])) if range_info is not None else []
-        if len(formula_addresses) < 2 and looks_like_single_copied_cell(text):
-            self.debug(f"[cell-matrix] {label}: 단일 셀 블록으로 보고 일반 텍스트 경로 사용")
-            return False
         if len(formula_addresses) >= 2:
             result = self.transform_formula_address_cells(
                 label,
@@ -11337,6 +11460,37 @@ class MvpApp(tk.Tk):
                 f"addresses={formula_addresses}"
             )
             return True
+
+        range_cells = 0
+        if range_info is not None:
+            raw_cells = range_info.get("cells")
+            if raw_cells is None:
+                raw_cells = int(range_info.get("rows", 0) or 0) * int(range_info.get("cols", 0) or 0)
+            range_cells = int(raw_cells)
+        single_cell_confirmed = range_info is None or range_cells == 1
+        if single_cell_confirmed and "\t" not in text:
+            result = self.transform_current_cell_paragraphs(
+                label,
+                transform,
+                strip_wrapping_lines=strip_wrapping_lines,
+            )
+            if result is not None:
+                self.activate_hwp_window()
+                return True
+            self.debug(f"[cell-matrix] {label}: 단일 셀 문단 치환 실패, 일반 텍스트 경로 사용")
+            return False
+
+        matrix = parse_cell_clipboard_matrix(text)
+        if single_cell_confirmed and matrix and len(matrix) == 1 and len(matrix[0]) == 1:
+            result = self.transform_current_cell_paragraphs(
+                label,
+                transform,
+                strip_wrapping_lines=strip_wrapping_lines,
+            )
+            if result is not None:
+                self.activate_hwp_window()
+                return True
+            return False
 
         messagebox.showwarning(
             label,
@@ -11422,6 +11576,20 @@ class MvpApp(tk.Tk):
                 range_info=pre_copy_cell_range,
             ):
                 return
+            if (
+                replace_single_paragraph_by_position
+                and selected_positions is not None
+                and "\t" not in text
+                and selected_positions[0][1] != selected_positions[1][1]
+            ):
+                paragraph_result = self.transform_selected_paragraphs_by_position(
+                    label,
+                    selected_positions,
+                    transform,
+                )
+                if paragraph_result is not None:
+                    self.activate_hwp_window()
+                    return
             if preserve_clipboard_cells and "\t" in text:
                 messagebox.showwarning(
                     label,
@@ -11721,8 +11889,13 @@ class MvpApp(tk.Tk):
 
         cells_selected = self.select_current_table_all_cells(row_count, col_count)
         markdown_style_name = self.table_settings.get("markdown_table", {}).get("paragraph_style", "(적용 안 함)")
+        apply_content_style = bool(
+            self.__dict__.get("table_auto_content_style_var").get()
+            if self.__dict__.get("table_auto_content_style_var") is not None
+            else True
+        )
         if cells_selected:
-            if markdown_style_name and markdown_style_name != "(적용 안 함)":
+            if apply_content_style and markdown_style_name and markdown_style_name != "(적용 안 함)":
                 style_ok = self.apply_style_by_name(markdown_style_name)
             else:
                 style_ok = True
@@ -11730,12 +11903,14 @@ class MvpApp(tk.Tk):
             table_style_preset = self.table_settings.get("markdown_table", {}).get("table_style_preset", "thin_top_bottom")
             table_style_results, table_style_ok, _table_style_warning = self.apply_table_style_preset_steps(table_style_preset)
         else:
-            style_ok = False if markdown_style_name and markdown_style_name != "(적용 안 함)" else True
+            style_ok = False if apply_content_style and markdown_style_name and markdown_style_name != "(적용 안 함)" else True
             cell_margin_action, cell_margin_ok = "셀선택", False
             table_style_preset = self.table_settings.get("markdown_table", {}).get("table_style_preset", "thin_top_bottom")
             table_style_results, table_style_ok = ["셀선택=False"], False
-        if markdown_style_name and markdown_style_name != "(적용 안 함)":
+        if apply_content_style and markdown_style_name and markdown_style_name != "(적용 안 함)":
             results.append((f"문단스타일:{markdown_style_name}", style_ok))
+        elif not apply_content_style and markdown_style_name and markdown_style_name != "(적용 안 함)":
+            results.append((f"문단스타일:{markdown_style_name}:건너뜀", True))
         results.append(("셀여백", cell_margin_ok))
         table_style_label = TABLE_STYLE_PRESET_LABELS.get(table_style_preset, table_style_preset)
         results.append((f"표스타일:{table_style_label}", table_style_ok))
