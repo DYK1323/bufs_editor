@@ -43,6 +43,7 @@ from typing import Callable, Iterable
 
 from config_store import ensure_user_config_file
 from config_store import read_json_file
+from privacy_masking import mask_personal_text
 from config_store import write_json_file
 from template_assets import builtin_template_dir_or_fallback
 from template_assets import sync_builtin_templates as sync_builtin_template_assets
@@ -75,6 +76,20 @@ from text_transforms import scale_decimal_numbers
 from text_transforms import scale_decimal_numbers_for_unit_conversion
 from text_transforms import strip_wrapping_blank_lines
 from text_transforms import transform_cell_matrix
+
+# mask_selected_cell_personal_data의 문자 단위 편집이 실패했을 때 셀 전체 클립보드 치환으로
+# 넘어가는 조건. 하이퍼링크 필드(메일 주소 등)로 감싸인 텍스트는 SetPos/SelectText로 부분
+# 위치를 지정할 수 없어 이 오류들이 발생한다.
+_MASK_CHAR_EDIT_FALLBACK_ERRORS = frozenset(
+    {
+        "selection_failed",
+        "selection_mismatch",
+        "delete_failed",
+        "delete_mismatch",
+        "insert_failed",
+        "insert_mismatch",
+    }
+)
 
 
 
@@ -192,7 +207,7 @@ TABLE_SETTINGS_FILE = CONFIG_ROOT / "table-settings.json"
 UPDATE_SETTINGS_FILE = CONFIG_ROOT / "update-settings.json"
 SPECIAL_CHARS_FILE = CONFIG_ROOT / "special-chars.json"
 LAST_HWP_CONNECTION_LOG: list[str] = []
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 APP_NAME = "BUFS-HWP-Editor"
 TITLE_NUMBER_BOX_MARKER = "{{bufs_title}}"
 TITLE_NUMBER_BOX_MARKER_SEPARATOR = "::"
@@ -4832,15 +4847,21 @@ class MvpApp(tk.Tk):
 
         self.build_paragraph_tab_controls(parent)
 
-        table_group = ttk.LabelFrame(parent, text="표 정리/되돌리기", padding=UI_PAD)
+        table_group = ttk.LabelFrame(parent, text="기타", padding=UI_PAD)
         table_group.pack(fill="x", pady=(UI_GAP, 0))
         table_buttons = ttk.Frame(table_group)
         table_buttons.pack(fill="x")
-        ttk.Button(table_buttons, text="엑셀표 정리", command=self.clean_excel_table).pack(
-            side="left", fill="x", expand=True
+        table_buttons.grid_columnconfigure(0, weight=1, uniform="etc-third")
+        table_buttons.grid_columnconfigure(1, weight=1, uniform="etc-third")
+        table_buttons.grid_columnconfigure(2, weight=1, uniform="etc-third")
+        ttk.Button(table_buttons, text="엑셀표 정리", command=self.clean_excel_table).grid(
+            row=0, column=0, sticky="ew"
         )
-        ttk.Button(table_buttons, text="실행취소", command=self.undo_hwp).pack(
-            side="left", fill="x", expand=True, padx=(6, 0)
+        ttk.Button(table_buttons, text="개인정보마스킹", command=self.mask_selected_cell_personal_data).grid(
+            row=0, column=1, sticky="ew", padx=(6, 0)
+        )
+        ttk.Button(table_buttons, text="실행취소", command=self.undo_hwp).grid(
+            row=0, column=2, sticky="ew", padx=(6, 0)
         )
         self.add_missing_button_tooltips(parent)
 
@@ -4946,6 +4967,8 @@ class MvpApp(tk.Tk):
             status_text.see("end")
 
     def debug(self, line: str) -> None:
+        if self.__dict__.get("privacy_masking_busy", False):
+            return
         self.log(line)
 
     def check_for_updates(self, silent: bool = False) -> None:
@@ -11197,6 +11220,163 @@ class MvpApp(tk.Tk):
             current_address = address
         self.log(f"{label}: TableFormula 주소 순회 완료, visited={visited}, changed={changed}")
         return visited, changed
+
+    def mask_current_cell_via_clipboard(self):
+        """SetPos/SelectText가 통하지 않는 텍스트(하이퍼링크 필드 등)를 위한 셀 단위 폴백.
+        날짜 변환이 쓰는 TableCellBlock+Copy/Paste 경로를 그대로 재사용한다."""
+        if not self.select_current_table_cell_for_replace():
+            return None
+        if not self.run_hwp_command("Copy"):
+            self.clear_hwp_selection()
+            return None
+        time.sleep(0.05)
+        cell_text = self.get_clipboard_text()
+        self.clear_hwp_selection()
+        if not cell_text:
+            return None
+        result = mask_personal_text(cell_text)
+        if result.text == cell_text:
+            return result
+        if not self.select_current_table_cell_for_replace():
+            return None
+        self.set_clipboard_text(result.text)
+        pasted = self.paste_text_into_selected_cell()
+        self.clear_hwp_selection()
+        if not pasted:
+            return None
+        return result
+
+    def mask_selected_cell_personal_data(self) -> None:
+        label = "개인정보마스킹"
+        if self.__dict__.get("privacy_masking_busy", False):
+            return
+        self.privacy_masking_busy = True
+        original_pos = None
+        document_path = None
+        completed = 0
+        changed = 0
+        skipped = 0
+        touched = False
+        try:
+            if not self.ensure_hwp():
+                return
+            if not self.is_selected_cell_block():
+                messagebox.showwarning(label, "한글 표에서 마스킹할 셀을 먼저 선택하세요.")
+                return
+            original_pos = self.get_hwp_pos_by_set()
+            document_path = self.get_current_hwp_path()
+            cell_range = self.get_selected_cell_range_by_formula()
+            addresses = list(dict.fromkeys(cell_range.get("addresses", []))) if cell_range else []
+            if not addresses:
+                endpoints = self.get_selected_text_positions()
+                address = self.get_current_cell_address()
+                if (
+                    endpoints is None or endpoints[0][0] != endpoints[1][0]
+                    or not self.current_field_is_table_cell() or address is None
+                ):
+                    raise RuntimeError("unconfirmed_selection")
+                addresses = [address]
+            # 셀 이동과 편집을 한 패스로 묶는다(날짜 변환의 transform_formula_address_cells와 동일 패턴).
+            # 스냅샷 후 별도 재이동 패스를 두면 그 사이 커서/선택모드 상태가 어긋나 중단되기 쉽다.
+            self.clear_hwp_selection()
+            current_address = self.get_current_cell_address()
+            if current_address is None:
+                raise RuntimeError("current_address_failed")
+            seen = set()
+            for address in addresses:
+                if self.get_current_hwp_path() != document_path:
+                    raise RuntimeError("document_changed")
+                if current_address != address:
+                    if not self.move_between_table_addresses(current_address, address):
+                        raise RuntimeError("cell_move_failed")
+                    current_address = self.get_current_cell_address()
+                    if current_address != address:
+                        raise RuntimeError("cell_changed")
+                # selected_current_cell_paragraph_range()는 TableCellBlock 직후 GetSelectedPos로
+                # 범위를 읽는데, GetSelectedPos는 텍스트 선택용이라 셀 블록 선택에서는 항상
+                # (False, ...)를 반환해 실패한다. GetPos 기반 스캔인 scan_current_cell_paragraph_positions
+                # 를 대신 사용한다("일괄 셀 스타일" 기능이 이미 같은 방식으로 검증해 사용 중).
+                paragraph_positions = self.scan_current_cell_paragraph_positions()
+                if not paragraph_positions:
+                    # scan은 공백이 아닌 텍스트가 있는 위치만 기록하므로 빈 셀에서는 항상 빈 리스트를
+                    # 준다. 실제로 셀이 비어 있으면(마스킹할 내용 없음) 건너뛰고, 텍스트가 있는데도
+                    # 스캔이 실패했다면 그건 진짜 오류이니 중단한다.
+                    if self.read_current_cell_text():
+                        raise RuntimeError("paragraph_scan_failed")
+                    current_address = address
+                    continue
+                for list_id, para in paragraph_positions:
+                    if (address, list_id, para) in seen:
+                        continue
+                    seen.add((address, list_id, para))
+                    source = self.read_current_paragraph_text(list_id, para)
+                    if source is None:
+                        raise RuntimeError("read_failed")
+                    result = mask_personal_text(source)
+                    skipped += result.skipped
+                    if not result.edits:
+                        completed += 1
+                        continue
+                    try:
+                        expected = source
+                        for edit in reversed(result.edits):
+                            actual_start, actual_end = self.actual_hwp_text_range(list_id, para, edit.start, edit.end)
+                            if not self.select_hwp_text_range(list_id, para, edit.start, edit.end):
+                                raise RuntimeError("selection_failed")
+                            # select_hwp_text_range 내부에서 이미 같은 검증을 거쳤고, GetSelectedPos가 무효를
+                            # 반환하는 경우(하이퍼링크 필드로 감싸진 텍스트 등)를 "확인 불가"로 통과시킨다.
+                            # 여기서는 명시적으로 False(범위 불일치 확인됨)일 때만 중단하고, 실제 편집 결과는
+                            # 바로 아래 delete_mismatch/insert_mismatch의 텍스트 비교로 검증한다.
+                            if self.selected_hwp_text_range_matches(list_id, para, actual_start, actual_end) is False:
+                                raise RuntimeError("selection_mismatch")
+                            touched = True
+                            if not self.run_hwp_command("Delete"):
+                                raise RuntimeError("delete_failed")
+                            insertion_pos = self.get_hwp_pos_by_set()
+                            deleted = expected[:edit.start] + expected[edit.end:]
+                            if insertion_pos is None or self.read_current_paragraph_text(list_id, para) != deleted:
+                                raise RuntimeError("delete_mismatch")
+                            if not self.set_hwp_pos_by_set(insertion_pos) or not self.insert_hwp_text(edit.replacement):
+                                raise RuntimeError("insert_failed")
+                            expected = expected[:edit.start] + edit.replacement + expected[edit.end:]
+                            if self.read_current_paragraph_text(list_id, para) != expected:
+                                raise RuntimeError("insert_mismatch")
+                            changed += 1
+                        completed += 1
+                    except RuntimeError as edit_exc:
+                        # 하이퍼링크 필드(메일 주소 등)로 감싸인 텍스트는 SetPos/SelectText로 위치를
+                        # 지정할 수 없어 문자 단위 편집이 항상 실패한다. 이 경우 날짜 변환이 쓰는
+                        # TableCellBlock+Copy/Paste 경로로 셀 전체를 통째로 치환한다.
+                        # 단, 문단이 source 이후로 이미 부분적으로 바뀐 상태라면(Delete는 성공했는데
+                        # Insert가 실패한 경우 등) 클립보드로 다시 마스킹한 결과가 원래 편집과 다른
+                        # 잘못된 값을 만들 수 있으므로 자동 복구하지 않고 그대로 중단한다.
+                        if (
+                            str(edit_exc) not in _MASK_CHAR_EDIT_FALLBACK_ERRORS
+                            or self.read_current_paragraph_text(list_id, para) != source
+                        ):
+                            raise
+                        fallback_result = self.mask_current_cell_via_clipboard()
+                        if fallback_result is None:
+                            raise RuntimeError("cell_clipboard_fallback_failed") from edit_exc
+                        if fallback_result.edits:
+                            changed += len(fallback_result.edits)
+                            touched = True
+                        completed += 1
+                        break
+                current_address = address
+            self.log(f"{label}: 셀={len(addresses)}, 확인 문단={completed}, 치환 구간={changed}, 미지원 번호={skipped}")
+        except Exception as exc:
+            self.log(f"{label}: 중단, 확인 문단={completed}, 완료 구간={changed}, 오류={type(exc).__name__}")
+            detail = "일부 내용이 변경되었을 수 있습니다. 확인 후 필요하면 한글에서 실행 취소하세요." if touched else "문서 내용은 변경하지 않았습니다. 셀 범위를 다시 선택하세요."
+            messagebox.showwarning(label, "선택 범위 또는 치환 결과를 확인하지 못해 중단했습니다.\n\n" + detail)
+        finally:
+            try:
+                if original_pos is not None and self.get_current_hwp_path() == document_path:
+                    self.set_hwp_pos_by_set(original_pos)
+            except Exception:
+                self.log(f"{label}: 커서 위치 복원 실패")
+            finally:
+                self.privacy_masking_busy = False
 
     def transform_current_cell_paragraphs(
         self,
